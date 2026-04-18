@@ -1,4 +1,7 @@
-[gd_scene load_steps=11 format=3 uid="uid://c8j7f5yqg2bbp"]
+[gd_scene load_steps=9 format=3 uid="uid://c8j7f5yqg2bbp"]
+
+[ext_resource type="PackedScene" uid="uid://ctank00000001" path="res://scenes/tank/tank.tscn" id="1_tank"]
+[ext_resource type="Script" path="res://src/gameplay/camera/orbit_camera.gd" id="2_wpu8i"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_7bqai"]
 
@@ -11,71 +14,15 @@ sky = SubResource("Sky_tqk6l")
 ambient_light_source = 3
 tonemap_mode = 2
 
-[sub_resource type="Gradient" id="Gradient_ks7no"]
-offsets = PackedFloat32Array(0.2, 1)
-colors = PackedColorArray(1, 1, 1, 1, 0, 0, 0, 1)
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_ground"]
+albedo_color = Color(0.32, 0.38, 0.3, 1)
+roughness = 0.9
 
-[sub_resource type="FastNoiseLite" id="FastNoiseLite_ckn4u"]
-noise_type = 2
-frequency = 0.03
-cellular_jitter = 3.0
-cellular_return_type = 0
-domain_warp_enabled = true
-domain_warp_type = 1
-domain_warp_amplitude = 50.0
-domain_warp_fractal_type = 2
-domain_warp_fractal_lacunarity = 1.5
-domain_warp_fractal_gain = 1.0
+[sub_resource type="BoxMesh" id="BoxMesh_ground"]
+size = Vector3(200, 1, 200)
 
-[sub_resource type="NoiseTexture2D" id="NoiseTexture2D_675rp"]
-seamless = true
-color_ramp = SubResource("Gradient_ks7no")
-noise = SubResource("FastNoiseLite_ckn4u")
-
-[sub_resource type="Terrain3DMaterial" id="Terrain3DMaterial_8eq36"]
-_shader_parameters = {
-"bias_distance": 512.0,
-"blend_sharpness": 0.87,
-"depth_blur": 0.0,
-"enable_macro_variation": true,
-"enable_projection": true,
-"height_blending": true,
-"macro_variation1": Color(1, 1, 1, 1),
-"macro_variation2": Color(1, 1, 1, 1),
-"macro_variation_slope": 0.333,
-"mipmap_bias": 1.0,
-"noise1_angle": 0.0,
-"noise1_offset": Vector2(0.5, 0.5),
-"noise1_scale": 0.04,
-"noise2_scale": 0.076,
-"noise3_scale": 0.225,
-"noise_texture": SubResource("NoiseTexture2D_675rp"),
-"projection_angular_division": 2.0,
-"projection_threshold": 0.8,
-"world_space_normal_blend": true
-}
-show_checkered = true
-
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_7fhc7"]
-transparency = 4
-cull_mode = 2
-vertex_color_use_as_albedo = true
-backlight_enabled = true
-backlight = Color(0.5, 0.5, 0.5, 1)
-distance_fade_mode = 1
-distance_fade_min_distance = 128.0
-distance_fade_max_distance = 96.0
-
-[sub_resource type="Terrain3DMeshAsset" id="Terrain3DMeshAsset_0vwm7"]
-generated_type = 1
-height_offset = 0.5
-material_override = SubResource("StandardMaterial3D_7fhc7")
-last_lod = 0
-last_shadow_lod = 0
-lod0_range = 128.0
-
-[sub_resource type="Terrain3DAssets" id="Terrain3DAssets_21jbe"]
-mesh_list = Array[Terrain3DMeshAsset]([SubResource("Terrain3DMeshAsset_0vwm7")])
+[sub_resource type="BoxShape3D" id="BoxShape3D_ground"]
+size = Vector3(200, 1, 200)
 
 [node name="Node3D" type="Node3D"]
 
@@ -87,10 +34,22 @@ shadow_enabled = true
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment_w4xet")
 
-[node name="Terrain3D" type="Terrain3D" parent="."]
-data_directory = "res://MapData"
-material = SubResource("Terrain3DMaterial_8eq36")
-assets = SubResource("Terrain3DAssets_21jbe")
-show_checkered = true
-top_level = true
-metadata/_edit_lock_ = true
+[node name="Ground" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="Ground"]
+transform = Transform3D(0.246779, 0, 0.969072, 0, 1, 0, -0.969072, 0, 0.246779, 0, 0, 0)
+material_override = SubResource("StandardMaterial3D_ground")
+mesh = SubResource("BoxMesh_ground")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Ground"]
+shape = SubResource("BoxShape3D_ground")
+
+[node name="Tank" parent="." instance=ExtResource("1_tank")]
+transform = Transform3D(-0.078807, 0, -0.99689, 0, 1, 0, 0.99689, 0, -0.078807, -0.374838, 0.659866, -0.120736)
+forward_axis = 2
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.831896, 0.554931, 0, -0.554931, 0.831896, -2.07235, 2.17963, 1.13165)
+fov = 94.7074
+script = ExtResource("2_wpu8i")
