@@ -26,6 +26,24 @@ enum ForwardAxis {
 ## Useful for visually tuning wheel/tread rotation without driving off.
 @export var movement_locked: bool = false
 
+@export_group("Steering")
+## Maximum rotation speed of the hull in radians per second.
+@export var turn_speed: float = 0.45
+## How quickly the steering input ramps up/down. Lower = smoother start/stop.
+@export var turn_acceleration: float = 4.0
+
+@export_group("Aiming")
+## Turret mesh — aimed by mouse (world-space yaw).
+@export_node_path("Node3D") var turret_path: NodePath
+## Barrel mesh — follows turret yaw, pitches with mouse Y.
+@export_node_path("Node3D") var barrel_path: NodePath
+## Radians per screen pixel of mouse motion.
+@export var mouse_sensitivity: float = 0.00255
+@export var min_pitch_deg: float = -10.0
+@export var max_pitch_deg: float = 30.0
+## Flip vertical mouse direction for barrel pitch.
+@export var invert_pitch: bool = false
+
 @onready var _model: Node3D = $Model
 
 var _wheels_left: Array[Node3D] = []
@@ -34,12 +52,54 @@ var _tread_material_left: ShaderMaterial
 var _tread_material_right: ShaderMaterial
 var _tread_uv_offset: float = 0.0
 
+var _turret: Node3D
+var _barrel: Node3D
+var _initial_turret_basis: Basis = Basis.IDENTITY
+var _barrel_relative_to_turret: Basis = Basis.IDENTITY
+var _yaw_delta: float = 0.0
+var _pitch_delta: float = 0.0
+var _hull_yaw: float = 0.0
+
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
 
 
 func _ready() -> void:
 	_collect_wheels()
 	_setup_tread_materials()
+	_hull_yaw = rotation.y
+	# Defer by a frame so Skeleton3D has fully resolved bone transforms
+	# before we snapshot the meshes' world bases.
+	call_deferred("_capture_turret_and_barrel")
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func _capture_turret_and_barrel() -> void:
+	_turret = get_node_or_null(turret_path) as Node3D
+	_barrel = get_node_or_null(barrel_path) as Node3D
+	if _turret:
+		_initial_turret_basis = _turret.global_basis
+	if _turret and _barrel:
+		# Barrel's rotation relative to the turret at startup — preserved so
+		# the barrel stays attached to the turret regardless of yaw.
+		_barrel_relative_to_turret = _initial_turret_basis.inverse() * _barrel.global_basis
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion:
+		var motion: InputEventMouseMotion = event
+		_yaw_delta -= motion.relative.x * mouse_sensitivity
+		var pitch_sign: float = -1.0 if invert_pitch else 1.0
+		_pitch_delta = clamp(
+			_pitch_delta - motion.relative.y * mouse_sensitivity * pitch_sign,
+			deg_to_rad(min_pitch_deg),
+			deg_to_rad(max_pitch_deg)
+		)
+	elif event is InputEventKey:
+		var key_event: InputEventKey = event
+		if key_event.pressed and key_event.keycode == KEY_ESCAPE:
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		elif key_event.pressed and key_event.keycode == KEY_F1:
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 func _collect_wheels() -> void:
@@ -111,10 +171,19 @@ func _physics_process(delta: float) -> void:
 		input_forward -= 1.0
 	var desired_speed: float = input_forward * move_speed
 
+	var turn_input: float = 0.0
+	if Input.is_key_pressed(KEY_D):
+		turn_input += 1.0
+	if Input.is_key_pressed(KEY_A):
+		turn_input -= 1.0
+
 	if movement_locked:
 		velocity.x = 0.0
 		velocity.z = 0.0
 	else:
+		if absf(turn_input) > 0.001:
+			_hull_yaw -= turn_input * turn_speed * delta
+			rotation.y = _hull_yaw
 		var forward: Vector3 = _get_forward_vector()
 		var body_speed: float = desired_speed * body_speed_scale
 		velocity.x = forward.x * body_speed
@@ -127,6 +196,16 @@ func _physics_process(delta: float) -> void:
 
 	move_and_slide()
 
+	# Apply yaw only — barrel inherits turret yaw via stored relative offset.
+	# Pitch disabled temporarily until we confirm yaw alignment works with
+	# the skeleton-parented meshes.
+	var yaw_rot: Basis = Basis(Vector3.UP, _yaw_delta)
+	var turret_world_basis: Basis = yaw_rot * _initial_turret_basis
+	if _turret:
+		_turret.global_basis = turret_world_basis
+	if _barrel:
+		_barrel.global_basis = turret_world_basis * _barrel_relative_to_turret
+
 	_animate_wheels(desired_speed, delta)
 	_animate_treads(desired_speed, delta)
 
@@ -135,14 +214,14 @@ func _physics_process(delta: float) -> void:
 func _get_forward_vector() -> Vector3:
 	match forward_axis:
 		ForwardAxis.NEG_Z:
-			return -transform.basis.z
+			return -global_transform.basis.z
 		ForwardAxis.POS_Z:
-			return transform.basis.z
+			return global_transform.basis.z
 		ForwardAxis.NEG_X:
-			return -transform.basis.x
+			return -global_transform.basis.x
 		ForwardAxis.POS_X:
-			return transform.basis.x
-	return -transform.basis.z
+			return global_transform.basis.x
+	return -global_transform.basis.z
 
 
 func _animate_wheels(linear_speed: float, delta: float) -> void:

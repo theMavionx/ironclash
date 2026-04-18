@@ -1,8 +1,14 @@
 {
   "mcpServers": {
-    "unity-mcp": {
-      "type": "http",
-      "url": "http://127.0.0.1:8085/mcp"
+    "godot-mcp": {
+      "command": "node",
+      "args": [
+        "--experimental-modules",
+        "C:/Users/Admin/Godot-MCP/server/dist/index.js"
+      ],
+      "env": {
+        "MCP_TRANSPORT": "stdio"
+      }
     }
   }
 }

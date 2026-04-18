@@ -1,7 +1,7 @@
 [gd_scene load_steps=9 format=3 uid="uid://c8j7f5yqg2bbp"]
 
 [ext_resource type="PackedScene" uid="uid://ctank00000001" path="res://scenes/tank/tank.tscn" id="1_tank"]
-[ext_resource type="Script" path="res://src/gameplay/camera/orbit_camera.gd" id="2_wpu8i"]
+[ext_resource type="Script" path="res://src/gameplay/camera/chase_camera.gd" id="2_pkq0h"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_7bqai"]
 
@@ -47,9 +47,15 @@ shape = SubResource("BoxShape3D_ground")
 
 [node name="Tank" parent="." instance=ExtResource("1_tank")]
 transform = Transform3D(-0.078807, 0, -0.99689, 0, 1, 0, 0.99689, 0, -0.078807, -0.374838, 0.659866, -0.120736)
+body_speed_scale = 1.0
 forward_axis = 2
+turret_path = NodePath("Model/Armature/Skeleton3D/TankBody_001")
+barrel_path = NodePath("Model/Armature/Skeleton3D/TankBody_002")
 
 [node name="Camera3D" type="Camera3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 0.831896, 0.554931, 0, -0.554931, 0.831896, -2.07235, 2.17963, 1.13165)
+transform = Transform3D(1, 0, 0, 0, 0.591367, 0.806403, 0, -0.806403, 0.591367, -0.0709074, 2.17963, 1.13165)
+current = true
 fov = 94.7074
-script = ExtResource("2_wpu8i")
+script = ExtResource("2_pkq0h")
+target_path = NodePath("../Tank")
+yaw_source_path = NodePath("../Tank/Model/Armature/Skeleton3D/TankBody_001")
