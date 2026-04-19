@@ -1,0 +1,17 @@
+[gd_scene load_steps=4 format=3 uid="uid://cheli00000001"]
+
+[ext_resource type="Script" path="res://src/gameplay/helicopter/helicopter_controller.gd" id="1_heli"]
+[ext_resource type="PackedScene" path="res://assets/models/helicopter/ah-64_apache_attack_helicopter_low_poly.glb" id="2_helimodel"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_heli"]
+size = Vector3(3, 2, 6)
+
+[node name="Helicopter" type="CharacterBody3D"]
+script = ExtResource("1_heli")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = SubResource("BoxShape3D_heli")
+
+[node name="Model" type="Node3D" parent="."]
+
+[node name="AH64" parent="Model" instance=ExtResource("2_helimodel")]

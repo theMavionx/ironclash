@@ -61,6 +61,17 @@ var _pitch_delta: float = 0.0
 var _hull_yaw: float = 0.0
 
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
+var _active: bool = true
+
+
+## Enable or disable this vehicle. Inactive vehicles stop processing and zero velocity.
+func set_active(is_active: bool) -> void:
+	_active = is_active
+	set_physics_process(is_active)
+	if not is_active:
+		velocity = Vector3.ZERO
+	else:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
 func _ready() -> void:
@@ -85,6 +96,8 @@ func _capture_turret_and_barrel() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if not _active:
+		return
 	if event is InputEventMouseMotion:
 		var motion: InputEventMouseMotion = event
 		_yaw_delta -= motion.relative.x * mouse_sensitivity
@@ -166,6 +179,8 @@ func _find_first_mesh(root: Node) -> MeshInstance3D:
 
 
 func _physics_process(delta: float) -> void:
+	if not _active:
+		return
 	var input_forward: float = Input.get_action_strength("move_forward")
 	if Input.is_key_pressed(KEY_S):
 		input_forward -= 1.0

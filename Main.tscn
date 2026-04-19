@@ -1,7 +1,9 @@
-[gd_scene load_steps=9 format=3 uid="uid://c8j7f5yqg2bbp"]
+[gd_scene load_steps=11 format=3 uid="uid://c8j7f5yqg2bbp"]
 
 [ext_resource type="PackedScene" uid="uid://ctank00000001" path="res://scenes/tank/tank.tscn" id="1_tank"]
 [ext_resource type="Script" path="res://src/gameplay/camera/chase_camera.gd" id="2_pkq0h"]
+[ext_resource type="PackedScene" uid="uid://cheli00000001" path="res://scenes/helicopter/helicopter.tscn" id="3_heli"]
+[ext_resource type="Script" path="res://src/gameplay/vehicle/vehicle_switcher.gd" id="4_switcher"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_7bqai"]
 
@@ -51,6 +53,17 @@ body_speed_scale = 1.0
 forward_axis = 2
 turret_path = NodePath("Model/Armature/Skeleton3D/TankBody_001")
 barrel_path = NodePath("Model/Armature/Skeleton3D/TankBody_002")
+
+[node name="Helicopter" parent="." instance=ExtResource("3_heli")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.1, 15)
+tail_rotor_axis = Vector3(0, 1, 0)
+
+[node name="VehicleSwitcher" type="Node" parent="."]
+script = ExtResource("4_switcher")
+tank_path = NodePath("../Tank")
+helicopter_path = NodePath("../Helicopter")
+chase_camera_path = NodePath("../Camera3D")
+tank_yaw_source_path = NodePath("../Tank/Model/Armature/Skeleton3D/TankBody_001")
 
 [node name="Camera3D" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 0.591367, 0.806403, 0, -0.806403, 0.591367, -0.0709074, 2.17963, 1.13165)
