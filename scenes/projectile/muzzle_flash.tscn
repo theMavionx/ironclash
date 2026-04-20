@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://cmzflash00000001"]
+
+[ext_resource type="Script" path="res://src/gameplay/projectile/muzzle_flash.gd" id="1_flash"]
+
+[node name="MuzzleFlash" type="Sprite3D"]
+script = ExtResource("1_flash")

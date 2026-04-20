@@ -1,0 +1,27 @@
+[gd_scene load_steps=5 format=3 uid="uid://cshsmkvol01"]
+
+[ext_resource type="Shader" path="res://src/gameplay/projectile/smoke.gdshader" id="1_shader"]
+[ext_resource type="CompressedTexture3D" path="res://assets/textures/3d_noise.png" id="2_noise"]
+[ext_resource type="Script" path="res://src/gameplay/projectile/smoke_volume.gd" id="3_script"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_smoke"]
+shader = ExtResource("1_shader")
+shader_parameter/density = 50.0
+shader_parameter/albedo = Color(0.8, 0.8, 0.8, 1)
+shader_parameter/emission = Color(0.35, 0.35, 0.35, 1)
+shader_parameter/height_falloff = 0.0
+shader_parameter/edge_fade = 0.329
+shader_parameter/toon_steps = 3.0
+shader_parameter/toon_strength = 1.0
+shader_parameter/density_texture = ExtResource("2_noise")
+
+[node name="SmokeVolume" type="FogVolume"]
+size = Vector3(1.5, 3, 1.5)
+shape = 0
+material = SubResource("ShaderMaterial_smoke")
+script = ExtResource("3_script")
+density_path = "shader_parameter/density"
+smoke_density = 50.0
+spawn_time = 0.3
+sustain_time = 2.0
+fade_time = 1.5

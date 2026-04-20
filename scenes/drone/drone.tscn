@@ -1,0 +1,30 @@
+[gd_scene load_steps=4 format=3 uid="uid://cdrone0000001"]
+
+[ext_resource type="Script" path="res://src/gameplay/drone/drone_controller.gd" id="1_drone"]
+[ext_resource type="PackedScene" uid="uid://btas7x4dnmua" path="res://assets/models/fpv/fpv.glb" id="2_fpvmodel"]
+[ext_resource type="Script" path="res://src/gameplay/health/health_component.gd" id="3_health"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_drone"]
+size = Vector3(2, 0.6, 2)
+
+[node name="Drone" type="CharacterBody3D"]
+script = ExtResource("1_drone")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = SubResource("BoxShape3D_drone")
+
+[node name="Model" type="Node3D" parent="."]
+
+[node name="FPV" parent="Model" instance=ExtResource("2_fpvmodel")]
+
+[node name="FPVMount" type="Node3D" parent="."]
+position = Vector3(0.0, 0.12, -0.3)
+
+[node name="FPVCamera" type="Camera3D" parent="FPVMount"]
+fov = 105.0
+near = 0.01
+current = false
+
+[node name="HealthComponent" type="Node" parent="."]
+script = ExtResource("3_health")
+max_hp = 34

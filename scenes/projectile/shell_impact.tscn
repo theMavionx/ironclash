@@ -1,0 +1,46 @@
+[gd_scene load_steps=6 format=3 uid="uid://shell_impact"]
+
+[ext_resource type="Script" path="res://src/gameplay/projectile/shell_impact.gd" id="1_script"]
+[ext_resource type="PackedScene" uid="uid://cshsmkvol01" path="res://scenes/projectile/smoke_volume.tscn" id="2_smoke"]
+
+[sub_resource type="StandardMaterial3D" id="1_flash_mat"]
+shading_mode = 0
+blend_mode = 1
+transparency = 1
+emission_enabled = true
+emission = Color(1.0, 0.55, 0.05, 1.0)
+emission_energy_multiplier = 8.0
+albedo_color = Color(1.0, 0.7, 0.1, 1.0)
+
+[sub_resource type="SphereMesh" id="2_flash_mesh"]
+material = SubResource("1_flash_mat")
+radius = 0.35
+height = 0.7
+radial_segments = 12
+rings = 6
+
+[sub_resource type="ParticleProcessMaterial" id="3_flash_proc"]
+direction = Vector3(0, 1, 0)
+spread = 180.0
+initial_velocity_min = 0.2
+initial_velocity_max = 1.0
+gravity = Vector3(0, 0, 0)
+scale_min = 0.8
+scale_max = 1.4
+color = Color(1.0, 0.6, 0.1, 1.0)
+
+[node name="ShellImpact" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="Flash" type="GPUParticles3D" parent="."]
+emitting = false
+amount = 10
+lifetime = 0.18
+one_shot = true
+explosiveness = 0.95
+randomness = 0.2
+draw_pass_1 = SubResource("2_flash_mesh")
+process_material = SubResource("3_flash_proc")
+
+[node name="Smoke" parent="." instance=ExtResource("2_smoke")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)

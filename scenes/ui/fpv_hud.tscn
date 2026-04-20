@@ -1,0 +1,160 @@
+[gd_scene load_steps=4 format=3 uid="uid://cfpvhud0000001"]
+
+[ext_resource type="Script" path="res://src/gameplay/ui/fpv_hud.gd" id="1_fpvhudscript"]
+
+[sub_resource type="LabelSettings" id="LabelSettings_fpvhud"]
+font_size = 20
+outline_size = 2
+outline_color = Color(0, 0, 0, 1)
+font_color = Color(1, 1, 1, 1)
+
+[sub_resource type="LabelSettings" id="LabelSettings_offline"]
+font_size = 48
+outline_size = 4
+outline_color = Color(0, 0, 0, 1)
+font_color = Color(1, 0.25, 0.2, 1)
+
+[node name="FPVHUD" type="CanvasLayer"]
+script = ExtResource("1_fpvhudscript")
+visible = false
+
+[node name="Root" type="Control" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+
+[node name="PillarLeft" type="ColorRect" parent="Root"]
+anchor_right = 0.0
+anchor_bottom = 1.0
+offset_right = 160.0
+grow_horizontal = 1
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0, 0, 0, 1)
+
+[node name="PillarRight" type="ColorRect" parent="Root"]
+anchor_left = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -160.0
+grow_horizontal = 0
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0, 0, 0, 1)
+
+[node name="TopLeft" type="Control" parent="Root"]
+anchor_right = 0.5
+anchor_bottom = 0.1
+mouse_filter = 2
+
+[node name="RSSILabel" type="Label" parent="Root/TopLeft"]
+anchor_left = 0.02
+anchor_top = 0.0
+anchor_right = 0.5
+anchor_bottom = 0.0
+offset_top = 8.0
+offset_bottom = 40.0
+text = "RSSI 87%"
+label_settings = SubResource("LabelSettings_fpvhud")
+mouse_filter = 2
+
+[node name="TopCenter" type="Control" parent="Root"]
+anchor_left = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.1
+mouse_filter = 2
+
+[node name="AltLabel" type="Label" parent="Root/TopCenter"]
+anchor_left = 0.5
+anchor_top = 0.0
+anchor_right = 0.5
+anchor_bottom = 0.0
+offset_left = -60.0
+offset_top = 8.0
+offset_right = 60.0
+offset_bottom = 40.0
+text = "AltH 0 m"
+horizontal_alignment = 1
+label_settings = SubResource("LabelSettings_fpvhud")
+mouse_filter = 2
+
+[node name="TopRight" type="Control" parent="Root"]
+anchor_left = 1.0
+anchor_right = 1.0
+anchor_bottom = 0.1
+mouse_filter = 2
+
+[node name="VoltLabel" type="Label" parent="Root/TopRight"]
+anchor_left = 1.0
+anchor_top = 0.0
+anchor_right = 1.0
+anchor_bottom = 0.0
+offset_left = -140.0
+offset_top = 8.0
+offset_right = -8.0
+offset_bottom = 40.0
+text = "14.2V [===]"
+horizontal_alignment = 2
+label_settings = SubResource("LabelSettings_fpvhud")
+mouse_filter = 2
+
+[node name="BottomCenter" type="Control" parent="Root"]
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+mouse_filter = 2
+
+[node name="ArmedLabel" type="Label" parent="Root/BottomCenter"]
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -40.0
+offset_top = -48.0
+offset_right = 40.0
+offset_bottom = -16.0
+text = "ARMED"
+horizontal_alignment = 1
+label_settings = SubResource("LabelSettings_fpvhud")
+mouse_filter = 2
+
+[node name="CrosshairH" type="ColorRect" parent="Root"]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -10.0
+offset_top = -1.0
+offset_right = 10.0
+offset_bottom = 1.0
+mouse_filter = 2
+color = Color(1, 1, 1, 0.85)
+
+[node name="CrosshairV" type="ColorRect" parent="Root"]
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -1.0
+offset_top = -10.0
+offset_right = 1.0
+offset_bottom = 10.0
+mouse_filter = 2
+color = Color(1, 1, 1, 0.85)
+
+[node name="OfflineLabel" type="Label" parent="Root"]
+visible = false
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -240.0
+offset_top = -28.0
+offset_right = 240.0
+offset_bottom = 28.0
+text = "DRONE OFFLINE"
+horizontal_alignment = 1
+vertical_alignment = 1
+label_settings = SubResource("LabelSettings_offline")
+mouse_filter = 2

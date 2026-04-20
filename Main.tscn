@@ -1,9 +1,14 @@
-[gd_scene load_steps=11 format=3 uid="uid://c8j7f5yqg2bbp"]
+[gd_scene load_steps=16 format=3 uid="uid://c8j7f5yqg2bbp"]
 
 [ext_resource type="PackedScene" uid="uid://ctank00000001" path="res://scenes/tank/tank.tscn" id="1_tank"]
 [ext_resource type="Script" path="res://src/gameplay/camera/chase_camera.gd" id="2_pkq0h"]
 [ext_resource type="PackedScene" uid="uid://cheli00000001" path="res://scenes/helicopter/helicopter.tscn" id="3_heli"]
 [ext_resource type="Script" path="res://src/gameplay/vehicle/vehicle_switcher.gd" id="4_switcher"]
+[ext_resource type="PackedScene" uid="uid://ckvh7pu71dvlg" path="res://scenes/ui/crosshair.tscn" id="5_crosshair"]
+[ext_resource type="PackedScene" path="res://scenes/ui/helicopter_hud.tscn" id="6_helihud"]
+[ext_resource type="PackedScene" uid="uid://cdrone0000001" path="res://scenes/drone/drone.tscn" id="7_drone"]
+[ext_resource type="PackedScene" path="res://scenes/ui/fpv_post_process.tscn" id="8_fpvpp"]
+[ext_resource type="PackedScene" path="res://scenes/ui/fpv_hud.tscn" id="9_fpvhud"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_7bqai"]
 
@@ -15,6 +20,14 @@ background_mode = 2
 sky = SubResource("Sky_tqk6l")
 ambient_light_source = 3
 tonemap_mode = 2
+glow_enabled = true
+glow_intensity = 1.2
+glow_strength = 1.1
+glow_bloom = 0.2
+glow_hdr_threshold = 0.9
+volumetric_fog_enabled = true
+volumetric_fog_density = 0.0
+volumetric_fog_length = 120.0
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_ground"]
 albedo_color = Color(0.32, 0.38, 0.3, 1)
@@ -48,21 +61,30 @@ mesh = SubResource("BoxMesh_ground")
 shape = SubResource("BoxShape3D_ground")
 
 [node name="Tank" parent="." instance=ExtResource("1_tank")]
-transform = Transform3D(-0.078807, 0, -0.99689, 0, 1, 0, 0.99689, 0, -0.078807, -0.374838, 0.659866, -0.120736)
+transform = Transform3D(-0.078807, 0, -0.99689, 0, 1, 0, 0.99689, 0, -0.078807, -20.0656, 0.659866, -0.120736)
 body_speed_scale = 1.0
 forward_axis = 2
 turret_path = NodePath("Model/Armature/Skeleton3D/TankBody_001")
 barrel_path = NodePath("Model/Armature/Skeleton3D/TankBody_002")
+muzzle_local_forward = Vector3(0, 0, 1)
 
 [node name="Helicopter" parent="." instance=ExtResource("3_heli")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.1, 15)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 20.6366, 0.0534117, -9.76278)
+reload_label_path = NodePath("../HelicopterHUD/Root/ReloadLabel")
 tail_rotor_axis = Vector3(0, 1, 0)
+
+[node name="Drone" parent="." instance=ExtResource("7_drone")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -15.0132, 0.0483881, 15.0995)
+propeller_rotation_axis = Vector3(0, 0, 1)
 
 [node name="VehicleSwitcher" type="Node" parent="."]
 script = ExtResource("4_switcher")
 tank_path = NodePath("../Tank")
 helicopter_path = NodePath("../Helicopter")
+drone_path = NodePath("../Drone")
 chase_camera_path = NodePath("../Camera3D")
+fpv_post_process_path = NodePath("../FPVPostProcess")
+fpv_hud_path = NodePath("../FPVHUD")
 tank_yaw_source_path = NodePath("../Tank/Model/Armature/Skeleton3D/TankBody_001")
 
 [node name="Camera3D" type="Camera3D" parent="."]
@@ -72,3 +94,12 @@ fov = 94.7074
 script = ExtResource("2_pkq0h")
 target_path = NodePath("../Tank")
 yaw_source_path = NodePath("../Tank/Model/Armature/Skeleton3D/TankBody_001")
+
+[node name="Crosshair" parent="." instance=ExtResource("5_crosshair")]
+
+[node name="HelicopterHUD" parent="." instance=ExtResource("6_helihud")]
+
+[node name="FPVPostProcess" parent="." instance=ExtResource("8_fpvpp")]
+
+[node name="FPVHUD" parent="." instance=ExtResource("9_fpvhud")]
+drone_path = NodePath("../Drone")

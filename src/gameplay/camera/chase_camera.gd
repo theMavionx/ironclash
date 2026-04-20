@@ -16,9 +16,24 @@ extends Camera3D
 ## Positive X = behind, positive Y = above.
 @export var offset: Vector3 = Vector3(2.5, 2.2, 0.0)
 @export var look_offset: Vector3 = Vector3(0.0, 1.3, 0.0)
+## How much the camera look-target shifts vertically per radian of barrel pitch.
+## Higher = camera tilts more dramatically with aim. 0 = camera ignores pitch.
+@export var pitch_look_scale: float = 3.0
+## Flip sign if mouse-up ends up looking DOWN instead of UP.
+@export var invert_aim_pitch: bool = true
+
+@export_group("Manual Orbit (Arrow Keys)")
+## Speed in radians per second the camera orbits around the target when the
+## user holds the arrow keys. Useful to look at the front/sides of the vehicle.
+@export var arrow_orbit_speed: float = 2.0
+## How fast the manual orbit decays back to zero after arrows are released.
+## 0 = sticky (keeps orbit offset), larger = snaps back to default view.
+@export var arrow_orbit_decay: float = 0.0
 
 var _target: Node3D
 var _yaw_source: Node3D
+## Extra yaw added to camera orbit from arrow key input.
+var _manual_yaw: float = 0.0
 
 
 func _ready() -> void:
@@ -32,14 +47,43 @@ func _ready() -> void:
 	_update_camera()
 
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
 	if _target == null:
 		return
+	_read_arrow_input(delta)
 	_update_camera()
 
 
+func _read_arrow_input(delta: float) -> void:
+	var arrow_input: float = 0.0
+	if Input.is_key_pressed(KEY_RIGHT):
+		arrow_input += 1.0
+	if Input.is_key_pressed(KEY_LEFT):
+		arrow_input -= 1.0
+	if arrow_input != 0.0:
+		_manual_yaw -= arrow_input * arrow_orbit_speed * delta
+	elif arrow_orbit_decay > 0.0:
+		_manual_yaw = move_toward(_manual_yaw, 0.0, arrow_orbit_decay * delta)
+
+
 func _update_camera() -> void:
-	var yaw: float = _yaw_source.global_rotation.y
+	var yaw: float
+	if _target and _target.has_method("get_aim_yaw"):
+		yaw = _target.call("get_aim_yaw")
+	else:
+		yaw = _yaw_source.global_rotation.y
+	# Add manual orbit offset from arrow keys (accumulated).
+	yaw += _manual_yaw
+	# Camera stays on a fixed yaw-rotated offset around the target.
 	var yaw_rot: Basis = Basis(Vector3.UP, yaw)
 	global_position = _target.global_position + yaw_rot * offset
-	look_at(_target.global_position + look_offset, Vector3.UP)
+
+	# Tilt the view by shifting the look target vertically with barrel pitch.
+	# Target stays roughly centered on screen; view tilts up/down with aim.
+	var pitch: float = 0.0
+	if _target and _target.has_method("get_aim_pitch"):
+		pitch = _target.call("get_aim_pitch")
+	if invert_aim_pitch:
+		pitch = -pitch
+	var pitch_y: float = pitch * pitch_look_scale
+	look_at(_target.global_position + look_offset + Vector3(0.0, pitch_y, 0.0), Vector3.UP)

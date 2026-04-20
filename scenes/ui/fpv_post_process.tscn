@@ -1,0 +1,23 @@
+[gd_scene load_steps=3 format=3 uid="uid://cfpvpp00000001"]
+
+[ext_resource type="Shader" path="res://src/gameplay/camera/fpv_post_process.gdshader" id="1_fpvshader"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_fpvpp"]
+shader = ExtResource("1_fpvshader")
+shader_parameter/aberration_strength = 0.004
+shader_parameter/vignette_strength = 0.4
+shader_parameter/grain_strength = 0.12
+shader_parameter/desaturation = 0.35
+shader_parameter/warmth = 0.08
+
+[node name="FPVPostProcess" type="CanvasLayer"]
+layer = 99
+visible = false
+
+[node name="Screen" type="ColorRect" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+material = SubResource("ShaderMaterial_fpvpp")

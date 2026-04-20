@@ -1,0 +1,88 @@
+[gd_scene load_steps=12 format=3 uid="uid://ctshell00000001"]
+
+[ext_resource type="Script" path="res://src/gameplay/projectile/tank_shell.gd" id="1_shell"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_core"]
+shading_mode = 0
+albedo_color = Color(1, 1, 0.9, 1)
+emission_enabled = true
+emission = Color(1, 0.95, 0.7, 1)
+emission_energy_multiplier = 16.0
+disable_receive_shadows = true
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_core"]
+material = SubResource("StandardMaterial3D_core")
+radius = 0.042
+height = 1.12
+radial_segments = 32
+rings = 12
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_glow"]
+transparency = 1
+blend_mode = 1
+shading_mode = 0
+albedo_color = Color(1, 0.5, 0.05, 0.7)
+emission_enabled = true
+emission = Color(1, 0.45, 0.02, 1)
+emission_energy_multiplier = 6.0
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_glow"]
+material = SubResource("StandardMaterial3D_glow")
+radius = 0.196
+height = 1.54
+radial_segments = 24
+rings = 8
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_trail"]
+transparency = 1
+blend_mode = 1
+shading_mode = 0
+albedo_color = Color(1, 0.6, 0.1, 1)
+emission_enabled = true
+emission = Color(1, 0.5, 0.05, 1)
+emission_energy_multiplier = 4.0
+
+[sub_resource type="SphereMesh" id="SphereMesh_trail"]
+material = SubResource("StandardMaterial3D_trail")
+radius = 0.12
+height = 0.24
+radial_segments = 12
+rings = 6
+
+[sub_resource type="Curve" id="Curve_scale"]
+_data = [Vector2(0, 1), 0.0, 0.0, 0, 0, Vector2(1, 0), 0.0, 0.0, 0, 0]
+point_count = 2
+
+[sub_resource type="CurveTexture" id="CurveTexture_scale"]
+curve = SubResource("Curve_scale")
+
+[sub_resource type="ParticleProcessMaterial" id="ParticleProcessMaterial_trail"]
+lifetime_randomness = 0.3
+direction = Vector3(0, 0, 1)
+spread = 15.0
+initial_velocity_min = 0.5
+initial_velocity_max = 1.5
+gravity = Vector3(0, 0, 0)
+scale_min = 0.4
+scale_max = 1.0
+scale_curve = SubResource("CurveTexture_scale")
+color = Color(1, 0.7, 0.2, 1)
+
+[node name="TankShell" type="Node3D"]
+script = ExtResource("1_shell")
+
+[node name="GlowMesh" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, -4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0)
+mesh = SubResource("CapsuleMesh_glow")
+cast_shadow = 0
+
+[node name="CoreMesh" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, -4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0)
+mesh = SubResource("CapsuleMesh_core")
+cast_shadow = 0
+
+[node name="Trail" type="GPUParticles3D" parent="."]
+amount = 40
+lifetime = 0.35
+process_material = SubResource("ParticleProcessMaterial_trail")
+draw_pass_1 = SubResource("SphereMesh_trail")
