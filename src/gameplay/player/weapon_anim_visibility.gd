@@ -5,44 +5,44 @@ extends Node
 ## Per-animation and per-frame visibility controller for the player character's
 ## weapon attachments.
 ##
-## Previously read [member AnimationPlayer.current_animation] directly. After
-## the 2026-04-21 AnimationTree refactor, the tree drives the skeleton and
-## AnimationPlayer.current_animation is no longer a reliable single source of
-## truth. This controller now queries [PlayerAnimController] for the active
-## action animation (if any) and the current weapon; otherwise it falls back
-## to the weapon's base idle/run visibility.
+## Reads state DIRECTLY from the runtime [AnimationTree] — does NOT depend on
+## [PlayerAnimController] class_name resolution (Godot 4.3 has a cache bug where
+## `has_method()` reports true but `.call()` fails for newly-added methods on
+## class_name-typed references, and it's not always cleared by deleting
+## `.godot/`). Reading via NodePath + duck-typed Node calls is immune.
 ##
-## GLB import FPS is 30 (see Model/Player/SolderBoyFinal.glb.import), so frame
-## N corresponds to N / 30 seconds.
+## State derivation:
+##   - Current weapon (AR / RPG): inspect the locomotion BlendSpace1D's idle
+##     node's animation name (PlayerAnimController swaps this on weapon change).
+##   - Active action: check `parameters/oneshot/active` on the tree; if true,
+##     read the action_anim node's animation name.
+##   - Action playback position: tracked here via wall clock (when the action
+##     anim name changes we note the msec; delta is "seconds since started").
+##
+## GLB import FPS is 30, so frame N = N/30 seconds.
 ##
 ## Visibility rules (per user spec 2026-04-21):
 ##
 ## AR base (idle / run / burst / select):
 ##   AK parts visible; RPG parts, akmagazine, rocketbullet hidden.
-##
-## AR_Reload (frame-indexed):
-##   AK parts visible, RPG parts hidden.
-##   akmagazine_low: hidden frames 1-47, visible from 48.
-##   akmagazine:     hidden 1-12, visible 13-47, hidden from 48.
-##
-## RPG base (idle / run / burst / select):
+## AR_Reload:
+##   akmagazine_low hidden 1-47 / visible 48+
+##   akmagazine     hidden 1-12 / visible 13-47 / hidden 48+
+## RPG base:
 ##   RPG parts visible; AK parts, akmagazine, rocketbullet hidden.
-##
-## RPG_Reload (frame-indexed):
-##   RPG parts visible, AK parts hidden.
-##   rocketbullet_low: hidden 1-41, visible from 42.
-##   rocketbullet:     hidden 1-16, visible 17-61, hidden from 62.
+## RPG_Reload:
+##   rocketbullet_low hidden 1-41 / visible 42+
+##   rocketbullet     hidden 1-16 / visible 17-61 / hidden 62+
 
 const FPS: float = 30.0
 
 @export_node_path("Skeleton3D") var skeleton_path: NodePath = ^"../Visual/Player/Skeleton3D"
-## PlayerAnimController — source of truth for weapon + active action + position.
-## In editor (@tool) this may not resolve; the controller degrades gracefully
-## and applies AR base visibility so the editor preview still shows correct parts.
-@export_node_path("Node") var anim_controller_path: NodePath = ^"../../PlayerAnimController"
+## Path to the AnimationTree that PlayerAnimController builds at runtime. The
+## tree is a child of PlayerAnimController named "PlayerAnimTree".
+@export_node_path("AnimationTree") var animation_tree_path: NodePath = ^"../../PlayerAnimController/PlayerAnimTree"
 
 var _skel: Skeleton3D
-var _ctrl: PlayerAnimController
+var _tree: AnimationTree
 
 # Grouped toggles
 var _ak47_parts: Array[Node3D] = []
@@ -54,9 +54,11 @@ var _akmagazine_low: Node3D
 var _rocketbullet: Node3D
 var _rocketbullet_low: Node3D
 
-# Cache — re-apply base state only when the effective anim tag changes, so
-# per-frame polling stays cheap.
+# Cache — re-apply base state only when the effective anim tag changes.
 var _last_anim_tag: String = ""
+# Wall-clock start of current action anim (for frame-indexed reload swaps).
+var _action_start_msec: int = 0
+var _current_action_anim: String = ""
 
 
 func _ready() -> void:
@@ -65,7 +67,7 @@ func _ready() -> void:
 
 func _resolve_refs() -> void:
 	_skel = get_node_or_null(skeleton_path) as Skeleton3D
-	_ctrl = get_node_or_null(anim_controller_path) as PlayerAnimController
+	_tree = get_node_or_null(animation_tree_path) as AnimationTree
 	if _skel == null:
 		push_warning("WeaponAnimVisibility: Skeleton3D not found at " + str(skeleton_path))
 		return
@@ -95,41 +97,66 @@ func _find_bone(n: String) -> Node3D:
 
 
 func _process(_delta: float) -> void:
-	# Lazy re-resolve — @tool mode may run before children are fully set up,
-	# or after script reload when cached vars become stale.
+	# Lazy re-resolve — @tool mode may run before children are ready.
 	if _skel == null:
 		_resolve_refs()
 		if _skel == null:
 			return
+	if _tree == null:
+		# Tree is built in PlayerAnimController._ready at runtime — only exists
+		# during play, not in @tool editor preview. Fall back to AR base.
+		_tree = get_node_or_null(animation_tree_path) as AnimationTree
+		if _tree == null:
+			_apply_tag_if_changed("AR_Base")
+			return
 
-	# Determine effective anim tag + position.
-	# Tag: either the current action anim (e.g. "AR_Reload") or the weapon base
-	# (e.g. "AR_Base" / "RPG_Base").
-	var anim_tag: String = ""
-	var action_pos: float = 0.0
-	if _ctrl != null:
-		var action_name: String = _ctrl.get_current_action_anim()
-		if action_name != "":
-			anim_tag = action_name
-			action_pos = _ctrl.get_current_action_position()
+	var anim_tag: String = _derive_anim_tag()
+	_apply_tag_if_changed(anim_tag)
+
+	# Per-frame reload swaps.
+	if anim_tag == "AR_Reload" or anim_tag == "RPG_Reload":
+		var elapsed_sec: float = float(Time.get_ticks_msec() - _action_start_msec) / 1000.0
+		var frame: int = int(elapsed_sec * FPS)
+		if anim_tag == "AR_Reload":
+			_apply_ar_reload_frame(frame)
 		else:
-			var w: int = _ctrl.get_current_weapon()
-			anim_tag = "AR_Base" if w == PlayerAnimController.Weapon.AR else "RPG_Base"
-	else:
-		# No controller (editor preview, missing link) → default to AR base.
-		anim_tag = "AR_Base"
+			_apply_rpg_reload_frame(frame)
 
+
+func _derive_anim_tag() -> String:
+	# If OneShot is active → an action is playing.
+	var active_val: Variant = _tree.get("parameters/oneshot/active")
+	var is_active: bool = (active_val is bool and bool(active_val))
+
+	if is_active:
+		# Read action_anim node's current animation name from the BlendTree.
+		var root: AnimationNodeBlendTree = _tree.tree_root as AnimationNodeBlendTree
+		if root != null and root.has_node("action_anim"):
+			var action_node: AnimationNodeAnimation = root.get_node("action_anim") as AnimationNodeAnimation
+			if action_node != null:
+				var anim_name: String = action_node.animation
+				# Track start time so frame-indexed reload swaps work.
+				if anim_name != _current_action_anim:
+					_current_action_anim = anim_name
+					_action_start_msec = Time.get_ticks_msec()
+				return anim_name
+
+	# No active action → derive base tag from locomotion's idle animation name.
+	_current_action_anim = ""
+	var root2: AnimationNodeBlendTree = _tree.tree_root as AnimationNodeBlendTree
+	if root2 != null and root2.has_node("locomotion"):
+		var loco: AnimationNodeBlendSpace1D = root2.get_node("locomotion") as AnimationNodeBlendSpace1D
+		if loco != null and loco.get_blend_point_count() > 0:
+			var idle_node: AnimationNodeAnimation = loco.get_blend_point_node(0) as AnimationNodeAnimation
+			if idle_node != null:
+				return "RPG_Base" if idle_node.animation == "RPG_Idle" else "AR_Base"
+	return "AR_Base"
+
+
+func _apply_tag_if_changed(anim_tag: String) -> void:
 	if anim_tag != _last_anim_tag:
 		_apply_base_state(anim_tag)
 		_last_anim_tag = anim_tag
-
-	# Per-frame reload swaps (only when an actual reload animation is active).
-	var frame: int = int(action_pos * FPS)
-	match anim_tag:
-		"AR_Reload":
-			_apply_ar_reload_frame(frame)
-		"RPG_Reload":
-			_apply_rpg_reload_frame(frame)
 
 # ---------------------------------------------------------------------------
 # Base states (applied once per tag change)
@@ -156,10 +183,8 @@ func _set_group(nodes: Array, vis: bool) -> void:
 func _set_ar_base() -> void:
 	_set_group(_ak47_parts, true)
 	_set_group(_rpg_parts, false)
-	# Standard AR pose: mag in rifle visible, mag-in-hand hidden.
 	if _akmagazine_low != null: _akmagazine_low.visible = true
 	if _akmagazine != null: _akmagazine.visible = false
-	# All rocket parts hidden.
 	if _rocketbullet != null: _rocketbullet.visible = false
 	if _rocketbullet_low != null: _rocketbullet_low.visible = false
 
@@ -169,7 +194,6 @@ func _set_rpg_base() -> void:
 	_set_group(_rpg_parts, true)
 	if _akmagazine != null: _akmagazine.visible = false
 	if _akmagazine_low != null: _akmagazine_low.visible = false
-	# Standard RPG pose: loaded rocket visible, rocket-in-hand hidden.
 	if _rocketbullet_low != null: _rocketbullet_low.visible = true
 	if _rocketbullet != null: _rocketbullet.visible = false
 
@@ -179,7 +203,6 @@ func _set_ar_reload_initial() -> void:
 	_set_group(_rpg_parts, false)
 	if _rocketbullet != null: _rocketbullet.visible = false
 	if _rocketbullet_low != null: _rocketbullet_low.visible = false
-	# Frame 1: mag not yet in rifle, mag not yet in hand.
 	if _akmagazine_low != null: _akmagazine_low.visible = false
 	if _akmagazine != null: _akmagazine.visible = false
 
@@ -189,7 +212,6 @@ func _set_rpg_reload_initial() -> void:
 	_set_group(_rpg_parts, true)
 	if _akmagazine != null: _akmagazine.visible = false
 	if _akmagazine_low != null: _akmagazine_low.visible = false
-	# Frame 1: rocket not yet loaded, rocket not yet in hand.
 	if _rocketbullet_low != null: _rocketbullet_low.visible = false
 	if _rocketbullet != null: _rocketbullet.visible = false
 
@@ -198,18 +220,14 @@ func _set_rpg_reload_initial() -> void:
 # ---------------------------------------------------------------------------
 
 func _apply_ar_reload_frame(frame: int) -> void:
-	# akmagazine_low: hidden 1-47, visible from 48.
 	if _akmagazine_low != null:
 		_akmagazine_low.visible = frame >= 48
-	# akmagazine: hidden 1-12, visible 13-47, hidden from 48.
 	if _akmagazine != null:
 		_akmagazine.visible = (frame >= 13 and frame < 48)
 
 
 func _apply_rpg_reload_frame(frame: int) -> void:
-	# rocketbullet_low: hidden 1-41, visible from 42.
 	if _rocketbullet_low != null:
 		_rocketbullet_low.visible = frame >= 42
-	# rocketbullet: hidden 1-16, visible 17-61, hidden from 62.
 	if _rocketbullet != null:
 		_rocketbullet.visible = (frame >= 17 and frame < 62)

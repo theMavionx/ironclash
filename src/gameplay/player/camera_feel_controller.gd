@@ -48,8 +48,9 @@ extends Node
 
 @export_group("Camera tilt (lean)")
 @export var tilt_enabled: bool = true
-## Max roll in degrees at full strafe velocity.
-@export var tilt_max_degrees: float = 2.0
+## Max roll in degrees at full strafe velocity. Kept subtle — strong tilt
+## reads as "drunk camera" in TPS.
+@export var tilt_max_degrees: float = 0.5
 ## Strafe-velocity magnitude that maps to full tilt. Should be near walk_speed.
 @export var tilt_reference_speed: float = 7.0
 @export var tilt_smoothing: float = 8.0
@@ -58,7 +59,12 @@ extends Node
 @export var fov_enabled: bool = true
 @export var fov_base: float = 80.0
 @export var fov_sprint: float = 86.0
+## FOV while aiming down sights (RMB held). Narrower than base → zoom-in feel.
+@export var fov_ads: float = 55.0
+## General lerp rate for sprint/base transitions.
 @export var fov_smoothing: float = 5.0
+## Snappier lerp rate for ADS in/out — fast zoom response without instant snap.
+@export var fov_ads_smoothing: float = 14.0
 
 @export_group("Fire recoil kick")
 ## OFF by default per user request 2026-04-22 — AR rapid-fire accumulation was
@@ -250,8 +256,20 @@ func _update_fov(delta: float, sprinting: bool) -> void:
 	if not fov_enabled:
 		_fov_current = lerp(_fov_current, fov_base, clampf(fov_smoothing * delta, 0.0, 1.0))
 		return
-	var target: float = fov_sprint if sprinting else fov_base
-	var t: float = clampf(fov_smoothing * delta, 0.0, 1.0)
+	# Priority: ADS > sprint > base. ADS uses a snappier lerp so the zoom-in
+	# feels responsive to an RMB press.
+	var aiming: bool = Input.is_action_pressed("ads")
+	var target: float
+	var t: float
+	if aiming:
+		target = fov_ads
+		t = clampf(fov_ads_smoothing * delta, 0.0, 1.0)
+	elif sprinting:
+		target = fov_sprint
+		t = clampf(fov_smoothing * delta, 0.0, 1.0)
+	else:
+		target = fov_base
+		t = clampf(fov_smoothing * delta, 0.0, 1.0)
 	_fov_current = lerp(_fov_current, target, t)
 
 # ---------------------------------------------------------------------------

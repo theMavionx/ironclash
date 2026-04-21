@@ -72,11 +72,15 @@ const ANIM_NAMES: Dictionary = {
 @export_group("Movement anim")
 ## Horizontal velocity magnitude below which the player is considered idle.
 @export var move_threshold: float = 0.5
-## Run animation speed multiplier at the reference walk speed.
-@export var run_speed_scale: float = 2.0
-## Fixed playback speed used when the player is sprinting (velocity exceeds
-## [member reference_walk_speed] + ~0.5 m/s). Clamps against infinite spin-up.
-@export var sprint_animation_speed: float = 2.5
+## Playback multiplier applied to the run clip at [member reference_walk_speed].
+## Below that speed the multiplier scales linearly with velocity.
+## 1.0 = play the clip at its native pace. Raise if feet slide forward;
+## lower if legs look like they're running faster than the world.
+@export var run_speed_scale: float = 1.0
+## Fixed playback multiplier used when the player is sprinting (velocity
+## exceeds [member reference_walk_speed] + ~0.5 m/s). Clamps against infinite
+## spin-up on very high velocities.
+@export var sprint_animation_speed: float = 1.4
 ## World-space velocity (m/s) at which the run anim plays at
 ## [member run_speed_scale]. Should match walk_speed in player_controller.gd.
 @export var reference_walk_speed: float = 7.0
@@ -207,6 +211,10 @@ func _build_animation_tree() -> void:
 	action_anim.animation = ANIM_NAMES[_weapon][Action.FIRE]  # placeholder
 	root.add_node("action_anim", action_anim, Vector2(100, 300))
 
+	# TimeScale on locomotion only — actions stay at native speed.
+	var loco_scale := AnimationNodeTimeScale.new()
+	root.add_node("loco_scale", loco_scale, Vector2(250, 100))
+
 	# OneShot: plays action_anim over locomotion, filtered to upper body only.
 	var oneshot := AnimationNodeOneShot.new()
 	oneshot.fadein_time = action_fadein
@@ -215,10 +223,11 @@ func _build_animation_tree() -> void:
 	oneshot.filter_enabled = true
 	for bone_name: String in UPPER_BODY_BONES:
 		oneshot.set_filter_path(NodePath(skeleton_track_prefix + bone_name), true)
-	root.add_node("oneshot", oneshot, Vector2(400, 200))
+	root.add_node("oneshot", oneshot, Vector2(500, 200))
 
-	# Wire: locomotion → oneshot.in (slot 0), action_anim → oneshot.shot (slot 1)
-	root.connect_node("oneshot", 0, "locomotion")
+	# Wire: locomotion → loco_scale → oneshot.in, action_anim → oneshot.shot.
+	root.connect_node("loco_scale", 0, "locomotion")
+	root.connect_node("oneshot", 0, "loco_scale")
 	root.connect_node("oneshot", 1, "action_anim")
 	root.connect_node("output", 0, "oneshot")
 
@@ -259,6 +268,21 @@ func _physics_process(delta: float) -> void:
 	_loco_blend = lerp(_loco_blend, target_blend, clampf(locomotion_blend_smoothing * delta, 0.0, 1.0))
 	_tree.set("parameters/locomotion/blend_position", _loco_blend)
 
+	# Scale locomotion playback speed to velocity so feet roughly match ground.
+	# Sprint caps at [sprint_animation_speed]; below walk speed scales linearly
+	# with [run_speed_scale] at the reference; idle plays at 1×.
+	# Negative scale plays the run clip in reverse — used when moving backward
+	# so legs step backward instead of looking like they jogged the wrong way.
+	var speed_scale: float = 1.0
+	var dir: int = _get_movement_direction()
+	if horiz_mag > reference_walk_speed + 0.5:
+		speed_scale = sprint_animation_speed
+	elif horiz_mag > move_threshold:
+		speed_scale = (horiz_mag / reference_walk_speed) * run_speed_scale
+	if dir == MoveDir.BACKWARD:
+		speed_scale = -speed_scale
+	_tree.set("parameters/loco_scale/scale", speed_scale)
+
 	# Detect OneShot completion → emit action_finished.
 	if _action != Action.NONE:
 		var active = _tree.get("parameters/oneshot/active")
@@ -289,3 +313,15 @@ func _play_action(action: int) -> void:
 	# ONE_SHOT_REQUEST_FIRE = 1. Fires / restarts the oneshot.
 	_tree.set("parameters/oneshot/request", AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
 	action_started.emit(action, anim_name)
+
+
+## Returns which direction relative to the body's forward the player is
+## travelling, using velocity projection onto the body's local -Z axis.
+func _get_movement_direction() -> int:
+	if _body == null:
+		return MoveDir.IDLE
+	var horiz: Vector3 = Vector3(_body.velocity.x, 0.0, _body.velocity.z)
+	if horiz.length() < move_threshold:
+		return MoveDir.IDLE
+	var forward: Vector3 = -_body.global_transform.basis.z
+	return MoveDir.FORWARD if horiz.dot(forward) > 0.0 else MoveDir.BACKWARD
