@@ -20,6 +20,7 @@ extends Node
 
 signal ammo_changed(weapon: int, current: int, maximum: int)
 signal weapon_switched(weapon: int)
+signal fired(weapon: int)
 
 @export_group("AR (Kalash)")
 @export var ar_mag_size: int = 30
@@ -127,6 +128,7 @@ func _try_fire() -> void:
 		_ar_ammo -= 1
 		_time_since_last_fire = 0.0
 		_anim_ctrl.play_fire()
+		fired.emit(_current_weapon)
 		_emit_current_ammo()
 	else:
 		if _rpg_ammo <= 0:
@@ -137,6 +139,7 @@ func _try_fire() -> void:
 		# _on_action_finished. AR does not lock — auto-fire must keep flowing.
 		_is_busy = true
 		_anim_ctrl.play_fire()
+		fired.emit(_current_weapon)
 		_emit_current_ammo()
 
 

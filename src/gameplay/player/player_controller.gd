@@ -68,6 +68,9 @@ signal active_changed(is_active: bool)
 @export var mouse_sensitivity_deg_per_px: float = 0.09
 @export var pitch_clamp_deg: float = 85.0
 @export var ads_sensitivity_multiplier: float = 0.7
+## Exponential smoothing on mouse input for camera "weight" feel. 0 = instant
+## (most responsive), higher = more lag. Typical subtle range: 0.0–0.3.
+@export_range(0.0, 1.0, 0.05) var mouse_smoothing: float = 0.0
 
 @export_group("Camera Sync")
 ## Vertical offset from [member _body] origin to the camera pivot
@@ -88,6 +91,8 @@ var _state: int = State.IDLE
 var _yaw: float = 0.0
 var _pitch: float = 0.0
 var _mouse_delta: Vector2 = Vector2.ZERO
+## Low-pass-filtered mouse delta when [member mouse_smoothing] > 0.
+var _mouse_delta_smoothed: Vector2 = Vector2.ZERO
 
 var _is_crouching: bool = false
 var _is_ads: bool = false
@@ -232,16 +237,30 @@ func _physics_process(delta: float) -> void:
 # Look
 # ---------------------------------------------------------------------------
 
-func _apply_look(_delta: float) -> void:
+func _apply_look(delta: float) -> void:
 	var sens_rad: float = deg_to_rad(mouse_sensitivity_deg_per_px)
 	if _is_ads:
 		sens_rad *= ads_sensitivity_multiplier
 
+	# Optional low-pass filter on mouse input. At mouse_smoothing=0 this is an
+	# instant pass-through; at higher values the camera "catches up" behind the
+	# raw input for a subtle weighty feel. Framerate-independent via delta.
+	var effective_delta: Vector2
+	if mouse_smoothing > 0.0:
+		var catchup: float = clampf((1.0 - mouse_smoothing) * 60.0 * delta, 0.0, 1.0)
+		_mouse_delta_smoothed = _mouse_delta_smoothed.lerp(_mouse_delta, catchup)
+		effective_delta = _mouse_delta_smoothed
+		# Partially consume the raw buffer so it doesn't accumulate forever.
+		_mouse_delta = _mouse_delta.lerp(Vector2.ZERO, catchup)
+	else:
+		effective_delta = _mouse_delta
+		_mouse_delta = Vector2.ZERO
+		_mouse_delta_smoothed = Vector2.ZERO
+
 	# Mouse right → yaw left (convention for FPS/TPS).
-	_yaw -= _mouse_delta.x * sens_rad
+	_yaw -= effective_delta.x * sens_rad
 	# Inverted Y: mouse up (delta.y < 0) → camera tilts DOWN.
-	_pitch += _mouse_delta.y * sens_rad
-	_mouse_delta = Vector2.ZERO
+	_pitch += effective_delta.y * sens_rad
 
 	var pitch_limit: float = deg_to_rad(pitch_clamp_deg)
 	_pitch = clampf(_pitch, -pitch_limit, pitch_limit)

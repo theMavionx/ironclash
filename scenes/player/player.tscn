@@ -1,4 +1,4 @@
-[gd_scene load_steps=12 format=3 uid="uid://xhenad1shki"]
+[gd_scene load_steps=13 format=3 uid="uid://xhenad1shki"]
 
 [ext_resource type="Script" path="res://src/gameplay/player/player_controller.gd" id="1_player_ctrl"]
 [ext_resource type="Script" path="res://src/gameplay/health/health_component.gd" id="2_health"]
@@ -11,6 +11,7 @@
 [ext_resource type="PackedScene" uid="uid://cammodisplay01" path="res://scenes/ui/ammo_display.tscn" id="9_ammo"]
 [ext_resource type="Script" path="res://src/gameplay/ui/ammo_display.gd" id="10_ammo_s"]
 [ext_resource type="PackedScene" uid="uid://cxhair00000001" path="res://scenes/ui/crosshair.tscn" id="11_xhair"]
+[ext_resource type="Script" path="res://src/gameplay/player/camera_feel_controller.gd" id="12_feel"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
 radius = 0.4
@@ -54,6 +55,9 @@ script = ExtResource("5_xrjxn")
 
 [node name="WeaponController" type="Node" parent="."]
 script = ExtResource("8_weap")
+
+[node name="CameraFeelController" type="Node" parent="."]
+script = ExtResource("12_feel")
 
 [node name="StaminaBar" type="CanvasLayer" parent="." instance=ExtResource("6_c3vuk")]
 layer = 10
