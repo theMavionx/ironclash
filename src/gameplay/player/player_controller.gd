@@ -57,20 +57,24 @@ signal active_changed(is_active: bool)
 @export_group("Stamina")
 @export var stamina_max: float = 100.0
 @export var stamina_sprint_drain_rate: float = 15.0
-@export var stamina_jump_cost: float = 15.0
+## Stamina drained per jump. Default 0 = Fortnite-style free jump. Set > 0 to
+## enforce the GDD's original "jump costs stamina" rule.
+@export var stamina_jump_cost: float = 0.0
 @export var stamina_regen_delay: float = 1.0
 @export var stamina_regen_rate: float = 25.0
 @export var stamina_sprint_lockout_threshold: float = 30.0
 
 @export_group("Look")
-@export var mouse_sensitivity_deg_per_px: float = 0.15
+@export var mouse_sensitivity_deg_per_px: float = 0.09
 @export var pitch_clamp_deg: float = 85.0
 @export var ads_sensitivity_multiplier: float = 0.7
 
 @export_group("Camera Sync")
 ## Vertical offset from [member _body] origin to the camera pivot
-## (head height). Camera pivot follows body position + this offset each tick.
-@export var camera_pivot_height: float = 1.6
+## (shoulder/neck height — lower than head for Fortnite-style over-shoulder
+## look-down). Camera pivot follows body position + this offset each tick.
+## SpringArm3D on the pivot then applies the shoulder X-offset and arm length.
+@export var camera_pivot_height: float = 1.5
 
 # ---------------------------------------------------------------------------
 # State
@@ -87,6 +91,8 @@ var _mouse_delta: Vector2 = Vector2.ZERO
 
 var _is_crouching: bool = false
 var _is_ads: bool = false
+## True for one physics tick after a jump input press, consumed in [method _try_jump].
+var _wants_jump: bool = false
 
 var _stamina: float = 100.0
 var _last_drain_time_msec: int = 0
@@ -196,6 +202,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		# mouse movement should not rotate the view.
 		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 			_mouse_delta += (event as InputEventMouseMotion).relative
+	elif event.is_action_pressed("jump"):
+		# Queue one jump — consumed next physics tick in _try_jump(). Flag
+		# pattern avoids missing a single-frame press when physics runs slower
+		# than display.
+		_wants_jump = true
 	elif event.is_action_pressed("interact"):
 		pass  # Hook for vehicle entry / drone entry.
 
@@ -210,6 +221,7 @@ func _physics_process(delta: float) -> void:
 
 	var target_velocity: Vector3 = _compute_target_velocity()
 	_apply_horizontal_movement(target_velocity, delta)
+	_try_jump()
 	_apply_gravity(delta)
 	_body.move_and_slide()
 
@@ -227,8 +239,8 @@ func _apply_look(_delta: float) -> void:
 
 	# Mouse right → yaw left (convention for FPS/TPS).
 	_yaw -= _mouse_delta.x * sens_rad
-	# Mouse up (delta.y < 0) → pitch UP (positive value).
-	_pitch -= _mouse_delta.y * sens_rad
+	# Inverted Y: mouse up (delta.y < 0) → camera tilts DOWN.
+	_pitch += _mouse_delta.y * sens_rad
 	_mouse_delta = Vector2.ZERO
 
 	var pitch_limit: float = deg_to_rad(pitch_clamp_deg)
@@ -345,6 +357,23 @@ func _apply_gravity(delta: float) -> void:
 		_body.velocity.y = 0.0
 	else:
 		_body.velocity.y -= gravity * delta
+
+
+## Consumes [member _wants_jump] and applies vertical impulse if grounded.
+## Costs [member stamina_jump_cost] stamina (default 0 = Fortnite-parity).
+## Called before [method _apply_gravity] so the impulse isn't immediately
+## eaten by the grounded-clamp branch above.
+func _try_jump() -> void:
+	if not _wants_jump:
+		return
+	_wants_jump = false
+	if not _body.is_on_floor():
+		return  # Airborne at the tick the press landed — drop it (no double-jump).
+	_body.velocity.y = jump_impulse
+	if stamina_jump_cost > 0.0:
+		_stamina = maxf(0.0, _stamina - stamina_jump_cost)
+		stamina_changed.emit(_stamina, stamina_max)
+	jumped.emit()
 
 # ---------------------------------------------------------------------------
 # Stamina

@@ -1,45 +1,59 @@
 class_name PlayerAnimController
 extends Node
 
-## Player character animation driver.
+## Player character animation driver — AnimationTree-based with upper-body
+## bone mask layering.
 ##
-## Owns base locomotion (idle / run per weapon) and one-shot actions
-## (fire / reload / select) triggered by [WeaponController]. Only one
-## animation plays on the [AnimationPlayer] at a time — actions fully replace
-## locomotion for their duration. Bone-mask layering (fire while running) would
-## need an [AnimationTree] and is deferred post-MVP.
+## Builds an [AnimationTree] programmatically in [method _ready] so the
+## scene file stays clean and the bone filter can be edited in code. Tree
+## topology:
+##
+##     BlendTree root
+##       locomotion  (BlendSpace1D: idle↔run)  ──┐
+##       action_anim (AnimationNodeAnimation)  ──┼──► oneshot ─► output
+##                                               │
+##     oneshot (OneShot, filtered to upper body)─┘
+##
+## The OneShot node has [member AnimationNodeOneShot.filter_enabled] = true and
+## only the upper-body track paths enabled. When an action fires, its animation
+## replaces the upper body; the legs and hips keep playing locomotion. This is
+## the Godot equivalent of a TPS "upper-body layer".
 ##
 ## Animation names come from the imported GLB (design/gdd/animations.md):
 ##   AR_Idle / AR_RunF / AR_Burst / AR_Reload / AR_Select
 ##   RPG_Idle / RPG_RunF / RPG_Burst / RPG_Reload / RPG_Select
+##
+## Previous implementation (pre-2026-04-21) used the AnimationPlayer directly
+## and could not split layers — reloading while running froze the legs. This
+## refactor fixes that per user spec.
 
 signal action_finished(action: int)
+signal action_started(action: int, anim_name: String)
 
 enum Weapon { AR, RPG }
 enum Action { NONE, FIRE, RELOAD, SELECT }
 enum MoveDir { IDLE, FORWARD, BACKWARD }
 
-@export_group("Movement anim")
-## Horizontal velocity magnitude below which the player is considered idle.
-@export var move_threshold: float = 0.5
-## Run animation speed multiplier at the reference walk speed.
-@export var run_speed_scale: float = 2.0
-## Fixed run-anim speed used when velocity exceeds [member reference_walk_speed]
-## + ~0.5 m/s (i.e. sprinting). Overrides the proportional calculation so the
-## anim never spins up infinitely fast.
-@export var sprint_animation_speed: float = 2.5
-## World-space velocity (m/s) at which the run anim plays at
-## [member run_speed_scale]. Should match walk_speed in player_controller.gd.
-@export var reference_walk_speed: float = 7.0
-## Cross-fade duration (seconds) between animations. 0 = hard snap.
-@export var blend_time: float = 0.2
+# Upper-body bone list. Track paths in animations look like
+# "Player/Skeleton3D:soldier_Spine" — the prefix is set via
+# [member skeleton_track_prefix]. The OneShot filter accepts these full paths.
+const UPPER_BODY_BONES: PackedStringArray = [
+	"soldier_Spine", "soldier_Spine1", "soldier_Spine2",
+	"soldier_Neck", "soldier_Head",
+	"soldier_LeftShoulder", "soldier_LeftArm", "soldier_LeftForeArm", "soldier_LeftHand",
+	"soldier_LeftHandThumb1", "soldier_LeftHandThumb2", "soldier_LeftHandThumb3",
+	"soldier_LeftHandMiddle1", "soldier_LeftHandMiddle2", "soldier_LeftHandMiddle3",
+	"soldier_LeftHandIndex1", "soldier_LeftHandIndex2", "soldier_LeftHandIndex3",
+	"soldier_LeftHandRing1", "soldier_LeftHandRing2", "soldier_LeftHandRing3",
+	"soldier_LeftHandPinky1", "soldier_LeftHandPinky2", "soldier_LeftHandPinky3",
+	"soldier_RightShoulder", "soldier_RightArm", "soldier_RightForeArm", "soldier_RightHand",
+	"soldier_RightHandThumb1", "soldier_RightHandThumb2", "soldier_RightHandThumb3",
+	"soldier_RightHandIndex1", "soldier_RightHandIndex2", "soldier_RightHandIndex3",
+	"soldier_RightHandMiddle1", "soldier_RightHandMiddle2", "soldier_RightHandMiddle3",
+	"soldier_RightHandRing1", "soldier_RightHandRing2", "soldier_RightHandRing3",
+	"soldier_RightHandPinky1", "soldier_RightHandPinky2", "soldier_RightHandPinky3",
+]
 
-@export_group("Paths")
-@export_node_path("AnimationPlayer") var animation_player_path: NodePath = ^"../Body/Visual/AnimationPlayer"
-@export_node_path("CharacterBody3D") var body_path: NodePath = ^"../Body"
-
-# Lookup: weapon → { action → anim_name or [idle_name, run_name] }.
-# Using a nested Dictionary because GDScript lacks a cleaner 2D lookup.
 const ANIM_NAMES: Dictionary = {
 	Weapon.AR: {
 		Action.NONE:   ["AR_Idle", "AR_RunF"],
@@ -55,23 +69,105 @@ const ANIM_NAMES: Dictionary = {
 	},
 }
 
+@export_group("Movement anim")
+## Horizontal velocity magnitude below which the player is considered idle.
+@export var move_threshold: float = 0.5
+## Run animation speed multiplier at the reference walk speed.
+@export var run_speed_scale: float = 2.0
+## Fixed playback speed used when the player is sprinting (velocity exceeds
+## [member reference_walk_speed] + ~0.5 m/s). Clamps against infinite spin-up.
+@export var sprint_animation_speed: float = 2.5
+## World-space velocity (m/s) at which the run anim plays at
+## [member run_speed_scale]. Should match walk_speed in player_controller.gd.
+@export var reference_walk_speed: float = 7.0
+
+@export_group("Tree blend")
+## OneShot fade-in time (seconds). Lower = snappier action transition.
+@export var action_fadein: float = 0.1
+## OneShot fade-out time (seconds).
+@export var action_fadeout: float = 0.15
+## Seconds to blend between idle and run in the locomotion blend space.
+@export var locomotion_blend_smoothing: float = 6.0
+
+@export_group("Paths")
+@export_node_path("AnimationPlayer") var animation_player_path: NodePath = ^"../Body/Visual/AnimationPlayer"
+@export_node_path("CharacterBody3D") var body_path: NodePath = ^"../Body"
+
+@export_group("Bone filter")
+## Prefix used to build OneShot filter paths. Must match the animation track
+## path prefix for skeleton bones. For SolderBoyFinal.glb this is
+## "Player/Skeleton3D:" (the GLB's inner root node is "Player").
+@export var skeleton_track_prefix: String = "Player/Skeleton3D:"
+
 var _anim: AnimationPlayer
 var _body: CharacterBody3D
+var _tree: AnimationTree
 var _weapon: int = Weapon.AR
 var _action: int = Action.NONE
+var _current_action_anim: String = ""
+var _action_start_msec: int = 0
+## Smoothed locomotion blend position (0 = idle, 1 = run). Set per-frame.
+var _loco_blend: float = 0.0
 
 
 func _ready() -> void:
 	_anim = get_node_or_null(animation_player_path) as AnimationPlayer
 	_body = get_node_or_null(body_path) as CharacterBody3D
 	if _anim == null:
-		push_warning("PlayerAnimController: AnimationPlayer not found at %s" % animation_player_path)
+		push_warning("PlayerAnimController: AnimationPlayer not found at " + str(animation_player_path))
 		return
 	if _body == null:
-		push_warning("PlayerAnimController: Body not found at %s" % body_path)
+		push_warning("PlayerAnimController: Body not found at " + str(body_path))
 
-	# Loop locomotion clips, leave action (one-shot) clips non-looping so
-	# animation_finished fires reliably.
+	_configure_loops()
+	_build_animation_tree()
+
+# ---------------------------------------------------------------------------
+# Public API (called by WeaponController)
+# ---------------------------------------------------------------------------
+
+func set_weapon(w: int) -> void:
+	if _weapon == w:
+		return
+	_weapon = w
+	_apply_weapon_locomotion()
+
+func play_fire() -> void:
+	_play_action(Action.FIRE)
+
+func play_reload() -> void:
+	_play_action(Action.RELOAD)
+
+func play_select(w: int) -> void:
+	_weapon = w
+	_apply_weapon_locomotion()
+	_play_action(Action.SELECT)
+
+func is_busy() -> bool:
+	return _action != Action.NONE
+
+func get_current_weapon() -> int:
+	return _weapon
+
+## Currently-playing action animation name, or "" if no action is active.
+## Used by WeaponAnimVisibility to know which base weapon visibility to apply.
+func get_current_action_anim() -> String:
+	return _current_action_anim if _action != Action.NONE else ""
+
+## Wall-clock time since [method play_fire] / [method play_reload] /
+## [method play_select] was called, in seconds. Approximates the current
+## animation playback position (within ~action_fadein of the true value).
+func get_current_action_position() -> float:
+	if _action == Action.NONE:
+		return 0.0
+	return float(Time.get_ticks_msec() - _action_start_msec) / 1000.0
+
+# ---------------------------------------------------------------------------
+# Setup
+# ---------------------------------------------------------------------------
+
+func _configure_loops() -> void:
+	# Loop locomotion clips, make actions one-shot so OneShot can detect end.
 	for weapon_key in ANIM_NAMES.keys():
 		var actions: Dictionary = ANIM_NAMES[weapon_key]
 		for action_key in actions.keys():
@@ -83,105 +179,113 @@ func _ready() -> void:
 					var mode: int = Animation.LOOP_LINEAR if loop_it else Animation.LOOP_NONE
 					_anim.get_animation(anim_name).loop_mode = mode
 
-	_anim.playback_default_blend_time = blend_time
-	_anim.animation_finished.connect(_on_anim_finished)
 
-	# Start in weapon-specific idle.
-	_play_locomotion(MoveDir.IDLE)
+func _build_animation_tree() -> void:
+	_tree = AnimationTree.new()
+	_tree.name = "PlayerAnimTree"
+	add_child(_tree)
+	_tree.anim_player = _tree.get_path_to(_anim)
 
-# ---------------------------------------------------------------------------
-# Public API (called by WeaponController)
-# ---------------------------------------------------------------------------
+	var root := AnimationNodeBlendTree.new()
 
-func set_weapon(w: int) -> void:
-	_weapon = w
+	# Locomotion: BlendSpace1D with two points (idle at 0, run at 1).
+	var loco := AnimationNodeBlendSpace1D.new()
+	loco.min_space = 0.0
+	loco.max_space = 1.0
+	loco.snap = 0.0  # smooth interpolation between points
+	var loco_names: Array = ANIM_NAMES[_weapon][Action.NONE]
+	var idle_node := AnimationNodeAnimation.new()
+	idle_node.animation = loco_names[0]
+	loco.add_blend_point(idle_node, 0.0)
+	var run_node := AnimationNodeAnimation.new()
+	run_node.animation = loco_names[1]
+	loco.add_blend_point(run_node, 1.0)
+	root.add_node("locomotion", loco, Vector2(100, 100))
 
-func play_fire() -> void:
-	_play_action(Action.FIRE)
+	# Action animation (upper body) — single node that we retarget per action.
+	var action_anim := AnimationNodeAnimation.new()
+	action_anim.animation = ANIM_NAMES[_weapon][Action.FIRE]  # placeholder
+	root.add_node("action_anim", action_anim, Vector2(100, 300))
 
-func play_reload() -> void:
-	_play_action(Action.RELOAD)
+	# OneShot: plays action_anim over locomotion, filtered to upper body only.
+	var oneshot := AnimationNodeOneShot.new()
+	oneshot.fadein_time = action_fadein
+	oneshot.fadeout_time = action_fadeout
+	oneshot.autorestart = false
+	oneshot.filter_enabled = true
+	for bone_name: String in UPPER_BODY_BONES:
+		oneshot.set_filter_path(NodePath(skeleton_track_prefix + bone_name), true)
+	root.add_node("oneshot", oneshot, Vector2(400, 200))
 
-func play_select(w: int) -> void:
-	_weapon = w
-	_play_action(Action.SELECT)
+	# Wire: locomotion → oneshot.in (slot 0), action_anim → oneshot.shot (slot 1)
+	root.connect_node("oneshot", 0, "locomotion")
+	root.connect_node("oneshot", 1, "action_anim")
+	root.connect_node("output", 0, "oneshot")
 
-func is_busy() -> bool:
-	return _action != Action.NONE
+	_tree.tree_root = root
+	_tree.active = true
 
-# ---------------------------------------------------------------------------
-# Internal
-# ---------------------------------------------------------------------------
 
-func _physics_process(_delta: float) -> void:
-	if _anim == null:
+func _apply_weapon_locomotion() -> void:
+	if _tree == null:
 		return
+	var root := _tree.tree_root as AnimationNodeBlendTree
+	if root == null:
+		return
+	var loco := root.get_node("locomotion") as AnimationNodeBlendSpace1D
+	if loco == null:
+		return
+	var names: Array = ANIM_NAMES[_weapon][Action.NONE]
+	var idle_node := loco.get_blend_point_node(0) as AnimationNodeAnimation
+	var run_node := loco.get_blend_point_node(1) as AnimationNodeAnimation
+	if idle_node != null:
+		idle_node.animation = names[0]
+	if run_node != null:
+		run_node.animation = names[1]
+
+# ---------------------------------------------------------------------------
+# Per-tick updates
+# ---------------------------------------------------------------------------
+
+func _physics_process(delta: float) -> void:
+	if _tree == null or _body == null:
+		return
+
+	# Smooth locomotion blend position toward velocity ratio.
+	var horiz_mag: float = Vector2(_body.velocity.x, _body.velocity.z).length()
+	var target_blend: float = 0.0
+	if horiz_mag > move_threshold:
+		target_blend = 1.0  # running
+	_loco_blend = lerp(_loco_blend, target_blend, clampf(locomotion_blend_smoothing * delta, 0.0, 1.0))
+	_tree.set("parameters/locomotion/blend_position", _loco_blend)
+
+	# Detect OneShot completion → emit action_finished.
 	if _action != Action.NONE:
-		return  # One-shot in progress; don't override locomotion.
-	_play_locomotion(_get_movement_direction())
+		var active = _tree.get("parameters/oneshot/active")
+		if active == false:
+			var finished: int = _action
+			_action = Action.NONE
+			_current_action_anim = ""
+			action_finished.emit(finished)
 
-
-func _play_locomotion(dir: int) -> void:
-	if _body == null:
-		return
-	var weapon_anims: Array = ANIM_NAMES[_weapon][Action.NONE]
-	var idle_name: String = weapon_anims[0]
-	var run_name: String = weapon_anims[1]
-
-	var want: String
-	var speed: float
-
-	if dir == MoveDir.IDLE:
-		want = idle_name
-		speed = 1.0
-	else:
-		want = run_name
-		var horiz_mag: float = Vector2(_body.velocity.x, _body.velocity.z).length()
-		var magnitude: float
-		if horiz_mag > reference_walk_speed + 0.5:
-			magnitude = sprint_animation_speed
-		else:
-			magnitude = (horiz_mag / reference_walk_speed) * run_speed_scale
-		speed = magnitude if dir == MoveDir.FORWARD else -magnitude
-
-	if _anim.current_animation != want and _anim.has_animation(want):
-		_anim.play(want)
-	_anim.speed_scale = speed
-
+# ---------------------------------------------------------------------------
+# Action playback
+# ---------------------------------------------------------------------------
 
 func _play_action(action: int) -> void:
-	if _anim == null:
+	if _tree == null:
 		return
 	var anim_name: String = ANIM_NAMES[_weapon][action]
 	if not _anim.has_animation(anim_name):
-		push_warning("PlayerAnimController: animation '%s' not found" % anim_name)
+		push_warning("PlayerAnimController: animation '" + anim_name + "' not found")
 		return
+	var root := _tree.tree_root as AnimationNodeBlendTree
+	var action_anim := root.get_node("action_anim") as AnimationNodeAnimation
+	if action_anim != null:
+		action_anim.animation = anim_name
 	_action = action
-	# stop() + play() forces a restart even when the same action fires rapidly
-	# (AR auto-fire re-triggers AR_Burst every ar_fire_interval_sec — without a
-	# restart, play() on the already-current anim is a no-op and the visual
-	# decouples from the ammo counter).
-	_anim.stop()
-	_anim.speed_scale = 1.0
-	_anim.play(anim_name)
-
-
-func _on_anim_finished(anim_name: String) -> void:
-	if _action == Action.NONE:
-		return  # Locomotion clips loop — this shouldn't fire for them.
-	var expected: String = ANIM_NAMES[_weapon][_action]
-	if anim_name != expected:
-		return  # Stale signal (weapon switched mid-action) — ignore.
-	var finished_action: int = _action
-	_action = Action.NONE
-	action_finished.emit(finished_action)
-
-
-func _get_movement_direction() -> int:
-	if _body == null:
-		return MoveDir.IDLE
-	var horiz: Vector3 = Vector3(_body.velocity.x, 0.0, _body.velocity.z)
-	if horiz.length() < move_threshold:
-		return MoveDir.IDLE
-	var forward: Vector3 = -_body.global_transform.basis.z
-	return MoveDir.FORWARD if horiz.dot(forward) > 0.0 else MoveDir.BACKWARD
+	_current_action_anim = anim_name
+	_action_start_msec = Time.get_ticks_msec()
+	# ONE_SHOT_REQUEST_FIRE = 1. Fires / restarts the oneshot.
+	_tree.set("parameters/oneshot/request", AnimationNodeOneShot.ONE_SHOT_REQUEST_FIRE)
+	action_started.emit(action, anim_name)

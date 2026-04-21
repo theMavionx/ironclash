@@ -1,4 +1,4 @@
-[gd_scene load_steps=11 format=3 uid="uid://xhenad1shki"]
+[gd_scene load_steps=12 format=3 uid="uid://xhenad1shki"]
 
 [ext_resource type="Script" path="res://src/gameplay/player/player_controller.gd" id="1_player_ctrl"]
 [ext_resource type="Script" path="res://src/gameplay/health/health_component.gd" id="2_health"]
@@ -10,6 +10,7 @@
 [ext_resource type="Script" path="res://src/gameplay/player/weapon_controller.gd" id="8_weap"]
 [ext_resource type="PackedScene" uid="uid://cammodisplay01" path="res://scenes/ui/ammo_display.tscn" id="9_ammo"]
 [ext_resource type="Script" path="res://src/gameplay/ui/ammo_display.gd" id="10_ammo_s"]
+[ext_resource type="PackedScene" uid="uid://cxhair00000001" path="res://scenes/ui/crosshair.tscn" id="11_xhair"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
 radius = 0.4
@@ -35,16 +36,18 @@ script = ExtResource("2_health")
 script = ExtResource("4_twvnl")
 
 [node name="CameraPivot" type="Node3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.72965, 1.36275)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
 
 [node name="SpringArm3D" type="SpringArm3D" parent="CameraPivot"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.499266, 0.2, 0.000953674)
-spring_length = 3.0
-margin = 0.2
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.75, 0.35, 0)
+spring_length = 2.5
+margin = 0.3
+collision_mask = 1
 
 [node name="Camera3D" type="Camera3D" parent="CameraPivot/SpringArm3D"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.331302, 0.239398)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.15, 0)
 current = true
+fov = 80.0
 
 [node name="PlayerAnimController" type="Node" parent="."]
 script = ExtResource("5_xrjxn")
@@ -59,3 +62,6 @@ script = ExtResource("7_ncqhu")
 [node name="AmmoDisplay" type="CanvasLayer" parent="." instance=ExtResource("9_ammo")]
 layer = 10
 script = ExtResource("10_ammo_s")
+
+[node name="Crosshair" type="CanvasLayer" parent="." instance=ExtResource("11_xhair")]
+layer = 10

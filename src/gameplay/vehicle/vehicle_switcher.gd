@@ -1,10 +1,14 @@
 class_name VehicleSwitcher
 extends Node
 
-## Cycles the active actor between player (on foot), tank, helicopter, and drone
-## with the E key. Updates ChaseCamera target_path, yaw_source_path, offset, and
-## look_offset when a vehicle is active. When the player is active, their
-## embedded camera takes over and the external ChaseCamera is disabled.
+## Vehicle activation state manager. The E-key toggle is DISABLED as of
+## 2026-04-21 — player stays on foot for the MVP infantry-only build. Tank,
+## helicopter, and drone activation methods are preserved for later re-enable
+## via a dedicated interact / spawn / pilot-seat system.
+##
+## Updates ChaseCamera target_path, yaw_source_path, offset, and look_offset
+## when a vehicle is activated programmatically. When the player is active,
+## their embedded camera takes over and the external ChaseCamera is disabled.
 ## Implements: design/gdd/vehicle_switching.md (pending)
 
 @export_node_path var player_path: NodePath
@@ -85,30 +89,8 @@ func _ready() -> void:
 		_player.set_active(true)
 
 
-func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventKey:
-		var key_event: InputEventKey = event
-		if key_event.pressed and not key_event.echo and key_event.keycode == KEY_E:
-			_toggle_vehicle()
-
-
-func _toggle_vehicle() -> void:
-	# Cycle through 4 slots: 0=player, 1=tank, 2=heli, 3=drone.
-	# Skip destroyed vehicles. Player is never "destroyed" at this layer.
-	for _attempt: int in range(4):
-		_active_index = (_active_index + 1) % 4
-		if not _is_index_destroyed(_active_index):
-			break
-
-	match _active_index:
-		0:
-			_activate_player()
-		1:
-			_activate_tank()
-		2:
-			_activate_helicopter()
-		3:
-			_activate_drone()
+# E-key toggle intentionally removed 2026-04-21. _activate_*() methods below
+# remain available for programmatic activation (e.g. future interact-to-pilot).
 
 
 func _is_index_destroyed(index: int) -> bool:

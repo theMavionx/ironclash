@@ -2,42 +2,47 @@
 class_name WeaponAnimVisibility
 extends Node
 
-## Per-animation and per-frame visibility controller for the player
-## character's weapon attachments.
+## Per-animation and per-frame visibility controller for the player character's
+## weapon attachments.
 ##
-## Listens to [signal AnimationPlayer.animation_started] for the base visibility
-## state per animation (AR loadout vs RPG loadout), and polls
-## [member AnimationPlayer.current_animation_position] during the two reload
-## animations for frame-accurate swaps between hand-held and rifle-mounted parts.
+## Previously read [member AnimationPlayer.current_animation] directly. After
+## the 2026-04-21 AnimationTree refactor, the tree drives the skeleton and
+## AnimationPlayer.current_animation is no longer a reliable single source of
+## truth. This controller now queries [PlayerAnimController] for the active
+## action animation (if any) and the current weapon; otherwise it falls back
+## to the weapon's base idle/run visibility.
 ##
-## GLB import FPS is 30 (see Model/Player/SolderBoyFinal.glb.import), so frame N
-## corresponds to N / 30 seconds.
+## GLB import FPS is 30 (see Model/Player/SolderBoyFinal.glb.import), so frame
+## N corresponds to N / 30 seconds.
 ##
 ## Visibility rules (per user spec 2026-04-21):
 ##
-## AR_Burst / AR_Idle / AR_RunF / AR_Select:
+## AR base (idle / run / burst / select):
 ##   AK parts visible; RPG parts, akmagazine, rocketbullet hidden.
 ##
-## AR_Reload:
+## AR_Reload (frame-indexed):
 ##   AK parts visible, RPG parts hidden.
 ##   akmagazine_low: hidden frames 1-47, visible from 48.
 ##   akmagazine:     hidden 1-12, visible 13-47, hidden from 48.
 ##
-## RPG_Burst / RPG_Idle / RPG_RunF / RPG_Select:
+## RPG base (idle / run / burst / select):
 ##   RPG parts visible; AK parts, akmagazine, rocketbullet hidden.
 ##
-## RPG_Reload:
+## RPG_Reload (frame-indexed):
 ##   RPG parts visible, AK parts hidden.
 ##   rocketbullet_low: hidden 1-41, visible from 42.
 ##   rocketbullet:     hidden 1-16, visible 17-61, hidden from 62.
 
 const FPS: float = 30.0
 
-@export_node_path("AnimationPlayer") var animation_player_path: NodePath = ^"../Visual/AnimationPlayer"
 @export_node_path("Skeleton3D") var skeleton_path: NodePath = ^"../Visual/Player/Skeleton3D"
+## PlayerAnimController — source of truth for weapon + active action + position.
+## In editor (@tool) this may not resolve; the controller degrades gracefully
+## and applies AR base visibility so the editor preview still shows correct parts.
+@export_node_path("Node") var anim_controller_path: NodePath = ^"../../PlayerAnimController"
 
-var _anim: AnimationPlayer
 var _skel: Skeleton3D
+var _ctrl: PlayerAnimController
 
 # Grouped toggles
 var _ak47_parts: Array[Node3D] = []
@@ -49,9 +54,9 @@ var _akmagazine_low: Node3D
 var _rocketbullet: Node3D
 var _rocketbullet_low: Node3D
 
-# Cache — re-apply base state only when the animation name changes, so
-# per-frame polling is cheap.
-var _last_anim_name: String = ""
+# Cache — re-apply base state only when the effective anim tag changes, so
+# per-frame polling stays cheap.
+var _last_anim_tag: String = ""
 
 
 func _ready() -> void:
@@ -59,13 +64,10 @@ func _ready() -> void:
 
 
 func _resolve_refs() -> void:
-	_anim = get_node_or_null(animation_player_path) as AnimationPlayer
 	_skel = get_node_or_null(skeleton_path) as Skeleton3D
-	if _anim == null:
-		push_warning("WeaponAnimVisibility: AnimationPlayer not found at %s" % animation_player_path)
-		return
+	_ctrl = get_node_or_null(anim_controller_path) as PlayerAnimController
 	if _skel == null:
-		push_warning("WeaponAnimVisibility: Skeleton3D not found at %s" % skeleton_path)
+		push_warning("WeaponAnimVisibility: Skeleton3D not found at " + str(skeleton_path))
 		return
 
 	_ak47_parts = [
@@ -88,47 +90,56 @@ func _resolve_refs() -> void:
 func _find_bone(n: String) -> Node3D:
 	var node: Node = _skel.get_node_or_null(NodePath(n))
 	if node == null:
-		push_warning("WeaponAnimVisibility: '%s' not found under %s" % [n, _skel.get_path()])
+		push_warning("WeaponAnimVisibility: '" + n + "' not found under " + str(_skel.get_path()))
 	return node as Node3D
 
 
 func _process(_delta: float) -> void:
-	# Re-resolve refs lazily — @tool mode may run before children are fully
-	# set up, or after script reload when cached vars become stale.
-	if _anim == null:
+	# Lazy re-resolve — @tool mode may run before children are fully set up,
+	# or after script reload when cached vars become stale.
+	if _skel == null:
 		_resolve_refs()
-		if _anim == null:
+		if _skel == null:
 			return
 
-	var anim_name: String = String(_anim.current_animation)
+	# Determine effective anim tag + position.
+	# Tag: either the current action anim (e.g. "AR_Reload") or the weapon base
+	# (e.g. "AR_Base" / "RPG_Base").
+	var anim_tag: String = ""
+	var action_pos: float = 0.0
+	if _ctrl != null:
+		var action_name: String = _ctrl.get_current_action_anim()
+		if action_name != "":
+			anim_tag = action_name
+			action_pos = _ctrl.get_current_action_position()
+		else:
+			var w: int = _ctrl.get_current_weapon()
+			anim_tag = "AR_Base" if w == PlayerAnimController.Weapon.AR else "RPG_Base"
+	else:
+		# No controller (editor preview, missing link) → default to AR base.
+		anim_tag = "AR_Base"
 
-	# When the animation selection changes (or is cleared), re-apply base state.
-	if anim_name != _last_anim_name:
-		_apply_base_state(anim_name)
-		_last_anim_name = anim_name
+	if anim_tag != _last_anim_tag:
+		_apply_base_state(anim_tag)
+		_last_anim_tag = anim_tag
 
-	# No active animation → nothing to poll. Querying current_animation_position
-	# on an empty player spams a harmless-but-noisy warning.
-	if anim_name == "":
-		return
-
-	# Per-frame updates for the two reload animations.
-	var frame: int = int(_anim.current_animation_position * FPS)
-	match anim_name:
+	# Per-frame reload swaps (only when an actual reload animation is active).
+	var frame: int = int(action_pos * FPS)
+	match anim_tag:
 		"AR_Reload":
 			_apply_ar_reload_frame(frame)
 		"RPG_Reload":
 			_apply_rpg_reload_frame(frame)
 
 # ---------------------------------------------------------------------------
-# Base states (applied once per animation change)
+# Base states (applied once per tag change)
 # ---------------------------------------------------------------------------
 
-func _apply_base_state(anim_name: String) -> void:
-	match anim_name:
-		"AR_Burst", "AR_Idle", "AR_RunF", "AR_Select":
+func _apply_base_state(anim_tag: String) -> void:
+	match anim_tag:
+		"AR_Base", "AR_Burst", "AR_Select":
 			_set_ar_base()
-		"RPG_Burst", "RPG_Idle", "RPG_RunF", "RPG_Select":
+		"RPG_Base", "RPG_Burst", "RPG_Select":
 			_set_rpg_base()
 		"AR_Reload":
 			_set_ar_reload_initial()
