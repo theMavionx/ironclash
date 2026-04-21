@@ -21,14 +21,17 @@ extends Node
 ## no UI coupling.
 
 @export_node_path("PlayerController") var player_controller_path: NodePath = ^".."
-@export_node_path("Camera3D") var camera_path: NodePath = ^"../CameraPivot/SpringArm3D/Camera3D"
+@export_node_path("Camera3D") var camera_path: NodePath = ^"../CameraPivot/SpringArm3D/CameraRig/Camera3D"
 @export_node_path("Node") var weapon_controller_path: NodePath = ^"../WeaponController"
 
 @export_group("Head bob")
-@export var bob_enabled: bool = true
-@export var bob_amplitude: float = 0.025
-@export var bob_frequency_walk: float = 6.0
-@export var bob_frequency_sprint: float = 9.0
+## OFF by default — head bob is an FPS convention and disorients in TPS
+## (Fortnite / similar third-person shooters don't use it). Set true only if
+## intentionally going for a handheld-camera feel.
+@export var bob_enabled: bool = false
+@export var bob_amplitude: float = 0.012
+@export var bob_frequency_walk: float = 5.0
+@export var bob_frequency_sprint: float = 7.5
 ## How quickly bob fades in/out when starting/stopping movement (higher = snappier).
 @export var bob_fade_rate: float = 8.0
 
@@ -37,8 +40,9 @@ extends Node
 ## Dip depth per 1 m/s of downward velocity at touchdown (scaled + clamped).
 @export var landing_dip_per_mps: float = 0.012
 @export var landing_max_dip: float = 0.12
-## Fall speed below which landing impact is ignored (small hops).
-@export var landing_min_impact_speed: float = 2.5
+## Fall speed below which landing impact is ignored (small hops / terrain bumps).
+## Raise this if dips trigger during normal walking on uneven ground.
+@export var landing_min_impact_speed: float = 4.5
 ## Recovery speed of the dip (higher = snappier return).
 @export var landing_recovery_rate: float = 9.0
 
@@ -57,7 +61,10 @@ extends Node
 @export var fov_smoothing: float = 5.0
 
 @export_group("Fire recoil kick")
-@export var recoil_enabled: bool = true
+## OFF by default per user request 2026-04-22 — AR rapid-fire accumulation was
+## too shaky. Re-enable here or tune the per-weapon pitch values below if you
+## want visible recoil later.
+@export var recoil_enabled: bool = false
 ## Pitch kick in degrees on AR shot.
 @export var recoil_ar_pitch: float = 1.5
 ## Pitch kick in degrees on RPG shot.

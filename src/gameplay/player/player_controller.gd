@@ -106,7 +106,7 @@ var _sprint_locked_out: bool = false
 @onready var _body: CharacterBody3D = $Body
 @onready var _health: HealthComponent = $Body/HealthComponent
 @onready var _camera_pivot: Node3D = $CameraPivot
-@onready var _camera: Camera3D = $CameraPivot/SpringArm3D/Camera3D
+@onready var _camera: Camera3D = $CameraPivot/SpringArm3D/CameraRig/Camera3D
 
 # ---------------------------------------------------------------------------
 # Public API (matches ChaseCamera's expectations — mirrors Tank/Drone)
