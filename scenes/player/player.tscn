@@ -1,0 +1,45 @@
+[gd_scene load_steps=7 format=3 uid="uid://xhenad1shki"]
+
+[ext_resource type="Script" path="res://src/gameplay/player/player_controller.gd" id="1_player_ctrl"]
+[ext_resource type="Script" path="res://src/gameplay/health/health_component.gd" id="2_health"]
+[ext_resource type="PackedScene" uid="uid://dy56h01ex3fl" path="res://Model/Player/SolderBoyFinal.glb" id="3_model"]
+[ext_resource type="Script" path="res://src/gameplay/player/weapon_anim_visibility.gd" id="4_twvnl"]
+[ext_resource type="Script" path="res://src/gameplay/player/player_animation_controller.gd" id="5_xrjxn"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
+radius = 0.4
+height = 1.8
+
+[node name="Player" type="Node3D"]
+script = ExtResource("1_player_ctrl")
+
+[node name="Body" type="CharacterBody3D" parent="."]
+collision_layer = 2
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Body"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+shape = SubResource("CapsuleShape3D_player")
+
+[node name="Visual" parent="Body" instance=ExtResource("3_model")]
+transform = Transform3D(-1, 0, -8.74228e-08, 0, 1, 0, 8.74228e-08, 0, -1, 0, 0, 0)
+
+[node name="HealthComponent" type="Node" parent="Body"]
+script = ExtResource("2_health")
+
+[node name="WeaponAnimVisibility" type="Node" parent="Body"]
+script = ExtResource("4_twvnl")
+
+[node name="CameraPivot" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.72965, 1.36275)
+
+[node name="SpringArm3D" type="SpringArm3D" parent="CameraPivot"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.499266, 0.2, 0.000953674)
+spring_length = 3.0
+margin = 0.2
+
+[node name="Camera3D" type="Camera3D" parent="CameraPivot/SpringArm3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.331302, 0.239398)
+current = true
+
+[node name="PlayerAnimController" type="Node" parent="."]
+script = ExtResource("5_xrjxn")
