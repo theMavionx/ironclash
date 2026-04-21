@@ -1,10 +1,15 @@
-[gd_scene load_steps=7 format=3 uid="uid://xhenad1shki"]
+[gd_scene load_steps=11 format=3 uid="uid://xhenad1shki"]
 
 [ext_resource type="Script" path="res://src/gameplay/player/player_controller.gd" id="1_player_ctrl"]
 [ext_resource type="Script" path="res://src/gameplay/health/health_component.gd" id="2_health"]
 [ext_resource type="PackedScene" uid="uid://dy56h01ex3fl" path="res://Model/Player/SolderBoyFinal.glb" id="3_model"]
 [ext_resource type="Script" path="res://src/gameplay/player/weapon_anim_visibility.gd" id="4_twvnl"]
 [ext_resource type="Script" path="res://src/gameplay/player/player_animation_controller.gd" id="5_xrjxn"]
+[ext_resource type="PackedScene" uid="uid://bsbhje2hlkrc7" path="res://scenes/ui/stamina_bar.tscn" id="6_c3vuk"]
+[ext_resource type="Script" path="res://src/gameplay/ui/stamina_bar.gd" id="7_ncqhu"]
+[ext_resource type="Script" path="res://src/gameplay/player/weapon_controller.gd" id="8_weap"]
+[ext_resource type="PackedScene" uid="uid://cammodisplay01" path="res://scenes/ui/ammo_display.tscn" id="9_ammo"]
+[ext_resource type="Script" path="res://src/gameplay/ui/ammo_display.gd" id="10_ammo_s"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
 radius = 0.4
@@ -43,3 +48,14 @@ current = true
 
 [node name="PlayerAnimController" type="Node" parent="."]
 script = ExtResource("5_xrjxn")
+
+[node name="WeaponController" type="Node" parent="."]
+script = ExtResource("8_weap")
+
+[node name="StaminaBar" type="CanvasLayer" parent="." instance=ExtResource("6_c3vuk")]
+layer = 10
+script = ExtResource("7_ncqhu")
+
+[node name="AmmoDisplay" type="CanvasLayer" parent="." instance=ExtResource("9_ammo")]
+layer = 10
+script = ExtResource("10_ammo_s")

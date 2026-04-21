@@ -42,6 +42,8 @@ signal active_changed(is_active: bool)
 @export var sprint_speed: float = 11.0
 @export var crouch_speed: float = 3.5
 @export var ads_speed: float = 5.0
+## Multiplier applied to movement speed when walking backward (input.y > 0).
+@export var backward_speed_multiplier: float = 0.5
 
 @export_group("Acceleration")
 @export var accel_rate_grounded: float = 12.0
@@ -194,8 +196,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		# mouse movement should not rotate the view.
 		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 			_mouse_delta += (event as InputEventMouseMotion).relative
-	elif event.is_action_pressed("jump"):
-		_try_jump()
 	elif event.is_action_pressed("interact"):
 		pass  # Hook for vehicle entry / drone entry.
 
@@ -307,7 +307,11 @@ func _compute_target_velocity() -> Vector3:
 	var right: Vector3 = _body.global_transform.basis.x
 	var direction: Vector3 = (right * input_vector.x + forward * -input_vector.y).normalized()
 
-	return direction * _current_max_speed()
+	var speed: float = _current_max_speed()
+	# Backward movement (S dominant) is slower than forward.
+	if input_vector.y > 0.0:
+		speed *= backward_speed_multiplier
+	return direction * speed
 
 
 func _current_max_speed() -> float:
@@ -341,23 +345,6 @@ func _apply_gravity(delta: float) -> void:
 		_body.velocity.y = 0.0
 	else:
 		_body.velocity.y -= gravity * delta
-
-# ---------------------------------------------------------------------------
-# Jump
-# ---------------------------------------------------------------------------
-
-func _try_jump() -> void:
-	if not _body.is_on_floor():
-		return
-	if _is_crouching:
-		return
-	if _stamina < stamina_jump_cost:
-		return
-	_stamina -= stamina_jump_cost
-	_last_drain_time_msec = Time.get_ticks_msec()
-	_body.velocity.y = jump_impulse
-	stamina_changed.emit(_stamina, stamina_max)
-	jumped.emit()
 
 # ---------------------------------------------------------------------------
 # Stamina
