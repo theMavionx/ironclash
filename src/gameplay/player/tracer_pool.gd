@@ -122,8 +122,18 @@ func setup(
 	_shader_ready = shader_ready
 
 	var use_shader_bit: int = 1 if shader_ready else 0
-	var mesh: Mesh = quad_mesh if shader_ready else cyl_mesh
-	var mat: Material = quad_mat if shader_ready else cyl_mat
+	# Plain if/else rather than ternary — Godot 4.3's type analyzer flags
+	# `QuadMesh if ... else CylinderMesh` as "not mutually compatible" even
+	# though both inherit from Mesh. Same story for ShaderMaterial vs
+	# StandardMaterial3D under Material.
+	var mesh: Mesh
+	var mat: Material
+	if shader_ready:
+		mesh = quad_mesh
+		mat = quad_mat
+	else:
+		mesh = cyl_mesh
+		mat = cyl_mat
 
 	for i: int in pool_size:
 		_entries[i].mesh = mesh

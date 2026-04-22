@@ -79,6 +79,11 @@ func _apply_damage_if_health(collider: Node) -> void:
 
 
 func _spawn_impact(hit_point: Vector3, hit_normal: Vector3) -> void:
+	# Broadcast explosion shake BEFORE spawning the impact VFX — shake kicks in
+	# simultaneously with the visual/audio cue for maximum punch. Receivers
+	# (CameraFeelController) are in the "camera_shake_receivers" group.
+	_broadcast_shake(hit_point)
+
 	if impact_scene == null:
 		return
 
@@ -99,3 +104,33 @@ func _spawn_impact(hit_point: Vector3, hit_normal: Vector3) -> void:
 	# basis when hit_normal is parallel to FORWARD or RIGHT.
 	if hit_normal.length_squared() > 0.001:
 		impact.global_transform.basis = Basis(Quaternion(Vector3.UP, hit_normal.normalized()))
+
+
+## Send an explosion shake event to every registered receiver (the player's
+## CameraFeelController). Base trauma is picked per damage source so a tank
+## shell shakes harder than a heli missile. Receivers apply distance falloff
+## themselves — this just tells them "a big boom happened HERE, of THAT type".
+func _broadcast_shake(hit_point: Vector3) -> void:
+	var base_trauma: float = _base_trauma_for_source()
+	if base_trauma <= 0.0:
+		return
+	for receiver: Node in get_tree().get_nodes_in_group("camera_shake_receivers"):
+		if receiver.has_method("add_explosion_shake"):
+			receiver.call("add_explosion_shake", hit_point, base_trauma)
+
+
+## Peak trauma at point-blank per damage source. Tank shell (big HE round)
+## hits hardest; heli missile is a smaller warhead; RPG sits in between.
+## Non-projectile sources or anything not explicitly mapped returns 0 so
+## stray damage paths (e.g. future kamikaze damage) don't shake the screen
+## until deliberately configured.
+func _base_trauma_for_source() -> float:
+	match damage_source:
+		DamageTypes.Source.TANK_SHELL:
+			return 1.0
+		DamageTypes.Source.PLAYER_RPG:
+			return 0.9
+		DamageTypes.Source.HELI_MISSILE:
+			return 0.7
+		_:
+			return 0.0
