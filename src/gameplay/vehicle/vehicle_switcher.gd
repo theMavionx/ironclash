@@ -1,10 +1,10 @@
 class_name VehicleSwitcher
 extends Node
 
-## Vehicle activation state manager. The E-key toggle is DISABLED as of
-## 2026-04-21 — player stays on foot for the MVP infantry-only build. Tank,
-## helicopter, and drone activation methods are preserved for later re-enable
-## via a dedicated interact / spawn / pilot-seat system.
+## Vehicle activation state manager. E-key cycles through all wired vehicles
+## (player → tank → helicopter → drone), skipping any that are null (not
+## configured) or destroyed. If no player_path is set, starts on the first
+## available vehicle instead of crashing.
 ##
 ## Updates ChaseCamera target_path, yaw_source_path, offset, and look_offset
 ## when a vehicle is activated programmatically. When the player is active,
@@ -72,25 +72,64 @@ func _ready() -> void:
 	if _fpv_hud == null and not fpv_hud_path.is_empty():
 		push_warning("VehicleSwitcher: fpv_hud_path not set or not a CanvasLayer")
 
-	# Initialise: player active, all vehicles inactive.
+	# Initialise all to inactive, then activate the first available slot.
 	if _tank:
 		_tank.set_active(false)
 	if _helicopter:
 		_helicopter.set_active(false)
 	if _drone:
 		_drone.set_active(false)
+	if _player:
+		_player.set_active(false)
 	if _camera != null:
 		_camera.current = false
 	if _fpv_post_process != null:
 		_fpv_post_process.visible = false
 	if _fpv_hud != null:
 		_fpv_hud.visible = false
-	if _player:
-		_player.set_active(true)
+	# Prefer player → tank → helicopter → drone, whichever exists first.
+	_active_index = _first_available_index()
+	_activate_by_index(_active_index)
 
 
-# E-key toggle intentionally removed 2026-04-21. _activate_*() methods below
-# remain available for programmatic activation (e.g. future interact-to-pilot).
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey:
+		var key_event: InputEventKey = event
+		if key_event.pressed and not key_event.echo and key_event.keycode == KEY_E:
+			_toggle_vehicle()
+
+
+func _toggle_vehicle() -> void:
+	# Cycle through indices 0..3, skipping null-wired or destroyed vehicles.
+	for _attempt: int in range(4):
+		_active_index = (_active_index + 1) % 4
+		if _get_vehicle_at(_active_index) != null and not _is_index_destroyed(_active_index):
+			break
+	_activate_by_index(_active_index)
+
+
+func _get_vehicle_at(index: int) -> Node:
+	match index:
+		0: return _player
+		1: return _tank
+		2: return _helicopter
+		3: return _drone
+	return null
+
+
+func _first_available_index() -> int:
+	for i: int in range(4):
+		if _get_vehicle_at(i) != null and not _is_index_destroyed(i):
+			return i
+	return 0
+
+
+func _activate_by_index(index: int) -> void:
+	match index:
+		0: _activate_player()
+		1: _activate_tank()
+		2: _activate_helicopter()
+		3: _activate_drone()
 
 
 func _is_index_destroyed(index: int) -> bool:
