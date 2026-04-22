@@ -79,6 +79,14 @@ signal active_changed(is_active: bool)
 ## SpringArm3D on the pivot then applies the shoulder X-offset and arm length.
 @export var camera_pivot_height: float = 1.5
 
+@export_group("Strafe lean")
+## Max roll angle (degrees) applied to the body when strafing A/D. Adds
+## visual weight to sideways movement without rotating the body or camera.
+## Pure cosmetic — does not affect aim, collision is not rebuilt.
+@export var body_lean_max_deg: float = 2.0
+## How fast the body rolls into / out of the lean.
+@export var body_lean_rate: float = 10.0
+
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
@@ -230,6 +238,7 @@ func _physics_process(delta: float) -> void:
 	_apply_gravity(delta)
 	_body.move_and_slide()
 
+	_update_strafe_lean(delta)
 	_sync_camera_pivot()
 	_update_stamina(delta)
 
@@ -376,6 +385,20 @@ func _apply_gravity(delta: float) -> void:
 		_body.velocity.y = 0.0
 	else:
 		_body.velocity.y -= gravity * delta
+
+
+## Rolls the body on its Z axis toward the strafe direction for visual weight.
+## Body yaw stays locked to mouse (chase-cam), camera unaffected. Pure cosmetic —
+## capsule tilts a few degrees but collision impact is negligible at ±8°.
+func _update_strafe_lean(delta: float) -> void:
+	if _body == null:
+		return
+	var input: Vector2 = _get_move_input()
+	# A = -1 → lean left (positive Z roll in Godot's -Z forward convention).
+	# D = +1 → lean right (negative Z roll).
+	var target_roll: float = -input.x * deg_to_rad(body_lean_max_deg)
+	var t: float = clampf(body_lean_rate * delta, 0.0, 1.0)
+	_body.rotation.z = lerp_angle(_body.rotation.z, target_roll, t)
 
 
 ## Consumes [member _wants_jump] and applies vertical impulse if grounded.

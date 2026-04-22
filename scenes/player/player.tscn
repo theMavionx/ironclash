@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3 uid="uid://xhenad1shki"]
+[gd_scene load_steps=14 format=3 uid="uid://xhenad1shki"]
 
 [ext_resource type="Script" path="res://src/gameplay/player/player_controller.gd" id="1_player_ctrl"]
 [ext_resource type="Script" path="res://src/gameplay/health/health_component.gd" id="2_health"]
@@ -12,6 +12,7 @@
 [ext_resource type="Script" path="res://src/gameplay/ui/ammo_display.gd" id="10_ammo_s"]
 [ext_resource type="PackedScene" uid="uid://cxhair00000001" path="res://scenes/ui/crosshair.tscn" id="11_xhair"]
 [ext_resource type="Script" path="res://src/gameplay/player/camera_feel_controller.gd" id="12_feel"]
+[ext_resource type="Script" path="res://src/gameplay/player/aim_look_modifier.gd" id="13_aim"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
 radius = 0.4
@@ -71,3 +72,9 @@ script = ExtResource("10_ammo_s")
 
 [node name="Crosshair" type="CanvasLayer" parent="." instance=ExtResource("11_xhair")]
 layer = 10
+
+[node name="AimLookModifier" type="SkeletonModifier3D" parent="Body/Visual/Player/Skeleton3D"]
+script = ExtResource("13_aim")
+pitch_source_path = NodePath("../../../../..")
+
+[editable path="Body/Visual"]
