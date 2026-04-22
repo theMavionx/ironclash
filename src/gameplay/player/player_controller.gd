@@ -38,10 +38,10 @@ signal active_changed(is_active: bool)
 # ---------------------------------------------------------------------------
 
 @export_group("Speeds (m/s)")
-@export var walk_speed: float = 10.0
-@export var sprint_speed: float = 16.0
-@export var crouch_speed: float = 5.0
-@export var ads_speed: float = 7.0
+@export var walk_speed: float = 7.0
+@export var sprint_speed: float = 11.0
+@export var crouch_speed: float = 3.5
+@export var ads_speed: float = 5.0
 ## Multiplier applied to movement speed when walking backward (input.y > 0).
 @export var backward_speed_multiplier: float = 0.5
 
