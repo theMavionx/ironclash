@@ -396,10 +396,14 @@ func _animate_propellers(is_armed: bool, delta: float) -> void:
 func _on_self_destroyed(_by_source: int) -> void:
 	_is_destroyed = true
 	# Zero horizontal velocity so the wreck drops, doesn't keep cruising forward.
-	# Physics stays ENABLED so the wreck falls under gravity until respawn.
 	velocity.x = 0.0
 	velocity.z = 0.0
 	_mouse_delta = Vector2.ZERO
+	# FORCE physics on. The drone may have been INACTIVE (set_active(false)
+	# by VehicleSwitcher) when the player shot it down from the tank/heli —
+	# without this call _physics_process stays disabled and the wreck freezes
+	# mid-air instead of falling. Same pattern as HelicopterController._on_destroyed.
+	set_physics_process(true)
 	_apply_destroyed_visual()
 	# Schedule respawn — player sees the wreck plummet for ~1.5s before teleport.
 	var timer: SceneTreeTimer = get_tree().create_timer(respawn_delay)
