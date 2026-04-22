@@ -97,6 +97,19 @@ signal fired
 ## For Blender-exported rigs the bone's +Y often runs along its length.
 @export var muzzle_local_forward: Vector3 = Vector3(0.0, 1.0, 0.0)
 
+@export_group("Cook-Off (Turret Debris)")
+## Mass of the detached turret RigidBody3D (kg). Still applied so the physics
+## material + damping feel right, but launch velocity is set directly.
+@export var cook_off_mass: float = 500.0
+## Initial upward VELOCITY in m/s. 12 m/s → ~7m apex (v²/2g).
+@export var cook_off_upward_velocity: float = 12.0
+## Max horizontal drift velocity in m/s. Random ±value per axis.
+@export var cook_off_horizontal_drift: float = 1.5
+## Tumble angular velocity magnitude in rad/s (chaotic mid-air rotation).
+@export var cook_off_tumble_velocity: float = 6.0
+## Seconds before the turret wreck despawns. 0 = stays forever.
+@export var cook_off_lifetime: float = 0.0
+
 # ---------------------------------------------------------------------------
 # Private variables
 # ---------------------------------------------------------------------------
@@ -178,8 +191,60 @@ func _on_destroyed(_by_source: int) -> void:
 	_is_destroyed = true
 	set_physics_process(false)
 	velocity = Vector3.ZERO
+	DestructionVFX.spawn_explosion(get_tree().current_scene, global_position + Vector3(0, 1.2, 0))
 	DestructionVFX.apply_charred(self)
 	DestructionVFX.spawn_smoke_fire(self, 1.2)
+	_spawn_cook_off_debris()
+
+
+## Detach turret+barrel as a free-flying RigidBody3D wreck — "cook-off"
+## effect when the tank's ammunition detonates. The WHOLE Model subtree is
+## duplicated onto the RigidBody3D (hull/wheels hidden), so the skeleton +
+## skin bindings stay intact — this is the only way skinned meshes render
+## in Godot 4.3 without a live skeleton.
+func _spawn_cook_off_debris() -> void:
+	if _skeleton == null or _turret_bone == -1 or _barrel_bone == -1:
+		push_warning("TankController: skeleton/bones missing, skipping cook-off")
+		return
+	# Capture current bone rotations to freeze on the debris skeleton.
+	var turret_pose: Quaternion = _skeleton.get_bone_pose_rotation(_turret_bone)
+	var barrel_pose: Quaternion = _skeleton.get_bone_pose_rotation(_barrel_bone)
+	# Spawn the RigidBody AT the turret bone's world pose — this way the
+	# rigidbody's rotation pivot matches the visible turret, so it tumbles
+	# around its own centre instead of swinging in an arc (which was causing
+	# the turret to dip below ground during rotation).
+	var turret_bone_local: Transform3D = _skeleton.get_bone_global_pose(_turret_bone)
+	var spawn_world: Transform3D = _skeleton.global_transform * turret_bone_local
+	var world_root: Node = get_tree().current_scene
+	if world_root == null:
+		world_root = get_parent()
+	# Keep only the turret + barrel meshes on the debris. The bone mesh names
+	# come from the existing turret/barrel NodePaths (last path element).
+	var keep_names: PackedStringArray = PackedStringArray([
+		turret_path.get_name(turret_path.get_name_count() - 1),
+		barrel_path.get_name(barrel_path.get_name_count() - 1),
+	])
+	DestructionVFX.spawn_turret_debris(
+		world_root,
+		_model,
+		_turret_bone,
+		_barrel_bone,
+		turret_pose,
+		barrel_pose,
+		spawn_world,
+		turret_bone_local,
+		keep_names,
+		cook_off_mass,
+		cook_off_upward_velocity,
+		cook_off_horizontal_drift,
+		cook_off_tumble_velocity,
+		cook_off_lifetime
+	)
+	# Hide originals on the live hull so there's no "double turret".
+	if _turret is MeshInstance3D:
+		(_turret as MeshInstance3D).visible = false
+	if _barrel is MeshInstance3D:
+		(_barrel as MeshInstance3D).visible = false
 
 
 func _unhandled_input(event: InputEvent) -> void:

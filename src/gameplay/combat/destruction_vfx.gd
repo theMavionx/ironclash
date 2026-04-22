@@ -66,6 +66,188 @@ static func clear_vfx(vehicle: Node) -> void:
 		existing.queue_free()
 
 
+## Spawn a free-flying RigidBody3D turret wreck. The ENTIRE Model subtree
+## (with Skeleton3D + skinned meshes) is duplicated and parented to the
+## RigidBody3D, then all non-turret meshes are hidden. This is the only
+## approach that renders correctly in Godot 4.3 — skinned vertex format
+## requires a live Skeleton3D to provide the matrix palette; setting
+## skin=null on a fresh MeshInstance3D leaves the vertices undrawn.
+##
+## [param world_root] is where the debris is parented.
+## [param model_node] is the vehicle's Model subscene that contains the Armature.
+## [param turret_bone] / [param barrel_bone] are bone indices in the skeleton.
+## [param turret_pose] / [param barrel_pose] are the CURRENT bone rotations to
+## freeze on the duplicated skeleton so the debris matches the aim at death.
+## [param turret_world] is the bone's world pose — used as the debris spawn
+## transform.
+## [param spawn_world] is the debris RigidBody's world transform — pass the
+## VEHICLE'S SKELETON world transform (not the turret bone's world). Placing
+## the rigidbody at the skeleton root means the duplicated Model subtree
+## renders with its bones at their normal skeleton-relative offsets.
+## [param keep_mesh_names] is the list of MeshInstance3D names to keep visible
+## on the debris (e.g. ["TankBody_001", "TankBody_002"]). Every other mesh in
+## the duplicated subtree is hidden — hides hull/wheels/treads.
+## [param turret_bone_local] is the turret bone's pose in skeleton-local
+## space (from [code]skeleton.get_bone_global_pose(turret_bone)[/code]).
+## Used to offset the cloned skeleton so the turret BONE sits at the
+## RigidBody origin — gives a rotation pivot at the visible turret centre.
+static func spawn_turret_debris(
+	world_root: Node,
+	model_node: Node3D,
+	turret_bone: int,
+	barrel_bone: int,
+	turret_pose: Quaternion,
+	barrel_pose: Quaternion,
+	spawn_world: Transform3D,
+	turret_bone_local: Transform3D,
+	keep_mesh_names: PackedStringArray,
+	mass: float = 500.0,
+	upward_velocity: float = 12.0,
+	horizontal_drift_max: float = 1.5,
+	tumble_velocity_max: float = 6.0,
+	self_destruct_after: float = 30.0
+) -> RigidBody3D:
+	if model_node == null:
+		push_warning("DestructionVFX: model_node null, skipping cook-off")
+		return null
+
+	# Build the rigid body programmatically.
+	var debris: RigidBody3D = RigidBody3D.new()
+	debris.mass = mass
+	debris.gravity_scale = 1.0
+	debris.can_sleep = true
+	# Isolated "debris" layer: bit 2 (layer 3). Projectile masks are 0b11
+	# (layers 1+2), so shells pass through the flying turret instead of
+	# triggering impact VFX on it.
+	debris.collision_layer = 0b100
+	# Start with NO collision — physics can't penetrate-resolve against the
+	# tank hull on frame 0. Re-enable mask=0b001 (world/ground) after 0.3s
+	# via a deferred timer, once the debris has flown clear of the hull.
+	debris.collision_mask = 0
+	debris.linear_damp = 0.05
+	debris.angular_damp = 0.3
+	var phys_mat: PhysicsMaterial = PhysicsMaterial.new()
+	phys_mat.bounce = 0.2
+	phys_mat.friction = 0.8
+	phys_mat.rough = true
+	debris.physics_material_override = phys_mat
+
+	# Collision shape: rough bounds of turret + barrel.
+	var shape: CollisionShape3D = CollisionShape3D.new()
+	var box: BoxShape3D = BoxShape3D.new()
+	box.size = Vector3(1.5, 0.6, 2.0)
+	shape.shape = box
+	debris.add_child(shape)
+
+	# Duplicate the WHOLE Model subtree. Default flags — USE_INSTANTIATION
+	# broke the clone on this GLB (index-out-of-bounds in children_cache).
+	# The "Child node disappeared" warnings are non-fatal Godot quirks.
+	var model_copy: Node3D = model_node.duplicate() as Node3D
+	debris.add_child(model_copy)
+	# Find the cloned Skeleton3D and freeze it at the destruction-frame pose.
+	var skel_copy: Skeleton3D = _find_skeleton(model_copy)
+	if skel_copy != null:
+		# Reset all bones to rest pose first, then re-apply just turret + barrel
+		# so the wreck visually matches the aim at the moment of death.
+		skel_copy.reset_bone_poses()
+		if turret_bone != -1:
+			skel_copy.set_bone_pose_rotation(turret_bone, turret_pose)
+		if barrel_bone != -1:
+			skel_copy.set_bone_pose_rotation(barrel_bone, barrel_pose)
+	# Hide every MeshInstance3D whose name ISN'T in keep_mesh_names.
+	_hide_meshes_except(model_copy, keep_mesh_names)
+
+	# Parent to world root BEFORE setting global_transform.
+	world_root.add_child(debris)
+	debris.global_transform = spawn_world
+	# Exclude collision with any PhysicsBody3D at the spawn point.
+	if model_node != null:
+		var donor: Node = model_node.get_parent()
+		if donor is PhysicsBody3D:
+			debris.add_collision_exception_with(donor as PhysicsBody3D)
+	# Offset the cloned skeleton so the TURRET BONE lands at the debris origin.
+	# Without this, the skeleton sits at debris origin and bones are offset
+	# upward, making the rigidbody's rotation pivot below the visible turret
+	# — the turret would dip below ground during tumble.
+	# Math: skeleton.global * turret_bone_local = debris.global (desired)
+	#     → skeleton.global = debris.global * turret_bone_local.inverse()
+	if skel_copy != null:
+		skel_copy.global_transform = spawn_world * turret_bone_local.affine_inverse()
+
+	# Set velocities DIRECTLY (m/s and rad/s) instead of impulses. Bypasses
+	# any mass-synchronization issues with the physics server on spawn.
+	# Caller passes desired velocities (not impulses) via the _velocity params.
+	debris.sleeping = false
+	var drift_x: float = randf_range(-horizontal_drift_max, horizontal_drift_max)
+	var drift_z: float = randf_range(-horizontal_drift_max, horizontal_drift_max)
+	debris.linear_velocity = Vector3(drift_x, upward_velocity, drift_z)
+	var tumble_axis: Vector3 = Vector3(
+		randf_range(-1.0, 1.0),
+		randf_range(-0.3, 0.3),
+		randf_range(-1.0, 1.0)
+	).normalized()
+	debris.angular_velocity = tumble_axis * tumble_velocity_max
+
+	# Note: hiding of the original turret/barrel meshes is the caller's
+	# responsibility (TankController._spawn_cook_off_debris) — it has direct
+	# refs and knows the donor vehicle's mesh hierarchy.
+
+	# Enable ground collision after 0.3s — debris is well clear of hull by then.
+	var enable_col_timer: SceneTreeTimer = world_root.get_tree().create_timer(0.3)
+	enable_col_timer.timeout.connect(func() -> void:
+		if is_instance_valid(debris):
+			debris.collision_mask = 0b001
+	)
+
+	# self_destruct_after <= 0 → debris stays forever (wreck persists).
+	# Positive value schedules a queue_free after that many seconds.
+	if self_destruct_after > 0.0:
+		var timer: SceneTreeTimer = world_root.get_tree().create_timer(self_destruct_after)
+		timer.timeout.connect(debris.queue_free)
+
+	return debris
+
+
+## Recursive depth-first search for a Skeleton3D descendant.
+static func _find_skeleton(root: Node) -> Skeleton3D:
+	if root is Skeleton3D:
+		return root as Skeleton3D
+	for child: Node in root.get_children():
+		var found: Skeleton3D = _find_skeleton(child)
+		if found != null:
+			return found
+	return null
+
+
+## Hide every MeshInstance3D whose name is NOT in [param keep_names].
+## Used by spawn_turret_debris to hide the hull/wheels/treads while keeping
+## only the turret and barrel meshes visible on the flying wreck.
+static func _hide_meshes_except(root: Node, keep_names: PackedStringArray) -> void:
+	for child: Node in root.get_children():
+		if child is MeshInstance3D and not (child.name in keep_names):
+			(child as MeshInstance3D).visible = false
+		_hide_meshes_except(child, keep_names)
+
+
+## Collect all MeshInstance3D names under [param root] into [param out].
+static func _collect_mesh_names(root: Node, out: Array[String]) -> void:
+	if root is MeshInstance3D:
+		out.append(String(root.name))
+	for child: Node in root.get_children():
+		_collect_mesh_names(child, out)
+
+
+## Collect names of VISIBLE MeshInstance3D nodes. Uses local position only
+## because this is called BEFORE add_child to world_root — global_position
+## is undefined on nodes not in the scene tree.
+static func _collect_visible_mesh_info(root: Node, out: Array[String]) -> void:
+	if root is MeshInstance3D and (root as MeshInstance3D).visible:
+		var mi: MeshInstance3D = root as MeshInstance3D
+		out.append("%s (local=%v)" % [mi.name, mi.position])
+	for child: Node in root.get_children():
+		_collect_visible_mesh_info(child, out)
+
+
 # ---------------------------------------------------------------------------
 # Internal builders
 # ---------------------------------------------------------------------------
@@ -190,6 +372,96 @@ static func _build_light() -> OmniLight3D:
 	if flicker != null:
 		light.set_script(flicker)
 	return light
+
+
+## Build a fresh MeshInstance3D that shares the source's Mesh resource but
+## has NO skeleton/skin bindings — renders cleanly as a static mesh detached
+## from any armature. Falls back to a BoxMesh if source has no .mesh.
+static func _make_fresh_mesh_copy(source: MeshInstance3D, fallback_size: Vector3) -> MeshInstance3D:
+	var copy: MeshInstance3D = MeshInstance3D.new()
+	if source != null and source.mesh != null:
+		copy.mesh = source.mesh
+	else:
+		var box: BoxMesh = BoxMesh.new()
+		box.size = fallback_size
+		copy.mesh = box
+		push_warning("DestructionVFX: source mesh null — using BoxMesh fallback")
+	copy.visible = true
+	return copy
+
+
+# ---------------------------------------------------------------------------
+# Explosion burst — one-shot spark/debris particles + bright flash light.
+# Call at the moment of destruction, before spawn_smoke_fire.
+# ---------------------------------------------------------------------------
+
+## One-shot explosion at [param position_world]. Spawns sparks + a pulsing
+## flash light under [param world_root]. CRITICAL: nodes are added to the tree
+## BEFORE setting global_position / creating tweens — orphan nodes silently
+## drop global_transform writes and create_tween() returns null.
+static func spawn_explosion(world_root: Node, position_world: Vector3) -> void:
+	# --- Flash light ---
+	var flash_root: Node3D = Node3D.new()
+	flash_root.name = "ExplosionFlash"
+	var light: OmniLight3D = OmniLight3D.new()
+	light.light_color = Color(1.0, 0.75, 0.35)
+	light.light_energy = 18.0
+	light.omni_range = 12.0
+	light.shadow_enabled = false
+	flash_root.add_child(light)
+	world_root.add_child(flash_root)
+	flash_root.global_position = position_world  # AFTER add_child — required
+	# Tween REQUIRES the node to be in the tree — creating it on an orphan
+	# returns null and the light would stay at energy=18 forever.
+	var tween: Tween = flash_root.create_tween()
+	tween.tween_property(light, "light_energy", 0.0, 0.25).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	tween.tween_callback(flash_root.queue_free)
+
+	# --- Spark burst ---
+	var sparks: GPUParticles3D = _build_spark_burst()
+	world_root.add_child(sparks)
+	sparks.global_position = position_world
+	sparks.emitting = true  # programmatic GPUParticles3D defaults to false in code
+
+
+static func _build_spark_burst() -> GPUParticles3D:
+	var p: GPUParticles3D = GPUParticles3D.new()
+	p.name = "ExplosionSparks"
+	p.amount = 50
+	p.lifetime = 0.8
+	p.one_shot = true
+	p.explosiveness = 1.0
+	p.randomness = 0.4
+
+	var pm: ParticleProcessMaterial = ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = 0.3
+	pm.direction = Vector3(0.0, 1.0, 0.0)
+	pm.spread = 180.0  # full sphere — omnidirectional burst
+	pm.initial_velocity_min = 4.0
+	pm.initial_velocity_max = 10.0
+	pm.gravity = Vector3(0.0, -5.0, 0.0)
+	pm.scale_min = 0.12
+	pm.scale_max = 0.28
+	var grad: Gradient = Gradient.new()
+	grad.set_color(0, Color(1.0, 0.95, 0.7, 1.0))
+	grad.set_offset(0, 0.0)
+	grad.add_point(0.4, Color(1.0, 0.5, 0.1, 0.9))
+	grad.add_point(1.0, Color(0.5, 0.1, 0.0, 0.0))
+	var grad_tex: GradientTexture1D = GradientTexture1D.new()
+	grad_tex.gradient = grad
+	pm.color_ramp = grad_tex
+	p.process_material = pm
+
+	var quad: QuadMesh = QuadMesh.new()
+	quad.size = Vector2(0.25, 0.25)
+	# emission_strength = 12 clears ACES + glow_hdr_threshold=0.9 in Main.tscn.
+	# Anything below ~10 gets compressed by ACES tonemap and won't bloom.
+	quad.material = _make_soft_material(0.4, 12.0)
+	p.draw_pass_1 = quad
+
+	p.finished.connect(p.queue_free)
+	return p
 
 
 # ---------------------------------------------------------------------------

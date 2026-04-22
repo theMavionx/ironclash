@@ -432,6 +432,7 @@ func _respawn() -> void:
 
 
 func _apply_destroyed_visual() -> void:
+	DestructionVFX.spawn_explosion(get_tree().current_scene, global_position + Vector3(0, 0.4, 0))
 	DestructionVFX.apply_charred(self)
 	DestructionVFX.spawn_smoke_fire(self, 0.4)
 

@@ -141,6 +141,7 @@ func _on_destroyed(_by_source: int) -> void:
 	# VehicleSwitcher) when the player shot it from the tank — without this,
 	# _physics_process would never run and the wreck would freeze mid-air.
 	set_physics_process(true)
+	DestructionVFX.spawn_explosion(get_tree().current_scene, global_position + Vector3(0, 1.5, 0))
 	DestructionVFX.apply_charred(self)
 	DestructionVFX.spawn_smoke_fire(self, 1.5)
 
