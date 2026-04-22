@@ -10,4 +10,5 @@ enum Source {
 	HELI_MISSILE,
 	DRONE_KAMIKAZE,
 	PLAYER_RIFLE,
+	PLAYER_RPG,  ## Player handheld rocket launcher — one-shot anti-vehicle.
 }

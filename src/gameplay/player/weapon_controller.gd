@@ -37,6 +37,18 @@ signal fired(weapon: int)
 
 @export_group("RPG")
 @export var rpg_mag_size: int = 1
+## Damage dealt to a HealthComponent on direct hit. One-shot anti-vehicle.
+@export var rpg_damage: int = 200
+## Hitscan/travel max range (metres). Shell auto-expires beyond this.
+@export var rpg_max_range: float = 500.0
+## Packed scene for the RPG rocket projectile. Preloaded by default so the
+## rocket spawn works out-of-the-box without an Inspector step. Override in
+## the Inspector to swap in a different rocket scene for testing.
+@export var rpg_scene: PackedScene = preload("res://scenes/projectile/rpg_rocket.tscn")
+## Node3D at the visual tip of the rocket on the RPG mesh — where the
+## projectile spawns. Defaults to the rocketbullet bone in the player skeleton.
+@export_node_path("Node3D") var rpg_muzzle_path: NodePath = \
+		^"../Body/Visual/Player/Skeleton3D/rocketbullet"
 
 @export_group("Paths")
 @export_node_path("Node") var anim_controller_path: NodePath = ^"../PlayerAnimController"
@@ -60,6 +72,7 @@ signal fired(weapon: int)
 var _anim_ctrl: PlayerAnimController
 var _camera: Camera3D
 var _muzzle: Node3D
+var _rpg_muzzle: Node3D
 var _shooter: CollisionObject3D
 ## Cached scene root — read once in _ready() so _spawn_ar_fire_vfx never calls
 ## get_tree().current_scene (which is a tree walk) on the hot fire path.
@@ -87,10 +100,13 @@ func _ready() -> void:
 	_camera = get_node_or_null(camera_path) as Camera3D
 	_muzzle = get_node_or_null(muzzle_path) as Node3D
 	_shooter = get_node_or_null(shooter_path) as CollisionObject3D
+	_rpg_muzzle = get_node_or_null(rpg_muzzle_path) as Node3D
 	if _camera == null:
 		push_warning("WeaponController: camera_path unset — AR tracer will not fire")
 	if _muzzle == null:
 		push_warning("WeaponController: muzzle_path unset — flash/tracer fall back to camera position")
+	if _rpg_muzzle == null:
+		push_warning("WeaponController: rpg_muzzle_path not found at '%s' — RPG will spawn at camera origin" % rpg_muzzle_path)
 
 	# Cache scene root once — avoids a tree walk on every shot in _spawn_ar_fire_vfx.
 	_world_root = get_tree().current_scene
@@ -143,9 +159,16 @@ func _process(delta: float) -> void:
 			and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 	var rising_edge: bool = lmb_now and not _ar_lmb_was_pressed
 	if rising_edge:
-		_ar_fire_held_time = 0.0
-		if not _is_busy and _ar_ammo > 0 and _anim_ctrl != null:
-			_anim_ctrl.play_fire()
+		# Only START the raise timer if it isn't already running. Resetting it
+		# on every click broke rapid single-clicks: clicking faster than
+		# ar_raise_delay_sec (0.3 s) kept re-zeroing the timer, so no shot
+		# ever fired. With this guard, consecutive clicks respect the first
+		# click's raise animation and the first shot fires cleanly; subsequent
+		# shots gate on _time_since_last_fire (ar_fire_interval_sec) as usual.
+		if _ar_fire_held_time < 0.0:
+			_ar_fire_held_time = 0.0
+			if not _is_busy and _ar_ammo > 0 and _anim_ctrl != null:
+				_anim_ctrl.play_fire()
 	# Tick the timer if a burst is in progress (started by rising edge),
 	# regardless of whether LMB is still held.
 	if _ar_fire_held_time >= 0.0:
@@ -223,6 +246,7 @@ func _try_fire() -> void:
 		# _on_action_finished. AR does not lock — auto-fire must keep flowing.
 		_is_busy = true
 		_anim_ctrl.play_fire()
+		_spawn_rpg_projectile()
 		fired.emit(_current_weapon)
 		_emit_current_ammo()
 
@@ -261,6 +285,44 @@ func _on_action_finished(action: int) -> void:
 
 func _emit_current_ammo() -> void:
 	ammo_changed.emit(_current_weapon, get_current_ammo(), get_current_mag_size())
+
+
+func _spawn_rpg_projectile() -> void:
+	if rpg_scene == null:
+		push_warning("WeaponController: rpg_scene is not set — no rocket will spawn")
+		return
+	if _camera == null:
+		push_warning("WeaponController: camera not resolved — cannot aim RPG projectile")
+		return
+
+	var rocket: TankShell = rpg_scene.instantiate() as TankShell
+	if rocket == null:
+		push_error("WeaponController: rpg_scene root is not a TankShell — check rpg_rocket.tscn")
+		return
+
+	# Configure damage source and self-hit exclusion before adding to tree.
+	rocket.setup(DamageTypes.Source.PLAYER_RPG, rpg_damage, _shooter)
+
+	# Cap lifetime so the rocket auto-expires at max range without a hit.
+	rocket.lifetime = rpg_max_range / rocket.speed
+
+	# Spawn at the physical muzzle when available, fall back to camera origin.
+	# Using plain if/else rather than a ternary — Godot 4.3's type analyzer
+	# emits a spurious "values not mutually compatible" warning on ternaries
+	# whose branches access properties through a nullable receiver, even when
+	# both sides clearly yield Vector3.
+	var spawn_origin: Vector3
+	if _rpg_muzzle != null:
+		spawn_origin = _rpg_muzzle.global_position
+	else:
+		spawn_origin = _camera.global_position
+
+	# Aim along camera forward for crosshair accuracy (standard FPS pattern).
+	var aim_dir: Vector3 = -_camera.global_transform.basis.z
+
+	_world_root.add_child(rocket)
+	rocket.global_position = spawn_origin
+	rocket.look_at(spawn_origin + aim_dir, Vector3.UP)
 
 
 func _spawn_ar_fire_vfx() -> void:

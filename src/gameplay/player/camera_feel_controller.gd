@@ -66,6 +66,40 @@ extends Node
 ## Snappier lerp rate for ADS in/out — fast zoom response without instant snap.
 @export var fov_ads_smoothing: float = 14.0
 
+@export_group("Explosion shake")
+## Master toggle for nearby-explosion screen shake. Tank shells, RPG rockets,
+## and heli missiles call add_explosion_shake() on impact via the
+## "camera_shake_receivers" group, and this node applies a distance-falloff
+## trauma-based jitter on the Camera3D.
+@export var shake_enabled: bool = true
+## Maximum world-space distance from the camera at which an explosion can
+## still produce a visible shake. Beyond this the intensity falloff clamps
+## to zero — a tank shell hit across the map won't shake the screen.
+@export var shake_max_distance: float = 45.0
+## Distance within which the full shake intensity is applied (no falloff).
+## Between shake_full_distance and shake_max_distance, intensity falls from
+## 1.0 to 0.0 with a power curve controlled by shake_falloff_power.
+@export var shake_full_distance: float = 6.0
+## Exponent of the linear-distance falloff curve. 1.0 = linear,
+## 2.0 = quadratic (gentler at mid-range, sharper near the edge).
+@export var shake_falloff_power: float = 2.0
+## Maximum trauma added by a single explosion at point-blank (full intensity).
+## Trauma accumulates (clamped to 1.0) so multiple nearby hits stack.
+## The visible shake amplitude is trauma^2 per Jan Willem Nijman's model —
+## snappy near 1.0, subtle below 0.4.
+@export var shake_max_trauma_tank: float = 1.0
+@export var shake_max_trauma_rpg: float = 0.9
+@export var shake_max_trauma_heli: float = 0.7
+## Peak pitch / yaw jitter (degrees) at trauma = 1.0. Below 1.0 scales by
+## trauma^2. Keep small — screen shake that's too large disorients the player.
+@export var shake_max_pitch_deg: float = 3.0
+@export var shake_max_yaw_deg: float = 2.5
+## Peak positional jitter (metres) at trauma = 1.0. Applied as local Camera3D
+## translation offset on top of bob/landing/recoil. Keep tiny.
+@export var shake_max_offset_m: float = 0.04
+## Trauma decay rate. Higher = shake settles faster. 2.0 ≈ 1-second tail.
+@export var shake_decay_rate: float = 2.2
+
 @export_group("Fire recoil kick")
 ## OFF by default per user request 2026-04-22 — AR rapid-fire accumulation was
 ## too shaky. Re-enable here or tune the per-weapon pitch values below if you
@@ -108,6 +142,14 @@ var _fov_current: float = 80.0
 var _recoil_pitch_deg: float = 0.0
 var _recoil_yaw_deg: float = 0.0
 
+# Explosion shake state (trauma-based; shake_amount = trauma²).
+var _shake_trauma: float = 0.0
+# Per-frame sampled shake offsets, re-rolled each tick from trauma^2 so the
+# shake LOOKS random rather than animating a smooth sine.
+var _shake_pitch_deg: float = 0.0
+var _shake_yaw_deg: float = 0.0
+var _shake_offset: Vector3 = Vector3.ZERO
+
 # RNG for yaw jitter.
 var _rng := RandomNumberGenerator.new()
 
@@ -133,6 +175,11 @@ func _ready() -> void:
 	else:
 		push_warning("CameraFeelController: WeaponController not found — recoil disabled")
 
+	# Join the group so projectiles can broadcast explosion shake without
+	# holding a direct reference to this node (loose coupling — projectiles
+	# don't know about the player camera).
+	add_to_group("camera_shake_receivers")
+
 
 func _process(delta: float) -> void:
 	if _camera == null or _player == null:
@@ -150,15 +197,20 @@ func _process(delta: float) -> void:
 	_update_tilt(delta, horiz_vel)
 	_update_fov(delta, sprinting)
 	_update_recoil_decay(delta)
+	_update_explosion_shake(delta)
 
-	# Compose final camera transform: base + bob + landing dip + tilt + recoil.
+	# Compose final camera transform:
+	#   base + bob + landing dip + tilt + recoil + explosion shake.
+	# All effects additive on top of the cached base pose so none of them
+	# permanently displace the camera.
 	var pos := _cam_base_position
 	var bob_y: float = sin(_bob_phase) * bob_amplitude * _bob_strength
 	pos.y += bob_y - _landing_offset
+	pos += _shake_offset
 
 	var rot := _cam_base_rotation
-	rot.x += deg_to_rad(_recoil_pitch_deg)
-	rot.y += deg_to_rad(_recoil_yaw_deg)
+	rot.x += deg_to_rad(_recoil_pitch_deg + _shake_pitch_deg)
+	rot.y += deg_to_rad(_recoil_yaw_deg + _shake_yaw_deg)
 	rot.z += deg_to_rad(_tilt_current_deg)
 
 	_camera.position = pos
@@ -292,3 +344,54 @@ func _update_recoil_decay(delta: float) -> void:
 	var t: float = clampf(recoil_decay_rate * delta, 0.0, 1.0)
 	_recoil_pitch_deg = lerp(_recoil_pitch_deg, 0.0, t)
 	_recoil_yaw_deg = lerp(_recoil_yaw_deg, 0.0, t)
+
+
+# ---------------------------------------------------------------------------
+# Explosion shake (trauma-based)
+# ---------------------------------------------------------------------------
+
+## Called by projectiles (TankShell, RPG rocket, heli missile) on impact via
+## the "camera_shake_receivers" group. Adds trauma based on distance from the
+## camera to the explosion point. [param base_trauma] is the peak trauma for
+## a point-blank hit of this projectile type; distance falloff scales it down
+## to zero at shake_max_distance.
+##
+## Multiple hits accumulate trauma (clamped to 1.0) so stacked impacts keep
+## the camera shaking hard without silently maxing out.
+func add_explosion_shake(world_pos: Vector3, base_trauma: float) -> void:
+	if not shake_enabled or _camera == null:
+		return
+	var cam_pos: Vector3 = _camera.global_position
+	var dist: float = cam_pos.distance_to(world_pos)
+	if dist >= shake_max_distance:
+		return
+	# Falloff: 1.0 inside shake_full_distance, then power curve to 0.0 at
+	# shake_max_distance.
+	var falloff: float = 1.0
+	if dist > shake_full_distance:
+		var span: float = max(shake_max_distance - shake_full_distance, 0.001)
+		var t: float = clampf((dist - shake_full_distance) / span, 0.0, 1.0)
+		falloff = pow(1.0 - t, shake_falloff_power)
+	_shake_trauma = clampf(_shake_trauma + base_trauma * falloff, 0.0, 1.0)
+
+
+func _update_explosion_shake(delta: float) -> void:
+	if _shake_trauma <= 0.0001:
+		_shake_trauma = 0.0
+		_shake_pitch_deg = 0.0
+		_shake_yaw_deg = 0.0
+		_shake_offset = Vector3.ZERO
+		return
+	# Snappy feel: shake amplitude is trauma^2 rather than trauma, so below
+	# ~0.4 trauma the shake is barely felt but near 1.0 it snaps hard.
+	var amp: float = _shake_trauma * _shake_trauma
+	_shake_pitch_deg = _rng.randf_range(-1.0, 1.0) * shake_max_pitch_deg * amp
+	_shake_yaw_deg = _rng.randf_range(-1.0, 1.0) * shake_max_yaw_deg * amp
+	_shake_offset = Vector3(
+		_rng.randf_range(-1.0, 1.0),
+		_rng.randf_range(-1.0, 1.0),
+		_rng.randf_range(-1.0, 1.0)
+	) * shake_max_offset_m * amp
+	# Exponential-ish trauma decay (constant rate — subtracts fixed amount per
+	# second rather than lerping, so small traumas still fully clear).
+	_shake_trauma = maxf(_shake_trauma - shake_decay_rate * delta, 0.0)
