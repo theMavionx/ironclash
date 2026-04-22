@@ -1,4 +1,3 @@
-@tool
 extends SkeletonModifier3D
 
 ## Procedurally pitches the upper body (spine chain + head) toward the camera
@@ -59,13 +58,19 @@ func _process_modification() -> void:
 	var skel: Skeleton3D = get_skeleton()
 	if skel == null:
 		return
-	if _pitch_source == null or not _pitch_source.has_method("get_aim_pitch"):
-		# Lazy re-resolve — in @tool mode the source node may not be ready on
-		# first tick, and after script reload the cached ref is stale.
+	# Re-resolve if the cached source was freed or script swapped.
+	if _pitch_source == null or not is_instance_valid(_pitch_source):
 		_resolve()
-		if _pitch_source == null or not _pitch_source.has_method("get_aim_pitch"):
+		if _pitch_source == null or not is_instance_valid(_pitch_source):
 			return
-	var pitch: float = _pitch_source.call("get_aim_pitch") * pitch_sign
+	# Pull pitch via direct typed access. In Godot 4.3 `has_method` can report
+	# true on a stale script binding while `.call()` still fails — using the
+	# typed `as PlayerController` cast forces compile-time dispatch and skips
+	# the Variant method-lookup path entirely.
+	var ctrl: PlayerController = _pitch_source as PlayerController
+	if ctrl == null:
+		return
+	var pitch: float = ctrl.get_aim_pitch() * pitch_sign
 	for idx: int in _spine_indices:
 		_apply_x_rotation(skel, idx, pitch * spine_weight)
 	_apply_x_rotation(skel, _head_idx, pitch * head_weight)

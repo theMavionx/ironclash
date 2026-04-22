@@ -1,16 +1,14 @@
-[gd_scene load_steps=14 format=3 uid="uid://xhenad1shki"]
+[gd_scene load_steps=13 format=3 uid="uid://xhenad1shki"]
 
 [ext_resource type="Script" path="res://src/gameplay/player/player_controller.gd" id="1_player_ctrl"]
 [ext_resource type="Script" path="res://src/gameplay/health/health_component.gd" id="2_health"]
 [ext_resource type="PackedScene" uid="uid://dy56h01ex3fl" path="res://Model/Player/SolderBoyFinal.glb" id="3_model"]
 [ext_resource type="Script" path="res://src/gameplay/player/weapon_anim_visibility.gd" id="4_twvnl"]
 [ext_resource type="Script" path="res://src/gameplay/player/player_animation_controller.gd" id="5_xrjxn"]
-[ext_resource type="PackedScene" uid="uid://bsbhje2hlkrc7" path="res://scenes/ui/stamina_bar.tscn" id="6_c3vuk"]
-[ext_resource type="Script" path="res://src/gameplay/ui/stamina_bar.gd" id="7_ncqhu"]
+[ext_resource type="PackedScene" path="res://scenes/ui/stamina_bar.tscn" id="6_c3vuk"]
 [ext_resource type="Script" path="res://src/gameplay/player/weapon_controller.gd" id="8_weap"]
-[ext_resource type="PackedScene" uid="uid://cammodisplay01" path="res://scenes/ui/ammo_display.tscn" id="9_ammo"]
-[ext_resource type="Script" path="res://src/gameplay/ui/ammo_display.gd" id="10_ammo_s"]
-[ext_resource type="PackedScene" uid="uid://cxhair00000001" path="res://scenes/ui/crosshair.tscn" id="11_xhair"]
+[ext_resource type="PackedScene" path="res://scenes/ui/ammo_display.tscn" id="9_ammo"]
+[ext_resource type="PackedScene" uid="uid://ckvh7pu71dvlg" path="res://scenes/ui/crosshair.tscn" id="11_xhair"]
 [ext_resource type="Script" path="res://src/gameplay/player/camera_feel_controller.gd" id="12_feel"]
 [ext_resource type="Script" path="res://src/gameplay/player/aim_look_modifier.gd" id="13_aim"]
 
@@ -31,6 +29,70 @@ shape = SubResource("CapsuleShape3D_player")
 [node name="Visual" parent="Body" instance=ExtResource("3_model")]
 transform = Transform3D(-1, 0, -8.74228e-08, 0, 1, 0, 8.74228e-08, 0, -1, 0, 0, 0)
 
+[node name="rocketbullet" parent="Body/Visual/Player/Skeleton3D" index="0"]
+transform = Transform3D(0.533063, 0.846073, 0.00290788, 0.783672, -0.492448, -0.378624, -0.318911, 0.204109, -0.925548, 0.925658, 0.0353207, -1.42504)
+visible = false
+
+[node name="akmagazine" parent="Body/Visual/Player/Skeleton3D" index="1"]
+transform = Transform3D(0.850502, 0.0121296, 0.525836, -0.189678, 0.939541, 0.285118, -0.490584, -0.342233, 0.801379, 0.760343, 0.0931169, -1.35937)
+visible = false
+
+[node name="rocketlaucher" parent="Body/Visual/Player/Skeleton3D" index="2"]
+transform = Transform3D(-0.802667, -0.502179, 0.321785, -0.574311, 0.505194, -0.644167, 0.160923, -0.701853, -0.693911, -0.66707, 0.174432, -1.52879)
+visible = false
+
+[node name="rocketbullet_low" parent="Body/Visual/Player/Skeleton3D" index="3"]
+transform = Transform3D(-0.802667, -0.502179, 0.321785, -0.574311, 0.505194, -0.644167, 0.160923, -0.701853, -0.693911, -1.07169, -0.128387, -1.43531)
+visible = false
+
+[node name="rockethaut_low" parent="Body/Visual/Player/Skeleton3D" index="4"]
+transform = Transform3D(-0.802667, -0.502179, 0.321785, -0.574311, 0.505194, -0.644167, 0.160923, -0.701853, -0.693911, -0.763552, 0.17404, -1.57317)
+visible = false
+
+[node name="rockethaut_low_001" parent="Body/Visual/Player/Skeleton3D" index="5"]
+transform = Transform3D(-0.802667, -0.502179, 0.321785, -0.574311, 0.505194, -0.644167, 0.160923, -0.701853, -0.693911, -0.906007, 0.0533539, -1.52719)
+visible = false
+
+[node name="rockettrigger_low" parent="Body/Visual/Player/Skeleton3D" index="6"]
+transform = Transform3D(-0.802667, -0.502179, 0.321785, -0.574311, 0.505194, -0.644167, 0.160923, -0.701853, -0.693911, -0.688971, 0.0901034, -1.46066)
+visible = false
+
+[node name="ak47" parent="Body/Visual/Player/Skeleton3D" index="7"]
+transform = Transform3D(-0.972094, 0.199689, 0.123141, 0.208698, 0.975816, 0.0650777, -0.107167, 0.0889606, -0.990259, -0.876046, 0.0413083, -1.41136)
+
+[node name="Muzzle" type="Node3D" parent="Body/Visual/Player/Skeleton3D/ak47" index="1"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.5, 0.04, 0)
+
+[node name="akderriere_low" parent="Body/Visual/Player/Skeleton3D" index="8"]
+transform = Transform3D(-0.972094, 0.199689, 0.123141, 0.208698, 0.975816, 0.0650777, -0.107167, 0.0889606, -0.990259, -0.876046, 0.0413083, -1.41136)
+
+[node name="akmagazine_low" parent="Body/Visual/Player/Skeleton3D" index="9"]
+transform = Transform3D(-0.972094, 0.199689, 0.123141, 0.208698, 0.975816, 0.0650777, -0.107167, 0.0889606, -0.990259, -0.876046, 0.0413083, -1.41136)
+
+[node name="aktrigger_low" parent="Body/Visual/Player/Skeleton3D" index="10"]
+transform = Transform3D(-0.972094, 0.199689, 0.123141, 0.208698, 0.975816, 0.0650777, -0.107167, 0.0889606, -0.990259, -0.894975, 0.0223278, -1.41496)
+
+[node name="AimLookModifier" type="SkeletonModifier3D" parent="Body/Visual/Player/Skeleton3D" index="12"]
+_import_path = NodePath("")
+unique_name_in_owner = false
+process_mode = 0
+process_priority = 0
+process_physics_priority = 0
+process_thread_group = 0
+physics_interpolation_mode = 0
+auto_translate_mode = 0
+editor_description = ""
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+rotation_edit_mode = 0
+rotation_order = 2
+top_level = false
+visible = true
+visibility_parent = NodePath("")
+active = true
+influence = 1.0
+script = ExtResource("13_aim")
+pitch_source_path = NodePath("../../../../..")
+
 [node name="HealthComponent" type="Node" parent="Body"]
 script = ExtResource("2_health")
 
@@ -44,7 +106,6 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.75, 0.35, 0)
 spring_length = 2.5
 margin = 0.3
-collision_mask = 1
 
 [node name="CameraRig" type="Node3D" parent="CameraPivot/SpringArm3D"]
 
@@ -62,19 +123,11 @@ script = ExtResource("8_weap")
 [node name="CameraFeelController" type="Node" parent="."]
 script = ExtResource("12_feel")
 
-[node name="StaminaBar" type="CanvasLayer" parent="." instance=ExtResource("6_c3vuk")]
-layer = 10
-script = ExtResource("7_ncqhu")
+[node name="StaminaBar" parent="." instance=ExtResource("6_c3vuk")]
 
-[node name="AmmoDisplay" type="CanvasLayer" parent="." instance=ExtResource("9_ammo")]
-layer = 10
-script = ExtResource("10_ammo_s")
+[node name="AmmoDisplay" parent="." instance=ExtResource("9_ammo")]
 
-[node name="Crosshair" type="CanvasLayer" parent="." instance=ExtResource("11_xhair")]
+[node name="Crosshair" parent="." instance=ExtResource("11_xhair")]
 layer = 10
-
-[node name="AimLookModifier" type="SkeletonModifier3D" parent="Body/Visual/Player/Skeleton3D"]
-script = ExtResource("13_aim")
-pitch_source_path = NodePath("../../../../..")
 
 [editable path="Body/Visual"]

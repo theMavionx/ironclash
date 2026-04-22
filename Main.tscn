@@ -1,4 +1,4 @@
-[gd_scene load_steps=16 format=3 uid="uid://c8j7f5yqg2bbp"]
+[gd_scene load_steps=17 format=3 uid="uid://c8j7f5yqg2bbp"]
 
 [ext_resource type="PackedScene" uid="uid://ctank00000001" path="res://scenes/tank/tank.tscn" id="1_tank"]
 [ext_resource type="Script" path="res://src/gameplay/camera/chase_camera.gd" id="2_pkq0h"]
@@ -9,6 +9,7 @@
 [ext_resource type="PackedScene" uid="uid://cdrone0000001" path="res://scenes/drone/drone.tscn" id="7_drone"]
 [ext_resource type="PackedScene" path="res://scenes/ui/fpv_post_process.tscn" id="8_fpvpp"]
 [ext_resource type="PackedScene" path="res://scenes/ui/fpv_hud.tscn" id="9_fpvhud"]
+[ext_resource type="PackedScene" uid="uid://xhenad1shki" path="res://scenes/player/player.tscn" id="10_player"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_7bqai"]
 
@@ -77,8 +78,12 @@ tail_rotor_axis = Vector3(0, 1, 0)
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -15.0132, 0.0483881, 15.0995)
 propeller_rotation_axis = Vector3(0, 0, 1)
 
+[node name="Player" parent="." instance=ExtResource("10_player")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
+
 [node name="VehicleSwitcher" type="Node" parent="."]
 script = ExtResource("4_switcher")
+player_path = NodePath("../Player")
 tank_path = NodePath("../Tank")
 helicopter_path = NodePath("../Helicopter")
 drone_path = NodePath("../Drone")
