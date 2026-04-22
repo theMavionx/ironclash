@@ -473,3 +473,216 @@ static func _walk_meshes(root: Node, fn: Callable) -> void:
 		fn.call(root as MeshInstance3D)
 	for child: Node in root.get_children():
 		_walk_meshes(child, fn)
+
+
+# ---------------------------------------------------------------------------
+# Helicopter multi-mesh debris — static-mesh and subtree variants.
+# ---------------------------------------------------------------------------
+
+## Spawn a single free-flying RigidBody3D carrying one freshly-created
+## MeshInstance3D that shares [param source_mesh]'s Mesh resource.
+## No skeleton/skin bindings — always renders cleanly as a static prop.
+##
+## [param world_root] is the scene node the debris is parented under.
+## [param source_mesh] is the live MeshInstance3D whose mesh to reuse
+## (e.g. a rotor blade still attached to the helicopter).
+## [param spawn_world] is the world-space Transform3D for the new body.
+## [param fallback_box_size] is used if [param source_mesh].mesh is null.
+## [param mass], [param upward_vel], [param h_drift_max], [param tumble_max]
+## control the launch impulse. [param lifetime] schedules queue_free
+## (pass 0 to keep debris forever).
+static func spawn_static_mesh_debris(
+	world_root: Node,
+	source_mesh: MeshInstance3D,
+	spawn_world: Transform3D,
+	fallback_box_size: Vector3 = Vector3(0.5, 0.1, 2.0),
+	mass: float = 40.0,
+	upward_vel: float = 6.0,
+	h_drift_max: float = 4.0,
+	tumble_max: float = 8.0,
+	lifetime: float = 20.0
+) -> RigidBody3D:
+	# Body carries position + rotation only (no scale). The fresh mesh copy
+	# is placed via global_transform so it matches the source's world pose
+	# EXACTLY (including any scale inherited from GLB-import ancestors).
+	# See spawn_subtree_debris for the full rationale — this mirrors that
+	# approach for single-mesh callers.
+	var body: RigidBody3D = _build_debris_body(mass)
+	world_root.add_child(body)
+	body.global_transform = Transform3D(
+		spawn_world.basis.orthonormalized(),
+		spawn_world.origin
+	)
+	var mesh_copy: MeshInstance3D = _make_fresh_mesh_copy(source_mesh, fallback_box_size)
+	body.add_child(mesh_copy)
+	# Set the mesh copy's global_transform to the source's world transform —
+	# Godot computes the correct local relative to the unscaled body.
+	if source_mesh != null:
+		mesh_copy.global_transform = source_mesh.global_transform
+	_launch_debris(body, upward_vel, h_drift_max, tumble_max)
+	if lifetime > 0.0:
+		world_root.get_tree().create_timer(lifetime).timeout.connect(func() -> void:
+			if is_instance_valid(body):
+				body.queue_free()
+		)
+	return body
+
+
+## Spawn a free-flying RigidBody3D carrying a full duplicated subtree rooted
+## at [param subtree_root] (e.g. the tail boom Node3D including its meshes
+## and child nodes). Useful when a part has multiple meshes or nested nodes
+## that must move as a unit.
+##
+## Duplicate flags default to 0 (shallow copy of resources) — same strategy
+## used by spawn_turret_debris to avoid the USE_INSTANTIATION index crash.
+## [param collision_exception] is an optional PhysicsBody3D to exclude from
+## collision on spawn (typically the helicopter CharacterBody3D itself).
+static func spawn_subtree_debris(
+	world_root: Node,
+	subtree_root: Node3D,
+	spawn_world: Transform3D,
+	collision_exception: PhysicsBody3D = null,
+	mass: float = 80.0,
+	upward_vel: float = 5.0,
+	h_drift_max: float = 3.0,
+	tumble_max: float = 7.0,
+	lifetime: float = 20.0
+) -> RigidBody3D:
+	# DESIGN NOTE: we deliberately do NOT use duplicate() on the source subtree.
+	# duplicate() preserves the source's local transforms, but those locals
+	# were designed for the source's original parent chain. When the duplicate
+	# is re-parented under a RigidBody3D that was positioned at the source's
+	# world transform, any scale/translation baked into the source hierarchy
+	# gets applied TWICE — resulting in oversized, mis-positioned debris
+	# (confirmed empirically on the Apache GLB helicopter rotor).
+	#
+	# Instead, we walk the source and create FRESH MeshInstance3D nodes,
+	# positioning each one via global_transform directly. Godot auto-computes
+	# the correct local transform relative to the body. This sidesteps every
+	# GLB import quirk (baked scales, skinned-mesh bind poses, intermediate
+	# Node3D containers with scale) because we never read a local transform
+	# from the source — only absolute world transforms.
+	var body: RigidBody3D = _build_debris_body(mass)
+	# Body carries position + rotation ONLY, no scale. Keeping the RigidBody
+	# at identity scale avoids non-uniform-scale physics issues. Fresh mesh
+	# copies carry their own world-space poses (which include any inherited
+	# scale) as their local transforms under the unscaled body.
+	world_root.add_child(body)
+	body.global_transform = Transform3D(
+		spawn_world.basis.orthonormalized(),
+		spawn_world.origin
+	)
+	var mesh_count: int = _copy_subtree_meshes_fresh(subtree_root, body)
+	if mesh_count == 0:
+		push_warning("DestructionVFX.spawn_subtree_debris: no visible MeshInstance3D "
+				+ "found under '%s' — debris body will be invisible" % subtree_root.name)
+	if collision_exception != null:
+		body.add_collision_exception_with(collision_exception)
+	_launch_debris(body, upward_vel, h_drift_max, tumble_max)
+	if lifetime > 0.0:
+		world_root.get_tree().create_timer(lifetime).timeout.connect(func() -> void:
+			if is_instance_valid(body):
+				body.queue_free()
+		)
+	return body
+
+
+## Recursively set visible = false on every MeshInstance3D descendant of
+## [param root]. Belt-and-braces alternative to `root.visible = false` —
+## Godot 4.3's is_visible_in_tree() SHOULD cascade through Node3D ancestors,
+## but some GLB-imported hierarchies have edge cases where a MeshInstance3D
+## is parented outside the expected subtree, or where an intermediate node
+## lifts visibility. This helper hides each mesh directly so callers can
+## guarantee the original visual vanishes once debris has spawned.
+static func hide_visible_meshes(root: Node) -> void:
+	if root is MeshInstance3D:
+		(root as MeshInstance3D).visible = false
+	for child: Node in root.get_children():
+		hide_visible_meshes(child)
+
+
+## Walk [param source_root] recursively. For every MeshInstance3D descendant
+## that is visible_in_tree and has a non-null mesh, create a fresh
+## MeshInstance3D under [param target_parent] and position it via
+## global_transform to match the source's world pose. Returns the number of
+## meshes copied so the caller can warn on empty subtrees.
+##
+## Fresh MeshInstance3Ds share the source's Mesh + material_override
+## resources — zero GPU copies, just a new scene node. Because we never
+## read or copy a local transform, we bypass all GLB-import inheritance
+## quirks.
+static func _copy_subtree_meshes_fresh(source_root: Node, target_parent: Node3D) -> int:
+	var count: int = 0
+	if source_root is MeshInstance3D:
+		var src_mi: MeshInstance3D = source_root as MeshInstance3D
+		if src_mi.mesh != null and src_mi.is_visible_in_tree():
+			var copy: MeshInstance3D = MeshInstance3D.new()
+			copy.mesh = src_mi.mesh
+			copy.material_override = src_mi.material_override
+			# Parent BEFORE setting global_transform — Godot requires the node
+			# to be in the tree to compute local from a global assignment.
+			target_parent.add_child(copy)
+			copy.global_transform = src_mi.global_transform
+			count += 1
+	for child: Node in source_root.get_children():
+		count += _copy_subtree_meshes_fresh(child, target_parent)
+	return count
+
+
+## Build a bare RigidBody3D configured for short-lived visual debris.
+## Collision layer 4 (bit 2) keeps it isolated from projectile masks (0b11).
+## Collision mask starts at 0 — callers or _launch_debris re-enable ground
+## collision after 0.3 s so the body flies clear of its spawn hull first.
+static func _build_debris_body(mass: float) -> RigidBody3D:
+	var body: RigidBody3D = RigidBody3D.new()
+	body.mass = mass
+	body.gravity_scale = 1.0
+	body.can_sleep = true
+	body.collision_layer = 0b100
+	body.collision_mask = 0
+	body.linear_damp = 0.05
+	body.angular_damp = 0.4
+
+	var phys_mat: PhysicsMaterial = PhysicsMaterial.new()
+	phys_mat.bounce = 0.15
+	phys_mat.friction = 0.7
+	phys_mat.rough = true
+	body.physics_material_override = phys_mat
+
+	var shape: CollisionShape3D = CollisionShape3D.new()
+	var box: BoxShape3D = BoxShape3D.new()
+	box.size = Vector3(1.0, 0.3, 1.0)
+	shape.shape = box
+	body.add_child(shape)
+
+	return body
+
+
+## Apply a randomised launch velocity and angular velocity to [param body],
+## then re-enable ground collision (mask bit 0) after 0.3 s.
+static func _launch_debris(
+	body: RigidBody3D,
+	upward_vel: float,
+	h_drift_max: float,
+	tumble_max: float
+) -> void:
+	body.sleeping = false
+	body.linear_velocity = Vector3(
+		randf_range(-h_drift_max, h_drift_max),
+		upward_vel,
+		randf_range(-h_drift_max, h_drift_max)
+	)
+	var axis: Vector3 = Vector3(
+		randf_range(-1.0, 1.0),
+		randf_range(-0.2, 0.2),
+		randf_range(-1.0, 1.0)
+	).normalized()
+	body.angular_velocity = axis * tumble_max
+	# Defer ground-collision enable so the body escapes the spawn hull first.
+	# is_instance_valid guard: body may already be freed if the scene is torn
+	# down during the 0.3 s window (e.g. scene reload mid-game).
+	var tree: SceneTree = body.get_tree()
+	tree.create_timer(0.3).timeout.connect(func() -> void:
+		if is_instance_valid(body):
+			body.collision_mask = 0b001
+	)

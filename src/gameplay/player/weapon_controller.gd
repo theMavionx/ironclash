@@ -50,11 +50,20 @@ signal fired(weapon: int)
 @export_node_path("Node3D") var muzzle_path: NodePath = ^"../Body/Visual/Player/Skeleton3D/ak47/Muzzle"
 ## PhysicsBody3D to exclude from the hitscan (usually the player's own body).
 @export_node_path("CollisionObject3D") var shooter_path: NodePath = ^"../Body"
+## TracerPool Node3D — child of the Player root. See tracer_pool.gd for setup.
+## Leave blank to fall back to the legacy per-shot allocating path (+ warning).
+@export_node_path("Node3D") var tracer_pool_path: NodePath = ^"../TracerPool"
+## MuzzleFlashPool — child of the muzzle node. See muzzle_flash_pool.gd for setup.
+## Leave blank to fall back to the legacy per-shot allocating path (+ warning).
+@export_node_path("Node3D") var flash_pool_path: NodePath = ^"../Body/Visual/Player/Skeleton3D/ak47/Muzzle/MuzzleFlashPool"
 
 var _anim_ctrl: PlayerAnimController
 var _camera: Camera3D
 var _muzzle: Node3D
 var _shooter: CollisionObject3D
+## Cached scene root — read once in _ready() so _spawn_ar_fire_vfx never calls
+## get_tree().current_scene (which is a tree walk) on the hot fire path.
+var _world_root: Node = null
 ## Seconds since LMB was first pressed for a fire burst. -1 = no active burst.
 ## Keeps counting even AFTER LMB release so a single click still fires once
 ## when the raise delay completes (no-trigger-no-shot bug fix).
@@ -82,6 +91,20 @@ func _ready() -> void:
 		push_warning("WeaponController: camera_path unset — AR tracer will not fire")
 	if _muzzle == null:
 		push_warning("WeaponController: muzzle_path unset — flash/tracer fall back to camera position")
+
+	# Cache scene root once — avoids a tree walk on every shot in _spawn_ar_fire_vfx.
+	_world_root = get_tree().current_scene
+
+	# Wire VFX pools. prewarm() must have run first (called from player._ready)
+	# so the shared mesh/material statics are populated before setup() runs.
+	var tracer_pool: TracerPool = get_node_or_null(tracer_pool_path) as TracerPool
+	var flash_pool: MuzzleFlashPool = get_node_or_null(flash_pool_path) as MuzzleFlashPool
+	if tracer_pool == null:
+		push_warning("WeaponController: tracer_pool_path not found at '%s' — tracer pool disabled, using legacy allocation" % tracer_pool_path)
+	if flash_pool == null:
+		push_warning("WeaponController: flash_pool_path not found at '%s' — flash pool disabled, using legacy allocation" % flash_pool_path)
+	PlayerFireVFX.set_pools(tracer_pool, flash_pool)
+
 	_ar_ammo = ar_mag_size
 	_rpg_ammo = rpg_mag_size
 	_anim_ctrl.set_weapon(_current_weapon)
@@ -246,8 +269,8 @@ func _spawn_ar_fire_vfx() -> void:
 	var aim_origin: Vector3 = _camera.global_position
 	var aim_dir: Vector3 = -_camera.global_transform.basis.z
 	PlayerFireVFX.spawn_ar_shot(
-		get_tree().current_scene,
-		_muzzle,  # parent the flash here so it moves rigidly with the rifle
+		_world_root,  # cached in _ready() — avoids get_tree().current_scene on hot path
+		_muzzle,      # parent the flash here so it moves rigidly with the rifle
 		aim_origin,
 		aim_dir,
 		_shooter,

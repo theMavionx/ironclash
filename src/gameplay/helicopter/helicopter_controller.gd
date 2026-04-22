@@ -58,6 +58,33 @@ extends CharacterBody3D
 ## until the tail rotor disc spins like a disc (not tumbles).
 @export var tail_rotor_axis: Vector3 = Vector3.FORWARD
 
+@export_group("Crash Debris")
+## Name of the main-rotor Node3D in the GLB hierarchy to use as a subtree
+## for rotor-disc debris. Leave empty to skip rotor disc debris.
+@export var debris_main_rotor_subtree_name: String = "Object_10"
+## Names of individual MeshInstance3D nodes to spawn as separate tumbling
+## pieces on death (one RigidBody3D per entry). Defaults to the 4 missile
+## meshes so unfired missiles scatter when the helicopter explodes — any
+## already-fired (hidden) missile is skipped at runtime.
+@export var debris_blade_mesh_names: PackedStringArray = ["r1", "r2", "r3", "r4"]
+## Name of the tail-boom Node3D subtree to detach as a single debris piece.
+## Leave empty to skip tail-boom debris.
+@export var debris_tail_subtree_name: String = "Circle_003_12"
+## Mass (kg) for the rotor disc debris body.
+@export var debris_rotor_mass: float = 60.0
+## Mass (kg) for each individual blade debris body.
+@export var debris_blade_mass: float = 20.0
+## Mass (kg) for the tail-boom debris body.
+@export var debris_tail_mass: float = 80.0
+## Upward launch velocity (m/s) shared by all crash debris pieces.
+@export var debris_upward_vel: float = 6.0
+## Maximum random horizontal drift (m/s) for crash debris.
+@export var debris_h_drift_max: float = 4.0
+## Maximum random tumble angular velocity (rad/s) for crash debris.
+@export var debris_tumble_max: float = 8.0
+## Seconds before debris bodies are freed. 0 = never.
+@export var debris_lifetime: float = 20.0
+
 var _active: bool = true
 var _current_rotor_speed: float = 0.0
 var _main_rotor: Node3D
@@ -144,6 +171,7 @@ func _on_destroyed(_by_source: int) -> void:
 	DestructionVFX.spawn_explosion(get_tree().current_scene, global_position + Vector3(0, 1.5, 0))
 	DestructionVFX.apply_charred(self)
 	DestructionVFX.spawn_smoke_fire(self, 1.5)
+	_spawn_crash_debris()
 
 
 ## Wreck mode: gravity-only fall + slide, no input, no rotor animation.
@@ -394,3 +422,88 @@ func _find_descendant_by_name(root: Node, target_name: String) -> Node:
 		if found:
 			return found
 	return null
+
+
+## Detach helicopter parts as flying RigidBody3D debris on destruction.
+## Three potential pieces:
+##   1. Rotor disc — entire main-rotor subtree cloned via spawn_subtree_debris.
+##   2. Blade(s) — individual MeshInstance3D nodes cloned via spawn_static_mesh_debris.
+##   3. Tail boom — tail-rotor subtree cloned via spawn_subtree_debris.
+##
+## Each spawned RigidBody3D is parented to current_scene so it persists after
+## this helicopter's node is charred/freed. Collision exception is added against
+## this CharacterBody3D so the debris flies through the hull cleanly on frame 0.
+## Original mesh nodes are hidden so the live helicopter looks like it shed them.
+func _spawn_crash_debris() -> void:
+	var scene_root: Node = get_tree().current_scene
+
+	# --- Rotor disc subtree ---
+	if not debris_main_rotor_subtree_name.is_empty():
+		var rotor_node: Node3D = _find_descendant_by_name(self, debris_main_rotor_subtree_name) as Node3D
+		if rotor_node != null:
+			DestructionVFX.spawn_subtree_debris(
+				scene_root,
+				rotor_node,
+				rotor_node.global_transform,
+				self,
+				debris_rotor_mass,
+				debris_upward_vel,
+				debris_h_drift_max,
+				debris_tumble_max,
+				debris_lifetime
+			)
+			# Belt-and-braces: walk the subtree and hide every MeshInstance3D
+			# directly. `rotor_node.visible = false` SHOULD cascade via
+			# is_visible_in_tree(), but GLB imports occasionally put mesh
+			# nodes outside the expected subtree hierarchy.
+			rotor_node.visible = false
+			DestructionVFX.hide_visible_meshes(rotor_node)
+		else:
+			push_warning("HelicopterController: debris_main_rotor_subtree_name '%s' not found" \
+				% debris_main_rotor_subtree_name)
+
+	# --- Individual blade / missile meshes ---
+	# Skip already-fired missiles (visible = false). Their mesh is still in the
+	# scene tree but hidden, and spawning debris for a missile that the player
+	# already launched would be visually wrong (the missile isn't there anymore).
+	for blade_name: String in debris_blade_mesh_names:
+		var blade: MeshInstance3D = _find_descendant_by_name(self, blade_name) as MeshInstance3D
+		if blade == null:
+			push_warning("HelicopterController: debris blade mesh '%s' not found" % blade_name)
+			continue
+		if not blade.visible:
+			# Already-fired missile (or manually hidden). Expected; no warning.
+			continue
+		DestructionVFX.spawn_static_mesh_debris(
+			scene_root,
+			blade,
+			blade.global_transform,
+			Vector3(0.3, 0.05, 2.5),
+			debris_blade_mass,
+			debris_upward_vel,
+			debris_h_drift_max,
+			debris_tumble_max,
+			debris_lifetime
+		)
+		blade.visible = false
+
+	# --- Tail-boom subtree ---
+	if not debris_tail_subtree_name.is_empty():
+		var tail_node: Node3D = _find_descendant_by_name(self, debris_tail_subtree_name) as Node3D
+		if tail_node != null:
+			DestructionVFX.spawn_subtree_debris(
+				scene_root,
+				tail_node,
+				tail_node.global_transform,
+				self,
+				debris_tail_mass,
+				debris_upward_vel,
+				debris_h_drift_max,
+				debris_tumble_max,
+				debris_lifetime
+			)
+			tail_node.visible = false
+			DestructionVFX.hide_visible_meshes(tail_node)
+		else:
+			push_warning("HelicopterController: debris_tail_subtree_name '%s' not found" \
+				% debris_tail_subtree_name)

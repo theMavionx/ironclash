@@ -9,16 +9,71 @@ extends RefCounted
 ## Called by WeaponController on each AR fire. Tracer life and emission are
 ## tuned for a classic arcade "laser-bullet" look — visible long yellow streak
 ## that fades in ~80ms.
+##
+## POOL WIRING:
+##   Call PlayerFireVFX.set_pools(tracer_pool, flash_pool) once from
+##   WeaponController._ready() AFTER prewarm() so the shared mesh/material
+##   statics are populated before the pool receives them.
+##   If pools are null or unset the system falls back to the old allocating
+##   path with a push_warning — the game never silently breaks.
 
 const _FLASH_TEXTURE_PATH: String = "res://Model/Player/FootageCrate-Four_Point_Muuzzle_Flash_With_Shell_Front/FootageCrate-Four_Point_Muuzzle_Flash_With_Shell_Front-00001.png"
+const _TRACER_SHADER_PATH: String = "res://src/vfx/tracer_bullet.gdshader"
 
 static var _flash_texture: Texture2D = null
-## Shared resources — one CylinderMesh + one StandardMaterial3D reused across
-## every tracer, saves 10+ heap allocations per second at sustained AR fire.
+
+## Shared resources — one CylinderMesh + one material reused across every
+## tracer, saves 10+ heap allocations per second at sustained AR fire.
 ## Assignment to material_override shares by reference (Godot does not copy
 ## resources on set), so the material is effectively const-shared.
+##
+## Two fully independent tracer pipelines coexist so spawn CANNOT produce
+## invisible geometry, regardless of shader availability:
+##
+##   1. Shader path (preferred, CS:GO-style beam): QuadMesh + ShaderMaterial
+##      using tracer_bullet.gdshader. The shader screen-aligns the quad in
+##      VIEW space: it projects the streak direction onto the screen plane
+##      and places the quad perpendicular to that projection, so the beam
+##      is visible from every camera angle (including streaks flying along
+##      the camera forward axis — they correctly shrink to a dot).
+##      Fragment stage draws a hot near-white core with a warm orange glow
+##      halo via pow() falloff across the quad width.
+##   2. Fallback: CylinderMesh + StandardMaterial3D (identical to the
+##      pre-shader behaviour). Used if the shader file is missing or fails
+##      to load. Worst case is the plain yellow emissive cylinder — bullets
+##      always visible.
+##
+## Prior tracer attempts broke because:
+##   - A solid cylinder + fresnel shader reads as a "rod", not a beam.
+##   - A cylindrical-billboard quad (rotate around streak axis to face
+##     camera) degenerates when streak ≈ camera_forward in third-person,
+##     leaving the quad edge-on and invisible.
+## The screen-aligned beam approach here solves both issues.
 static var _tracer_mesh: CylinderMesh = null
 static var _tracer_material: StandardMaterial3D = null
+static var _tracer_quad_mesh: QuadMesh = null
+static var _tracer_shader_material: ShaderMaterial = null
+static var _tracer_shader_ready: bool = false
+
+## Injected pool references. Set once via set_pools(). Null = fall back to
+## the old allocating path.
+static var _tracer_pool: TracerPool = null
+static var _flash_pool: MuzzleFlashPool = null
+
+## Cached PhysicsRayQueryParameters3D instance — reused every shot.
+## Godot 4.3's intersect_ray() does NOT mutate the query object so this is safe.
+static var _ray_query: PhysicsRayQueryParameters3D = null
+
+## Reusable 1-element exclude array. Updating [0] per shot avoids rebuilding
+## an Array[RID] allocation on every call.
+static var _exclude_rids: Array[RID] = []
+## Empty exclude array — cached so the no-shooter path doesn't allocate [] each shot.
+static var _empty_rids: Array[RID] = []
+
+## One-shot warning guards — emit once, then stay silent, to avoid log spam.
+static var _warned_no_tracer_pool: bool = false
+static var _warned_no_flash_pool: bool = false
+static var _warned_no_ray_query: bool = false
 
 
 static func _ensure_textures_loaded() -> void:
@@ -26,8 +81,12 @@ static func _ensure_textures_loaded() -> void:
 		_flash_texture = load(_FLASH_TEXTURE_PATH) as Texture2D
 	if _tracer_mesh == null:
 		var cyl: CylinderMesh = CylinderMesh.new()
-		cyl.top_radius = 0.025
-		cyl.bottom_radius = 0.025
+		# 1cm radius — CS:GO-style thin streak. Additive shader + emission
+		# make it read brighter/thicker than the raw geometry, so the mesh
+		# itself stays small. Prior radius 0.025 looked fat once the fresnel
+		# rim and bloom kicked in.
+		cyl.top_radius = 0.010
+		cyl.bottom_radius = 0.010
 		cyl.height = 0.8
 		cyl.radial_segments = 8
 		cyl.rings = 1
@@ -40,22 +99,115 @@ static func _ensure_textures_loaded() -> void:
 		mat.emission = Color(1.0, 0.75, 0.2)
 		mat.emission_energy_multiplier = 14.0
 		_tracer_material = mat
+	_ensure_shader_pipeline()
+
+
+## Try once to build the shader material + QuadMesh pair. On any failure
+## the fallback CylinderMesh + StandardMaterial3D path remains and tracers
+## still render.
+static func _ensure_shader_pipeline() -> void:
+	if _tracer_shader_ready:
+		return
+	if _tracer_shader_material != null or _tracer_quad_mesh != null:
+		return  # already attempted; don't retry every shot
+	if not ResourceLoader.exists(_TRACER_SHADER_PATH):
+		push_warning("PlayerFireVFX: tracer shader missing at %s — using fallback material" % _TRACER_SHADER_PATH)
+		return
+	var shader: Shader = load(_TRACER_SHADER_PATH) as Shader
+	if shader == null:
+		push_warning("PlayerFireVFX: tracer shader failed to load — using fallback material")
+		return
+	# QuadMesh: default orientation is already FACE_Z (quad normal = +Z,
+	# width +X, length +Y) — that's exactly what the shader expects, so
+	# no explicit orientation assignment needed. size.y controls the streak
+	# length in world units (0.8m, matching the fallback cylinder). size.x
+	# is consumed by the shader as a normalized width coordinate in
+	# VERTEX.x; the visual beam thickness is driven entirely by the
+	# beam_width uniform, not by size.x.
+	var quad: QuadMesh = QuadMesh.new()
+	quad.size = Vector2(1.0, 0.8)
+	var shader_mat: ShaderMaterial = ShaderMaterial.new()
+	shader_mat.shader = shader
+	# CS:GO tuning (v4 — gaussian dual-layer):
+	#   core_color:  pure white (1,1,1). Previous (1,0.98,0.90) looked off-white
+	#                in isolation but yellow after the additive halo sum — fixed.
+	#   halo_color:  warm orange, only visible where the tight core gaussian has
+	#                decayed (cx > ~0.2). Replaces the old "glow_color" uniform.
+	#   beam_width:  8mm world-space. Bloom from HDR emission (~45x) creates the
+	#                perceived width; wide geometry reads as a flat orange band.
+	#   emission:    45.0 — pushes cx=0 RGB to ~170, far past glow_hdr_threshold
+	#                (0.9) so WorldEnvironment bloom fires on every frame.
+	#   gaussian params: core_tightness=55 (narrow white peak), halo_tightness=5
+	#                (wide orange skirt), core_strength=3.2 >> halo_strength=0.6
+	#                so the center composite is white-dominant (~5:1 ratio).
+	shader_mat.set_shader_parameter("core_color", Color(1.0, 1.0, 1.0, 1.0))
+	shader_mat.set_shader_parameter("halo_color", Color(1.0, 0.55, 0.18, 1.0))
+	shader_mat.set_shader_parameter("emission_strength", 45.0)
+	shader_mat.set_shader_parameter("fade_edge", 0.18)
+	shader_mat.set_shader_parameter("beam_width", 0.008)
+	shader_mat.set_shader_parameter("core_tightness", 55.0)
+	shader_mat.set_shader_parameter("halo_tightness", 5.0)
+	shader_mat.set_shader_parameter("core_strength", 3.2)
+	shader_mat.set_shader_parameter("halo_strength", 0.6)
+	_tracer_quad_mesh = quad
+	_tracer_shader_material = shader_mat
+	_tracer_shader_ready = true
 
 
 ## Prewarm: call from Player._ready() so the first shot doesn't stall on
-## shader pipeline compilation + resource loading.
+## shader + material pipeline compilation. Prewarms both material variants
+## on the shared CylinderMesh so whichever one is picked at runtime is
+## already compiled.
 static func prewarm(world_root: Node) -> void:
 	_ensure_textures_loaded()
-	if _tracer_material == null or world_root == null:
+	if world_root == null or _tracer_mesh == null:
 		return
-	# Spawn one invisible dummy mesh with the tracer material so Godot compiles
-	# the emissive-unshaded pipeline variant during scene load.
-	var dummy: MeshInstance3D = MeshInstance3D.new()
-	dummy.mesh = _tracer_mesh
-	dummy.material_override = _tracer_material
-	dummy.visible = false
-	world_root.add_child(dummy)
-	dummy.get_tree().create_timer(0.1).timeout.connect(dummy.queue_free)
+	# Fallback material (always present).
+	if _tracer_material != null:
+		var dummy_fallback: MeshInstance3D = MeshInstance3D.new()
+		dummy_fallback.mesh = _tracer_mesh
+		dummy_fallback.material_override = _tracer_material
+		dummy_fallback.visible = false
+		world_root.add_child(dummy_fallback)
+		dummy_fallback.get_tree().create_timer(0.1).timeout.connect(dummy_fallback.queue_free)
+	# Shader pipeline (only if it built successfully).
+	if _tracer_shader_ready and _tracer_shader_material != null and _tracer_quad_mesh != null:
+		var dummy_shader: MeshInstance3D = MeshInstance3D.new()
+		dummy_shader.mesh = _tracer_quad_mesh
+		dummy_shader.material_override = _tracer_shader_material
+		dummy_shader.visible = false
+		world_root.add_child(dummy_shader)
+		dummy_shader.get_tree().create_timer(0.1).timeout.connect(dummy_shader.queue_free)
+
+
+## Wire pool references. Call once from WeaponController._ready() AFTER
+## prewarm() so the shared mesh/material statics are populated, then call
+## tracer_pool.setup() with those references here.
+##
+## [param tracer_pool]  TracerPool node living in the scene tree (child of Player).
+## [param flash_pool]   MuzzleFlashPool node living under the muzzle node.
+static func set_pools(tracer_pool: TracerPool, flash_pool: MuzzleFlashPool) -> void:
+	_tracer_pool = tracer_pool
+	_flash_pool = flash_pool
+
+	# Push shared resources into the tracer pool now that textures are loaded.
+	if tracer_pool != null:
+		tracer_pool.setup(
+			_tracer_quad_mesh,
+			_tracer_shader_material,
+			_tracer_mesh,
+			_tracer_material,
+			_tracer_shader_ready,
+		)
+
+	# Push flash texture into flash pool.
+	if flash_pool != null and _flash_texture != null:
+		flash_pool.setup(_flash_texture)
+
+	# Build the cached ray query object and exclude array (one-time).
+	if _ray_query == null:
+		_ray_query = PhysicsRayQueryParameters3D.new()
+		_exclude_rids.resize(1)
 
 
 ## Fires one AR round: hitscan, muzzle flash (parented to muzzle node so it
@@ -66,6 +218,9 @@ static func prewarm(world_root: Node) -> void:
 ## [param muzzle_node] is the AK muzzle Node3D. Flash is parented to it so it
 ## inherits the rifle's transform each frame (no lag on quick turns). Tracer
 ## reads its world position at spawn then flies world-space from there.
+##
+## PUBLIC API — signature is fixed. Callers (WeaponController, etc.) must not
+## be updated when pool internals change.
 static func spawn_ar_shot(
 	world_root: Node,
 	muzzle_node: Node3D,
@@ -77,13 +232,31 @@ static func spawn_ar_shot(
 ) -> void:
 	_ensure_textures_loaded()
 
-	# 1. Hitscan from camera.
+	# 1. Hitscan from camera — reuse cached query + exclude array.
 	var space: PhysicsDirectSpaceState3D = world_root.get_world_3d().direct_space_state
 	var to_point: Vector3 = aim_origin + aim_dir.normalized() * max_range
-	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(aim_origin, to_point)
-	if shooter != null:
-		query.exclude = [shooter.get_rid()]
-	var hit: Dictionary = space.intersect_ray(query)
+
+	var hit: Dictionary = {}
+	if _ray_query != null:
+		# Reuse the cached query; only mutate the fields that change per shot.
+		_ray_query.from = aim_origin
+		_ray_query.to = to_point
+		if shooter != null:
+			_exclude_rids[0] = shooter.get_rid()
+			_ray_query.exclude = _exclude_rids
+		else:
+			_ray_query.exclude = _empty_rids
+		hit = space.intersect_ray(_ray_query)
+	else:
+		# Pool not wired yet — fall back to allocating path with one-time warning.
+		if not _warned_no_ray_query:
+			_warned_no_ray_query = true
+			push_warning("PlayerFireVFX: _ray_query not initialised (call set_pools first) — falling back to per-shot allocation")
+		var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(aim_origin, to_point)
+		if shooter != null:
+			query.exclude = [shooter.get_rid()]
+		hit = space.intersect_ray(query)
+
 	var hit_point: Vector3 = to_point
 	if not hit.is_empty():
 		hit_point = hit.get("position", to_point)
@@ -110,22 +283,34 @@ static func spawn_ar_shot(
 		_spawn_tracer(world_root, muzzle_node, hit_point, convergence_dir)
 
 
-## Spawn flash as a CHILD of the muzzle node so it inherits rifle pose every
-## frame. Previously parented to world_root, the flash lagged a frame behind
-## when the player rotated rapidly.
+## Spawn flash. Routes through pool if available; allocates otherwise.
+## Muzzle-parenting guarantee is maintained by both paths:
+##   - Pool path: MuzzleFlashPool lives as a child of the muzzle node, so all
+##     its sprites are already in the muzzle's subtree — no reparenting needed.
+##   - Fallback path: allocates a Sprite3D and adds it to muzzle_node directly.
 static func _spawn_muzzle_flash(parent: Node3D) -> void:
-	if _flash_texture == null or parent == null:
+	if parent == null:
+		return
+
+	# Pool path — preferred.
+	if _flash_pool != null and is_instance_valid(_flash_pool):
+		_flash_pool.activate_flash()
+		return
+
+	# Fallback allocating path (pool not wired). Warn once to avoid log spam.
+	if not _warned_no_flash_pool:
+		_warned_no_flash_pool = true
+		push_warning("PlayerFireVFX: flash pool not set — falling back to per-shot Sprite3D allocation. Call set_pools() from WeaponController._ready().")
+	if _flash_texture == null:
 		return
 	var sprite: Sprite3D = Sprite3D.new()
 	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	sprite.shaded = false
 	sprite.pixel_size = 0.00028
 	sprite.texture = _flash_texture
-	# Random roll on Z so successive flashes don't look identical.
 	sprite.rotation.z = randf() * TAU
 	parent.add_child(sprite)
-	sprite.position = Vector3.ZERO  # local to muzzle node
-	# Hold the single frame briefly, then free.
+	sprite.position = Vector3.ZERO
 	var done_t: SceneTreeTimer = parent.get_tree().create_timer(0.05)
 	done_t.timeout.connect(func() -> void:
 		if is_instance_valid(sprite):
@@ -134,24 +319,39 @@ static func _spawn_muzzle_flash(parent: Node3D) -> void:
 
 
 ## Spawn a thin round glowing tracer that travels from muzzle to hit point.
+## Routes through TracerPool if available; allocates a one-shot Tween otherwise.
 ## Cylinder center is placed AT the muzzle. Front half (0.4m) extends out of
 ## the barrel — visible streak. Rear half is inside the rifle mesh — hidden
 ## by the gun geometry, so the player sees the tracer appear to exit the muzzle.
 static func _spawn_tracer(world_root: Node, muzzle_node: Node3D, to_pos: Vector3, aim_dir: Vector3) -> void:
+	if muzzle_node == null or not is_instance_valid(muzzle_node):
+		return
+
+	var muzzle_world: Vector3 = muzzle_node.global_transform.origin
+
+	# Pool path — preferred.
+	if _tracer_pool != null and is_instance_valid(_tracer_pool):
+		_tracer_pool.spawn(muzzle_world, to_pos, _tracer_shader_ready)
+		return
+
+	# Fallback allocating path (pool not wired). Warn once to avoid log spam.
+	if not _warned_no_tracer_pool:
+		_warned_no_tracer_pool = true
+		push_warning("PlayerFireVFX: tracer pool not set — falling back to per-shot MeshInstance3D+Tween allocation. Call set_pools() from WeaponController._ready().")
 	# 80 m/s is arcade-readable — real bullet at 700+ m/s would be invisible
 	# on a 60fps screen for any gameplay-range shot. Travel time caps at
 	# ~0.35s so long shots still arrive quickly.
 	const BULLET_SPEED: float = 80.0
-	if muzzle_node == null or not is_instance_valid(muzzle_node):
-		return
-	var muzzle_world: Vector3 = muzzle_node.global_transform.origin
 	var forward: Vector3 = aim_dir.normalized()
 	var mesh: MeshInstance3D = MeshInstance3D.new()
-	mesh.mesh = _tracer_mesh
-	mesh.material_override = _tracer_material
+	if _tracer_shader_ready and _tracer_quad_mesh != null and _tracer_shader_material != null:
+		mesh.mesh = _tracer_quad_mesh
+		mesh.material_override = _tracer_shader_material
+	else:
+		mesh.mesh = _tracer_mesh
+		mesh.material_override = _tracer_material
 	world_root.add_child(mesh)
 	mesh.global_position = muzzle_world
-	# Orient along aim direction. CylinderMesh length is local +Y.
 	var up_ref: Vector3 = Vector3.UP
 	if absf(forward.dot(Vector3.UP)) > 0.99:
 		up_ref = Vector3.FORWARD
