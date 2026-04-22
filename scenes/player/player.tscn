@@ -1,0 +1,80 @@
+[gd_scene load_steps=14 format=3 uid="uid://xhenad1shki"]
+
+[ext_resource type="Script" path="res://src/gameplay/player/player_controller.gd" id="1_player_ctrl"]
+[ext_resource type="Script" path="res://src/gameplay/health/health_component.gd" id="2_health"]
+[ext_resource type="PackedScene" uid="uid://dy56h01ex3fl" path="res://Model/Player/SolderBoyFinal.glb" id="3_model"]
+[ext_resource type="Script" path="res://src/gameplay/player/weapon_anim_visibility.gd" id="4_twvnl"]
+[ext_resource type="Script" path="res://src/gameplay/player/player_animation_controller.gd" id="5_xrjxn"]
+[ext_resource type="PackedScene" uid="uid://bsbhje2hlkrc7" path="res://scenes/ui/stamina_bar.tscn" id="6_c3vuk"]
+[ext_resource type="Script" path="res://src/gameplay/ui/stamina_bar.gd" id="7_ncqhu"]
+[ext_resource type="Script" path="res://src/gameplay/player/weapon_controller.gd" id="8_weap"]
+[ext_resource type="PackedScene" uid="uid://cammodisplay01" path="res://scenes/ui/ammo_display.tscn" id="9_ammo"]
+[ext_resource type="Script" path="res://src/gameplay/ui/ammo_display.gd" id="10_ammo_s"]
+[ext_resource type="PackedScene" uid="uid://cxhair00000001" path="res://scenes/ui/crosshair.tscn" id="11_xhair"]
+[ext_resource type="Script" path="res://src/gameplay/player/camera_feel_controller.gd" id="12_feel"]
+[ext_resource type="Script" path="res://src/gameplay/player/aim_look_modifier.gd" id="13_aim"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
+radius = 0.4
+height = 1.8
+
+[node name="Player" type="Node3D"]
+script = ExtResource("1_player_ctrl")
+
+[node name="Body" type="CharacterBody3D" parent="."]
+collision_layer = 2
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Body"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+shape = SubResource("CapsuleShape3D_player")
+
+[node name="Visual" parent="Body" instance=ExtResource("3_model")]
+transform = Transform3D(-1, 0, -8.74228e-08, 0, 1, 0, 8.74228e-08, 0, -1, 0, 0, 0)
+
+[node name="HealthComponent" type="Node" parent="Body"]
+script = ExtResource("2_health")
+
+[node name="WeaponAnimVisibility" type="Node" parent="Body"]
+script = ExtResource("4_twvnl")
+
+[node name="CameraPivot" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
+
+[node name="SpringArm3D" type="SpringArm3D" parent="CameraPivot"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.75, 0.35, 0)
+spring_length = 2.5
+margin = 0.3
+collision_mask = 1
+
+[node name="CameraRig" type="Node3D" parent="CameraPivot/SpringArm3D"]
+
+[node name="Camera3D" type="Camera3D" parent="CameraPivot/SpringArm3D/CameraRig"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.15, 0)
+current = true
+fov = 80.0
+
+[node name="PlayerAnimController" type="Node" parent="."]
+script = ExtResource("5_xrjxn")
+
+[node name="WeaponController" type="Node" parent="."]
+script = ExtResource("8_weap")
+
+[node name="CameraFeelController" type="Node" parent="."]
+script = ExtResource("12_feel")
+
+[node name="StaminaBar" type="CanvasLayer" parent="." instance=ExtResource("6_c3vuk")]
+layer = 10
+script = ExtResource("7_ncqhu")
+
+[node name="AmmoDisplay" type="CanvasLayer" parent="." instance=ExtResource("9_ammo")]
+layer = 10
+script = ExtResource("10_ammo_s")
+
+[node name="Crosshair" type="CanvasLayer" parent="." instance=ExtResource("11_xhair")]
+layer = 10
+
+[node name="AimLookModifier" type="SkeletonModifier3D" parent="Body/Visual/Player/Skeleton3D"]
+script = ExtResource("13_aim")
+pitch_source_path = NodePath("../../../../..")
+
+[editable path="Body/Visual"]

@@ -4,7 +4,7 @@
       "command": "node",
       "args": [
         "--experimental-modules",
-        "C:/Users/Admin/Godot-MCP/server/dist/index.js"
+        "C:/Users/Tima/Desktop/Godot-MCP-main/server/dist/index.js"
       ],
       "env": {
         "MCP_TRANSPORT": "stdio"
