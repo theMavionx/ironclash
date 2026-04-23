@@ -12,6 +12,7 @@
 [ext_resource type="Script" path="res://src/gameplay/player/camera_feel_controller.gd" id="12_feel"]
 [ext_resource type="Script" path="res://src/gameplay/player/aim_look_modifier.gd" id="13_aim"]
 [ext_resource type="Script" path="res://src/gameplay/player/jump_pose_modifier.gd" id="14_jump"]
+[ext_resource type="Script" path="res://src/gameplay/player/reload_hand_offset_modifier.gd" id="15_reload"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
 radius = 0.4
@@ -99,6 +100,11 @@ active = true
 influence = 1.0
 script = ExtResource("14_jump")
 body_path = NodePath("../../../..")
+
+[node name="ReloadHandOffsetModifier" type="SkeletonModifier3D" parent="Body/Visual/Player/Skeleton3D" index="14"]
+active = true
+influence = 1.0
+script = ExtResource("15_reload")
 
 [node name="HealthComponent" type="Node" parent="Body"]
 script = ExtResource("2_health")
