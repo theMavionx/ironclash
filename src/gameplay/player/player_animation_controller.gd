@@ -83,7 +83,7 @@ const ANIM_NAMES: Dictionary = {
 @export var sprint_animation_speed: float = 1.4
 ## World-space velocity (m/s) at which the run anim plays at
 ## [member run_speed_scale]. Should match walk_speed in player_controller.gd.
-@export var reference_walk_speed: float = 7.0
+@export var reference_walk_speed: float = 3.5
 
 @export_group("Tree blend")
 ## OneShot fade-in time (seconds). Lower = snappier action transition.
