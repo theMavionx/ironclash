@@ -1,0 +1,119 @@
+[gd_scene load_steps=17 format=3 uid="uid://dvab02q1hpc1x"]
+
+[ext_resource type="Script" path="res://scenes/vfx/fire_test.gd" id="1_4s4m2"]
+[ext_resource type="Shader" path="res://src/vfx/spatial_particles_fire.gdshader" id="1_fire_shader"]
+[ext_resource type="Texture2D" uid="uid://3jmlnpch3hpr" path="res://assets/textures/smoke_vfx/T_Noise_001R.png" id="2_noise"]
+[ext_resource type="Texture2D" uid="uid://b3qflsw3414lx" path="res://assets/textures/fire_vfx/T_fire_diff.png" id="4_mc8l6"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
+sky_top_color = Color(0.18, 0.22, 0.32, 1)
+sky_horizon_color = Color(0.32, 0.34, 0.38, 1)
+ground_bottom_color = Color(0.05, 0.05, 0.06, 1)
+ground_horizon_color = Color(0.18, 0.18, 0.2, 1)
+
+[sub_resource type="Sky" id="Sky_main"]
+sky_material = SubResource("ProceduralSkyMaterial_sky")
+
+[sub_resource type="Environment" id="Environment_main"]
+background_mode = 2
+background_energy_multiplier = 0.15
+sky = SubResource("Sky_main")
+ambient_light_source = 3
+ambient_light_color = Color(0.55, 0.6, 0.7, 1)
+ambient_light_energy = 0.05
+tonemap_mode = 2
+glow_enabled = true
+glow_intensity = 1.2
+glow_strength = 1.1
+glow_bloom = 0.15
+glow_blend_mode = 1
+glow_hdr_threshold = 0.9
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_floor"]
+albedo_color = Color(0.25, 0.22, 0.2, 1)
+roughness = 0.85
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_floor"]
+material = SubResource("StandardMaterial3D_floor")
+size = Vector2(40, 40)
+
+[sub_resource type="Gradient" id="Gradient_alpha_A"]
+offsets = PackedFloat32Array(0, 0.2, 0.8, 1)
+colors = PackedColorArray(1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0.85, 1, 1, 1, 0)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture1D_alpha_A"]
+gradient = SubResource("Gradient_alpha_A")
+
+[sub_resource type="Curve" id="Curve_scale_A"]
+_data = [Vector2(0, 0.6), 0.0, 0.0, 0, 0, Vector2(0.6, 1), 0.0, 0.0, 0, 0, Vector2(1, 0), 0.0, 0.0, 0, 0]
+point_count = 3
+
+[sub_resource type="CurveTexture" id="CurveTexture_scale_A"]
+curve = SubResource("Curve_scale_A")
+
+[sub_resource type="ParticleProcessMaterial" id="ParticleProcessMaterial_fire_A"]
+emission_shape = 1
+emission_sphere_radius = 0.15
+direction = Vector3(0, 1, 0)
+spread = 8.0
+initial_velocity_min = 0.6
+initial_velocity_max = 1.4
+gravity = Vector3(0, 1, 0)
+scale_min = 0.7
+scale_max = 1.4
+scale_curve = SubResource("CurveTexture_scale_A")
+color_ramp = SubResource("GradientTexture1D_alpha_A")
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_tqr5f"]
+render_priority = 0
+shader = ExtResource("1_fire_shader")
+shader_parameter/fire_color = Vector4(4, 0.8, 0, 1)
+shader_parameter/distortion_speed = Vector2(0, -1)
+shader_parameter/distortion_amount = 0.25
+shader_parameter/anchor_power = 1.5
+shader_parameter/fire_texture = ExtResource("4_mc8l6")
+shader_parameter/distortion_texture = ExtResource("2_noise")
+
+[sub_resource type="QuadMesh" id="QuadMesh_ttthn"]
+material = SubResource("ShaderMaterial_tqr5f")
+size = Vector2(0.7, 1.2)
+
+[node name="FireTest" type="Node3D"]
+script = ExtResource("1_4s4m2")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_main")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.7, -0.5, 0.5, 0, 0.71, 0.71, -0.71, -0.5, 0.5, 0, 8, 0)
+light_color = Color(0.85, 0.9, 1, 1)
+light_energy = 0.6
+shadow_enabled = true
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.94, 0.34, 0, -0.34, 0.94, 0, 1.6, 4)
+fov = 55.0
+
+[node name="Floor" type="MeshInstance3D" parent="."]
+mesh = SubResource("PlaneMesh_floor")
+
+[node name="FireA" type="GPUParticles3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0)
+amount = 30
+lifetime = 0.7
+preprocess = 1.0
+randomness = 0.4
+visibility_aabb = AABB(-1, -0.5, -1, 2, 4, 2)
+process_material = SubResource("ParticleProcessMaterial_fire_A")
+draw_pass_1 = SubResource("QuadMesh_ttthn")
+
+[node name="HUDLabel" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.6, 0)
+visible = false
+billboard = 1
+no_depth_test = true
+text = "Stylized fire — Le Lu / FencerDevLog hybrid
+Procedural teardrop + panning noise + HDR mix
+Press ESC to quit"
+font_size = 24
+outline_size = 6

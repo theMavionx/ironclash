@@ -12,6 +12,8 @@ Desktop.ini
 # === Claude Code Local ===
 .claude/settings.local.json
 .claude/docs/UPGRADE-PLAN.md
+.claude/scheduled_tasks.lock
+.mcp.json
 CLAUDE.local.md
 production/session-logs/
 production/session-state/*.md
@@ -22,6 +24,14 @@ docs/MULTI-STAGE-DOCUMENT-WORKFLOW.md
 
 # === Terrain3D region data (locally generated; binary, non-mergeable) ===
 MapData/
+
+# === Godot Web Export Output (regenerated; .pck > 100 MB exceeds GitHub limit) ===
+# Each `Project → Export → Web` overwrites these. Run the export locally and
+# serve via Vite (web/ui/) — no need to track the binaries.
+web/godot-export/*.pck
+web/godot-export/*.wasm
+web/godot-export/*.js
+web/godot-export/*.html
 
 # === Build Output ===
 build/
