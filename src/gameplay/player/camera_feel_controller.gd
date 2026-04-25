@@ -60,7 +60,7 @@ extends Node
 @export var fov_base: float = 80.0
 @export var fov_sprint: float = 86.0
 ## FOV while aiming down sights (RMB held). Narrower than base → zoom-in feel.
-@export var fov_ads: float = 55.0
+@export var fov_ads: float = 42.0
 ## General lerp rate for sprint/base transitions.
 @export var fov_smoothing: float = 5.0
 ## Snappier lerp rate for ADS in/out — fast zoom response without instant snap.

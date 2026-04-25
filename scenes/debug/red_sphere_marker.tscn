@@ -1,0 +1,17 @@
+[gd_scene load_steps=3 format=3 uid="uid://dredsphmarker1"]
+
+[sub_resource type="SphereMesh" id="SphereMesh_red"]
+radius = 5.0
+height = 10.0
+radial_segments = 32
+rings = 16
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_red"]
+transparency = 1
+shading_mode = 0
+albedo_color = Color(1, 0, 0, 0.4)
+cull_mode = 2
+
+[node name="RedSphereMarker" type="MeshInstance3D"]
+mesh = SubResource("SphereMesh_red")
+material_override = SubResource("StandardMaterial3D_red")
