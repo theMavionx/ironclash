@@ -5,12 +5,25 @@ extends CharacterBody3D
 ## physics is re-enabled. FPV HUD listens to clear the "DRONE OFFLINE" overlay.
 signal respawned
 
-## FPV drone controller — full Mode 2 acro flight model.
-## WASD: W/S = throttle accumulator (0..1), A/D = yaw rate.
-## Mouse: X = roll, Y = pitch (drone body tilts; camera is rigid-mounted).
-## Tilt drives translation: thrust = (drone local UP) × throttle × max_thrust.
-## Pure acro feel — no auto-leveling. Mouse stops → drone holds the angle.
-## Implements: design/gdd/drone-controller.md (pending)
+## Helicopter-style FPV drone controller (arcade flight model).
+## Body only YAWS — never pitches or rolls — so the rigid-mounted FPV camera
+## stays level and accuracy stays high. Visual strafe-tilt is applied to the
+## child Model node only, so the camera (sibling FPVMount) is unaffected.
+##
+## Controls:
+##   Space     — lift up (collective)
+##   Ctrl / C  — descend / dive
+##   W A S D   — strafe in body's yaw-aligned local frame (like helicopter)
+##   Mouse X   — yaw the body
+##   Mouse Y   — camera pitch only (body stays level)
+##
+## Less stable than the helicopter on purpose:
+##   - lighter horizontal damping → drone drifts further on release
+##   - vertical_damping is light + no auto-hover → gravity always pulls,
+##     pilot must hold Space to maintain altitude
+##   - slower yaw / tilt smoothing → "floaty" feel
+##
+## Implements: design/gdd/drone-system.md
 
 # ---------------------------------------------------------------------------
 # Exports — Camera
@@ -18,49 +31,74 @@ signal respawned
 
 ## Path to the Camera3D used for the first-person view.
 @export_node_path("Camera3D") var fpv_camera_path: NodePath = ^"FPVMount/FPVCamera"
-## Path to the Node3D the FPV camera is parented to. Set ONCE in _ready
-## to apply a static uptilt — never written at runtime (camera is rigid-mounted
-## to the drone body so view tilts with the body, true FPV).
+## Path to the Node3D the FPV camera is parented to. Mouse Y rotates this node
+## (camera pitch only). Sibling of Model so visual body-tilt does not affect view.
 @export_node_path("Node3D") var fpv_mount_path: NodePath = ^"FPVMount"
-## Static FPV camera uptilt in degrees. Real racing drones tilt the camera up
-## so the pilot sees forward while flying nose-down at speed.
-@export var fpv_camera_uptilt_deg: float = 30.0
+## Path to the visual model node — receives strafe-tilt for feel without
+## rotating the body or the camera mount.
+@export_node_path("Node3D") var model_path: NodePath = ^"Model"
 
 # ---------------------------------------------------------------------------
-# Exports — Flight: Thrust
+# Exports — Flight: Lift
 # ---------------------------------------------------------------------------
 
-## Peak thrust acceleration (m/s²) along the drone's local up axis.
-@export var max_thrust: float = 20.0
-## Throttle (0..1) at which thrust exactly counters gravity.
-## Should equal gravity / max_thrust for a steady hover at this value.
-@export var hover_throttle: float = 0.5
-## Rate at which W/S keys change the throttle accumulator (units/s).
-@export var throttle_rate: float = 1.0
-## World-space gravity (m/s²). Match Project Settings physics gravity.
+## Upward acceleration (m/s²) while Space is held.
+@export var lift_acceleration: float = 14.0
+## Downward acceleration (m/s²) while Ctrl/C is held (adds to gravity).
+@export var lift_down_acceleration: float = 8.0
+## World-space gravity (m/s²). Always pulls — there is no auto-hover.
 @export var gravity: float = 9.8
 
 # ---------------------------------------------------------------------------
-# Exports — Flight: Rotation (Mode 2 acro)
+# Exports — Flight: Strafe
 # ---------------------------------------------------------------------------
 
-## Maximum pitch rate (degrees/s) — clamps mouse Y impulses per frame.
-@export var max_pitch_rate_deg: float = 360.0
-## Maximum roll rate (degrees/s) — clamps mouse X impulses per frame.
-@export var max_roll_rate_deg: float = 360.0
-## Maximum yaw rate (degrees/s) from A/D keys.
-@export var max_yaw_rate_deg: float = 180.0
-## Mouse sensitivity: degrees of body rotation per pixel of mouse motion.
-@export var mouse_sensitivity_deg_per_px: float = 0.3
+## Movement speed (m/s) when WASD is held. Velocity snaps toward this in the
+## current yaw-aligned local frame; damping bleeds it back when input releases.
+@export var strafe_speed: float = 10.0
 
 # ---------------------------------------------------------------------------
-# Exports — Flight: Linear Damping
+# Exports — Flight: Damping (lighter than helicopter — drone "floats")
 # ---------------------------------------------------------------------------
 
-## Horizontal velocity drag (1/s) — drones brake noticeably without lateral thrust.
-@export var horizontal_damping: float = 1.5
-## Vertical velocity drag (1/s) — separate from gravity; helps hover feel.
-@export var vertical_damping: float = 0.8
+## Horizontal velocity drag (1/s). Lower than helicopter (2.0) — drone drifts.
+@export var horizontal_damping: float = 1.0
+## Vertical velocity drag (1/s). Bleeds vertical speed gently — does NOT counter
+## gravity, so released Space still drifts down.
+@export var vertical_damping: float = 0.5
+
+# ---------------------------------------------------------------------------
+# Exports — Yaw (mouse X)
+# ---------------------------------------------------------------------------
+
+## Radians of yaw target per pixel of mouse X motion.
+@export var mouse_sensitivity: float = 0.0025
+## Smoothing rate from current yaw toward target. Lower = laggier (heli uses 10).
+@export var yaw_smooth_speed: float = 8.0
+
+# ---------------------------------------------------------------------------
+# Exports — Camera Pitch (mouse Y)
+# ---------------------------------------------------------------------------
+
+## Radians of camera pitch per pixel of mouse Y motion.
+@export var camera_pitch_sensitivity: float = 0.0025
+## Min camera pitch (degrees). Wide range so pilot can dive-look at kamikaze targets.
+@export var camera_min_pitch_deg: float = -75.0
+## Max camera pitch (degrees).
+@export var camera_max_pitch_deg: float = 60.0
+## When true, mouse-up → look-down (flight-sim feel). False = standard FPS.
+@export var invert_camera_pitch: bool = false
+
+# ---------------------------------------------------------------------------
+# Exports — Visual Tilt (Model node only — camera unaffected)
+# ---------------------------------------------------------------------------
+
+## Max visual pitch tilt (deg) when strafing forward/back.
+@export var max_pitch_tilt_deg: float = 18.0
+## Max visual roll tilt (deg) when strafing left/right.
+@export var max_roll_tilt_deg: float = 15.0
+## How fast the Model node tilts in/out of strafe pose. Lower than heli (6) — floaty.
+@export var tilt_smooth_speed: float = 4.0
 
 # ---------------------------------------------------------------------------
 # Exports — Limits
@@ -103,13 +141,19 @@ signal respawned
 # ---------------------------------------------------------------------------
 
 var _active: bool = true
-## Throttle accumulator [0..1]. Persists between frames; W/S adjusts, no input holds.
-var _throttle: float = 0.0
-## Mouse motion accumulated across InputEventMouseMotion events between physics ticks.
-## Consumed (zeroed) each _physics_process. Acro: no persistent angular velocity.
-var _mouse_delta: Vector2 = Vector2.ZERO
+## Yaw target accumulated from mouse X motion (radians).
+var _yaw_target: float = 0.0
+## Smoothed yaw applied to the body each tick.
+var _yaw_current: float = 0.0
+## Camera pitch (radians) — applied to FPVMount only; body stays level.
+var _camera_pitch: float = 0.0
+## Smoothed visual tilt of the Model node (radians).
+var _pitch_tilt_current: float = 0.0
+var _roll_tilt_current: float = 0.0
+
 var _fpv_camera: Camera3D = null
 var _fpv_mount: Node3D = null
+var _model: Node3D = null
 var _current_rotor_speed: float = 0.0
 ## Velocity snapshot taken BEFORE move_and_slide each physics tick — used as
 ## the impact speed for kamikaze detection (move_and_slide may zero velocity
@@ -131,7 +175,8 @@ var _motor_angles: Array[float] = []
 # ---------------------------------------------------------------------------
 
 ## Enable or disable this vehicle. Inactive drones halt physics and zero velocity.
-## Activating recaptures mouse input and switches the FPV camera on.
+## Activating recaptures mouse input, switches the FPV camera on, and resyncs the
+## yaw target to the body's current yaw so the drone does not snap-turn on entry.
 func set_active(is_active: bool) -> void:
 	_active = is_active
 	# Destroyed wrecks keep physics running so they fall under gravity until
@@ -144,18 +189,18 @@ func set_active(is_active: bool) -> void:
 	set_physics_process(is_active)
 	if not is_active:
 		velocity = Vector3.ZERO
-		_mouse_delta = Vector2.ZERO
 		if _fpv_camera != null:
 			_fpv_camera.current = false
 	else:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		_yaw_target = global_rotation.y
+		_yaw_current = _yaw_target
 		if _fpv_camera != null:
 			_fpv_camera.current = true
 
 
-## Returns 0.0 — drone body pitch tilts dramatically during flight, and feeding
-## that to ChaseCamera would lurch the third-person view when switching back.
-## ChaseCamera should follow drone yaw only.
+## Returns 0.0 — drone body never pitches in this design (FPV camera handles
+## look pitch). Returning 0 keeps ChaseCamera level when the drone is inactive.
 func get_aim_pitch() -> float:
 	return 0.0
 
@@ -166,32 +211,38 @@ func get_aim_yaw() -> float:
 	return global_rotation.y
 
 
-## Current throttle [0..1] for HUD readouts.
+## Synthetic throttle (0..1) for HUD readouts. Space = 1.0, Ctrl/C = 0.0,
+## neutral = 0.5. The flight model is no longer accumulator-based.
 func get_throttle() -> float:
-	return _throttle
+	if not _active or _is_destroyed:
+		return 0.0
+	if Input.is_key_pressed(KEY_SPACE):
+		return 1.0
+	if Input.is_key_pressed(KEY_CTRL) or Input.is_key_pressed(KEY_C):
+		return 0.0
+	return 0.5
 
 # ---------------------------------------------------------------------------
 # Built-in virtual methods
 # ---------------------------------------------------------------------------
 
 func _ready() -> void:
-	# Start at hover throttle so dropping in feels neutral, not falling.
-	_throttle = hover_throttle
 	_current_rotor_speed = idle_rotor_speed_rad_per_sec
 	_spawn_transform = global_transform
+	_yaw_target = global_rotation.y
+	_yaw_current = _yaw_target
 	if _health != null:
 		_health.destroyed.connect(_on_self_destroyed)
 
 	_fpv_camera = get_node_or_null(fpv_camera_path) as Camera3D
 	_fpv_mount = get_node_or_null(fpv_mount_path) as Node3D
+	_model = get_node_or_null(model_path) as Node3D
 	if _fpv_camera == null:
 		push_warning("DroneController: fpv_camera_path not set or not a Camera3D (%s)" % fpv_camera_path)
 	if _fpv_mount == null:
 		push_warning("DroneController: fpv_mount_path not set or not a Node3D (%s)" % fpv_mount_path)
-	else:
-		# Static uptilt baked once — camera is rigid-mounted to body from now on.
-		# Negative X rotation tilts the view UP (Godot right-handed local frame).
-		_fpv_mount.rotation.x = deg_to_rad(-fpv_camera_uptilt_deg)
+	if _model == null:
+		push_warning("DroneController: model_path not set or not a Node3D (%s)" % model_path)
 
 	_setup_propellers()
 
@@ -243,13 +294,20 @@ func _setup_propellers() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not _active:
+	if not _active or _is_destroyed:
 		return
 	if event is InputEventMouseMotion:
 		var motion: InputEventMouseMotion = event
-		# Accumulate raw pixel deltas; consumed and zeroed each physics tick.
-		# Multiple motion events can fire between physics frames at high polling rates.
-		_mouse_delta += motion.relative
+		# Mouse X → yaw target. Negative because mouse-right should yaw clockwise
+		# from above (right-handed Y-up: clockwise = negative rotation).
+		_yaw_target -= motion.relative.x * mouse_sensitivity
+		# Mouse Y → camera pitch (body untouched). Mouse-down looks down when inverted.
+		var pitch_sign: float = -1.0 if invert_camera_pitch else 1.0
+		_camera_pitch = clampf(
+			_camera_pitch - motion.relative.y * camera_pitch_sensitivity * pitch_sign,
+			deg_to_rad(camera_min_pitch_deg),
+			deg_to_rad(camera_max_pitch_deg),
+		)
 
 
 func _physics_process(delta: float) -> void:
@@ -261,9 +319,10 @@ func _physics_process(delta: float) -> void:
 	if not _active:
 		return
 
-	_update_throttle(delta)
-	_apply_body_rotation(delta)
-	_apply_forces(delta)
+	_apply_yaw(delta)
+	_apply_camera_pitch()
+	_apply_lift_and_strafe(delta)
+	_apply_visual_tilt(delta)
 	_clamp_altitude_and_floor()
 
 	# Snapshot impact velocity BEFORE move_and_slide — collisions may zero it.
@@ -271,86 +330,123 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 	_check_kamikaze_collisions()
 
-	_animate_propellers(_throttle > 0.05, delta)
+	var is_armed: bool = Input.is_key_pressed(KEY_SPACE) or velocity.length_squared() > 1.0
+	_animate_propellers(is_armed, delta)
 
 
 func _check_kamikaze_collisions() -> void:
 	if _is_destroyed:
 		return
 	var threshold_sq: float = kamikaze_speed_threshold * kamikaze_speed_threshold
-	if _pre_slide_velocity.length_squared() < threshold_sq:
-		return
+	var fast_enough: bool = _pre_slide_velocity.length_squared() >= threshold_sq
 	for i: int in range(get_slide_collision_count()):
 		var col: KinematicCollision3D = get_slide_collision(i)
 		var collider: Node = col.get_collider() as Node
-		if collider == null:
+		if collider == null or collider == self:
 			continue
-		var target_health: HealthComponent = collider.get_node_or_null("HealthComponent") as HealthComponent
+		var target_health: HealthComponent = _find_health_component(collider)
+		# Rule: ANY contact with a damageable target = kamikaze, regardless of speed.
+		# The threshold only applies to terrain so the drone can land softly on pads.
 		if target_health != null:
 			target_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
-		# Any high-speed impact (target or terrain) detonates the drone.
-		if _health != null:
+			if _health != null:
+				_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
+			return
+		# Terrain hit — only detonate when above threshold. Below = bounce/slide.
+		if fast_enough and _health != null:
 			_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
-		return
+			return
+
+
+## Locate a HealthComponent on the collider. Most vehicles parent it directly
+## (Tank/Helicopter/Drone), but the Player parents it under "Body" — so fall
+## back to a recursive search before giving up.
+func _find_health_component(collider: Node) -> HealthComponent:
+	var direct: HealthComponent = collider.get_node_or_null("HealthComponent") as HealthComponent
+	if direct != null:
+		return direct
+	return collider.find_child("HealthComponent", true, false) as HealthComponent
 
 
 # ---------------------------------------------------------------------------
 # Private flight steps
 # ---------------------------------------------------------------------------
 
-func _update_throttle(delta: float) -> void:
-	var throttle_input: float = 0.0
-	if Input.is_key_pressed(KEY_W):
-		throttle_input += 1.0
-	if Input.is_key_pressed(KEY_S):
-		throttle_input -= 1.0
-	_throttle = clampf(_throttle + throttle_input * throttle_rate * delta, 0.0, 1.0)
+func _apply_yaw(delta: float) -> void:
+	# Frame-rate independent exponential blend toward target.
+	var blend: float = 1.0 - exp(-yaw_smooth_speed * delta)
+	_yaw_current = lerp_angle(_yaw_current, _yaw_target, blend)
+	rotation.y = _yaw_current
 
 
-func _apply_body_rotation(delta: float) -> void:
-	# Mouse → instant per-frame rotation. Mouse stops → rotation stops, angle holds.
-	# Total rotation per second is frame-rate independent because mouse pixel
-	# delta is summed across all events in the frame (high polling = smaller chunks).
-	# Per-frame clamp prevents teleport-spins on huge mouse swipes.
-	var sens_rad: float = deg_to_rad(mouse_sensitivity_deg_per_px)
-	var max_pitch_per_frame: float = deg_to_rad(max_pitch_rate_deg) * delta
-	var max_roll_per_frame: float = deg_to_rad(max_roll_rate_deg) * delta
-
-	# Mouse forward (relative.y < 0) → nose down (positive rotation around RIGHT).
-	var pitch_amount: float = clampf(-_mouse_delta.y * sens_rad, -max_pitch_per_frame, max_pitch_per_frame)
-	# Mouse right (relative.x > 0) → roll right (positive rotation around FORWARD).
-	var roll_amount: float = clampf(_mouse_delta.x * sens_rad, -max_roll_per_frame, max_roll_per_frame)
-	_mouse_delta = Vector2.ZERO
-
-	# Yaw — keys, continuous rate × delta. A = left (positive around UP).
-	var yaw_input: float = 0.0
-	if Input.is_key_pressed(KEY_A):
-		yaw_input += 1.0
-	if Input.is_key_pressed(KEY_D):
-		yaw_input -= 1.0
-	var yaw_amount: float = yaw_input * deg_to_rad(max_yaw_rate_deg) * delta
-
-	if pitch_amount != 0.0:
-		rotate_object_local(Vector3.RIGHT, pitch_amount)
-	if yaw_amount != 0.0:
-		rotate_object_local(Vector3.UP, yaw_amount)
-	if roll_amount != 0.0:
-		rotate_object_local(Vector3.FORWARD, roll_amount)
+func _apply_camera_pitch() -> void:
+	if _fpv_mount == null:
+		return
+	_fpv_mount.rotation.x = _camera_pitch
 
 
-func _apply_forces(delta: float) -> void:
-	# Gravity always pulls. At hover_throttle the thrust exactly cancels it.
+func _apply_lift_and_strafe(delta: float) -> void:
+	# Gravity always pulls — no auto-hover. Pilot must hold Space to climb.
 	velocity.y -= gravity * delta
+	if Input.is_key_pressed(KEY_SPACE):
+		velocity.y += lift_acceleration * delta
+	if Input.is_key_pressed(KEY_CTRL) or Input.is_key_pressed(KEY_C):
+		velocity.y -= lift_down_acceleration * delta
 
-	# Thrust along drone's LOCAL up axis — tilt = translation.
-	var local_up: Vector3 = global_basis.y
-	velocity += local_up * (_throttle * max_thrust * delta)
+	# Strafe — yaw-aligned local frame, snap toward target velocity (heli pattern).
+	var strafe_input: Vector2 = Vector2.ZERO
+	if Input.is_key_pressed(KEY_W):
+		strafe_input.y -= 1.0
+	if Input.is_key_pressed(KEY_S):
+		strafe_input.y += 1.0
+	if Input.is_key_pressed(KEY_A):
+		strafe_input.x -= 1.0
+	if Input.is_key_pressed(KEY_D):
+		strafe_input.x += 1.0
+	if strafe_input.length_squared() > 1.0:
+		strafe_input = strafe_input.normalized()
 
-	# Linear damping — exponential decay, frame-rate independent.
-	var horizontal_decay: float = exp(-horizontal_damping * delta)
-	velocity.x *= horizontal_decay
-	velocity.z *= horizontal_decay
+	var yaw_basis: Basis = Basis(Vector3.UP, _yaw_current)
+	var world_strafe: Vector3 = yaw_basis * Vector3(strafe_input.x, 0.0, strafe_input.y)
+	var target_vx: float = world_strafe.x * strafe_speed
+	var target_vz: float = world_strafe.z * strafe_speed
+
+	# Light damping toward target — drone never quite snaps, leaves residual drift.
+	# When no input, target is zero and damping bleeds momentum gradually.
+	var horizontal_blend: float = 1.0 - exp(-horizontal_damping * delta)
+	velocity.x = lerpf(velocity.x, target_vx, horizontal_blend)
+	velocity.z = lerpf(velocity.z, target_vz, horizontal_blend)
+
+	# Vertical damping is gentle — does NOT counter gravity, just bleeds spikes.
 	velocity.y *= exp(-vertical_damping * delta)
+
+
+func _apply_visual_tilt(delta: float) -> void:
+	# Visual tilt only on Model node — sibling FPVMount (and camera) unaffected.
+	if _model == null:
+		return
+	var input_x: float = 0.0
+	var input_z: float = 0.0
+	if Input.is_key_pressed(KEY_W):
+		input_z -= 1.0
+	if Input.is_key_pressed(KEY_S):
+		input_z += 1.0
+	if Input.is_key_pressed(KEY_A):
+		input_x -= 1.0
+	if Input.is_key_pressed(KEY_D):
+		input_x += 1.0
+
+	# W (forward strafe) → nose down (negative pitch about local X).
+	# D (right strafe)   → roll right (negative roll about local Z in Godot's Y-up).
+	var target_pitch: float = input_z * deg_to_rad(max_pitch_tilt_deg)
+	var target_roll: float = -input_x * deg_to_rad(max_roll_tilt_deg)
+
+	var blend: float = 1.0 - exp(-tilt_smooth_speed * delta)
+	_pitch_tilt_current = lerpf(_pitch_tilt_current, target_pitch, blend)
+	_roll_tilt_current = lerpf(_roll_tilt_current, target_roll, blend)
+
+	_model.rotation.x = _pitch_tilt_current
+	_model.rotation.z = _roll_tilt_current
 
 
 func _clamp_altitude_and_floor() -> void:
@@ -367,12 +463,13 @@ func _clamp_altitude_and_floor() -> void:
 func _animate_propellers(is_armed: bool, delta: float) -> void:
 	var target_speed: float
 	if is_on_floor() and not is_armed:
-		# Parked with throttle near zero — rotors coast to a stop.
+		# Parked with no lift input — rotors coast to a stop.
 		target_speed = 0.0
 	else:
-		# Rotor speed scales with throttle (replaces old altitude-based curve).
+		# Rotor speed scales with synthetic throttle for visual feedback.
+		var throttle_visual: float = get_throttle()
 		target_speed = idle_rotor_speed_rad_per_sec + \
-			(max_rotor_speed_rad_per_sec - idle_rotor_speed_rad_per_sec) * _throttle
+			(max_rotor_speed_rad_per_sec - idle_rotor_speed_rad_per_sec) * throttle_visual
 
 	_current_rotor_speed = lerpf(_current_rotor_speed, target_speed, rotor_spool_speed * delta)
 
@@ -398,7 +495,6 @@ func _on_self_destroyed(_by_source: int) -> void:
 	# Zero horizontal velocity so the wreck drops, doesn't keep cruising forward.
 	velocity.x = 0.0
 	velocity.z = 0.0
-	_mouse_delta = Vector2.ZERO
 	# FORCE physics on. The drone may have been INACTIVE (set_active(false)
 	# by VehicleSwitcher) when the player shot it down from the tank/heli —
 	# without this call _physics_process stays disabled and the wreck freezes
@@ -423,13 +519,19 @@ func _respawn() -> void:
 	# Restore drone to its initial position with a clean state.
 	global_transform = _spawn_transform
 	velocity = Vector3.ZERO
-	_throttle = hover_throttle
-	_mouse_delta = Vector2.ZERO
+	_yaw_target = global_rotation.y
+	_yaw_current = _yaw_target
+	_camera_pitch = 0.0
+	_pitch_tilt_current = 0.0
+	_roll_tilt_current = 0.0
+	if _fpv_mount != null:
+		_fpv_mount.rotation.x = 0.0
+	if _model != null:
+		_model.rotation = Vector3.ZERO
 	_clear_destroyed_visual()
 	if _health != null:
 		_health.reset()
 	_is_destroyed = false
-	# Re-enable physics if drone is still the active vehicle.
 	if _active:
 		set_physics_process(true)
 	respawned.emit()

@@ -1,0 +1,306 @@
+import { useEffect, useRef, useState } from "react";
+
+// Folder mounted by vite.config.ts where Godot's web export lives. The actual
+// file basename (Godot uses config/name → "Ironclash4.3.*") is discovered at
+// runtime via the synthetic /godot/_manifest.json endpoint, so we don't have
+// to keep this file in lockstep with the project's name.
+const GODOT_DIR: string = "/godot";
+
+// Godot 4 web export exposes a global `Engine` constructor on window. The
+// shape below covers the surface we actually call — extend as needed.
+type GodotEngineCtor = new (config: GodotEngineConfig) => GodotEngine;
+
+interface GodotEngineConfig {
+	canvas?: HTMLCanvasElement;
+	executable?: string;
+	mainPack?: string;
+	args?: string[];
+	persistentDrops?: boolean;
+	/** 0 = none, 1 = resize to canvas CSS size, 2 = resize to window. */
+	canvasResizePolicy?: 0 | 1 | 2;
+	/** Side-loaded GDExtension WASM files preloaded before the game starts. */
+	gdextensionLibs?: string[];
+	/** Override Module.locateFile — controls where the engine fetches every
+	 *  side-loaded file (.wasm, .pck, GDExtension libs) from. */
+	locateFile?: (path: string, prefix?: string) => string;
+	ensureCrossOriginIsolationHeaders?: boolean;
+	focusCanvas?: boolean;
+	experimentalVK?: boolean;
+	fileSizes?: Record<string, number>;
+	serviceWorker?: string;
+	onProgress?: (current: number, total: number) => void;
+	onPrint?: (...args: unknown[]) => void;
+	onPrintError?: (...args: unknown[]) => void;
+	onExit?: (code: number) => void;
+}
+
+interface GodotManifest {
+	base: string | null;
+	godotConfig: GodotEngineConfig | null;
+}
+
+interface GodotEngine {
+	startGame: (overrides?: Partial<GodotEngineConfig>) => Promise<void>;
+	requestQuit?: () => void;
+}
+
+declare global {
+	interface Window {
+		Engine?: GodotEngineCtor;
+	}
+}
+
+export default function GameCanvas() {
+	const canvasRef = useRef<HTMLCanvasElement | null>(null);
+	const engineRef = useRef<GodotEngine | null>(null);
+	// Hard guard: Godot's web engine cannot be torn down + re-instantiated in
+	// the same page lifetime. If React (HMR, future StrictMode, etc.) re-runs
+	// our effect we MUST refuse to boot a second time or the page enters a
+	// "RID allocations leaked at exit" loop.
+	const bootedRef = useRef<boolean>(false);
+	const [progress, setProgress] = useState<{ current: number; total: number }>({
+		current: 0,
+		total: 0,
+	});
+	const [error, setError] = useState<string | null>(null);
+	// Browsers refuse Pointer Lock + Fullscreen requests until the user has
+	// produced a real input gesture on the page. Until they click "Start", we
+	// don't even spin up the engine.
+	const [started, setStarted] = useState<boolean>(false);
+
+	useEffect(() => {
+		if (!started) return;
+		if (bootedRef.current) return;
+		bootedRef.current = true;
+		const canvas = canvasRef.current;
+		if (!canvas) return;
+
+		let cancelled: boolean = false;
+		let scriptEl: HTMLScriptElement | null = null;
+
+		const boot = async (): Promise<void> => {
+			try {
+				const manifest: GodotManifest = await fetchManifest();
+				if (cancelled) return;
+				if (manifest.base === null || manifest.base.length === 0) {
+					throw new Error(
+						"No .pck file found in web/godot-export/. Run a Godot Web export and refresh.",
+					);
+				}
+				const base: string = `${GODOT_DIR}/${manifest.base}`;
+				await loadScriptOnce(`${base}.js`).then((el) => {
+					scriptEl = el;
+				});
+				if (cancelled) return;
+				if (window.Engine === undefined) {
+					throw new Error(
+						`Godot Engine global missing after loading ${base}.js. Was the file actually a Godot 4 web export?`,
+					);
+				}
+				// Inherit everything Godot's auto-generated HTML put in GODOT_CONFIG
+				// (gdextensionLibs is the critical one — without it the engine will
+				// fail to dlopen addons like terrain_3d). Then override paths with
+				// our /godot/ URL prefix and switch resize-policy to canvas-CSS.
+				//
+				// IMPORTANT: gdextensionLibs entries MUST stay as basenames (no path
+				// prefix). Reason: Emscripten registers each loaded .wasm in its
+				// LDSO table keyed by the exact string passed; Godot's web platform
+				// then calls dlopen(basename(extension_path)). If we prefix with
+				// "/godot/", the registration key won't match what dlopen requests
+				// → "file not found". The engine resolves these basenames against
+				// `executable`'s directory automatically when fetching.
+				const fromGodot: GodotEngineConfig = manifest.godotConfig ?? {};
+				const gdextensionLibs: string[] = fromGodot.gdextensionLibs ?? [];
+				const engine = new window.Engine({
+					...fromGodot,
+					canvas,
+					executable: base,
+					mainPack: `${base}.pck`,
+					gdextensionLibs,
+					// canvasResizePolicy values per Godot 4.3 source:
+					//   0 = no resize (use canvas.width/height as-is)
+					//   1 = use project's viewport_width/height (1280x720 default → letterboxed!)
+					//   2 = fill window (sets canvas.style position=absolute, top/left=0,
+					//       width/height = window.inner*). This is the default and the only
+					//       value that actually fills the browser window.
+					// React's HUD overlay sits in a sibling div with pointer-events-none and
+					// z-order above the canvas, so making the canvas absolute doesn't break it.
+					canvasResizePolicy: 2,
+					// React already serves the page with COOP/COEP headers via Vite —
+					// disable the engine's own service-worker fallback that tries to
+					// inject them and reloads the tab.
+					ensureCrossOriginIsolationHeaders: false,
+					serviceWorker: undefined,
+					onProgress: (current, total) => {
+						if (!cancelled) setProgress({ current, total });
+					},
+					onPrintError: (...args) => console.error("[Godot]", ...args),
+				});
+				// The engine's hardcoded Config.prototype.getModuleConfig builds an
+				// internal `locateFile` that returns relative basenames as-is, so
+				// the browser resolves them against the React page URL ('/') and
+				// 404s on every GDExtension WASM. Wrap getModuleConfig to rewrite
+				// any relative path under /godot/ before Emscripten fetches it.
+				patchEngineLocateFile(engine);
+				engineRef.current = engine;
+				await engine.startGame();
+			} catch (err: unknown) {
+				if (cancelled) return;
+				console.error("[GameCanvas] boot failed:", err);
+				setError(err instanceof Error ? err.message : String(err));
+			}
+		};
+
+		void boot();
+
+		return () => {
+			cancelled = true;
+			engineRef.current?.requestQuit?.();
+			engineRef.current = null;
+			// Leave the script tag in place — Godot's engine module is not designed
+			// to be re-instantiated cleanly within the same page lifetime, so on
+			// unmount we just stop the running instance and let HMR reload the page.
+			if (scriptEl !== null) {
+				// Intentional no-op; held only for the closure capture above.
+			}
+		};
+	}, [started]);
+
+	const pct: number =
+		progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
+
+	return (
+		<div className="absolute inset-0">
+			<canvas
+				ref={canvasRef}
+				// Godot's engine.js internally calls document.querySelector('#'+canvas.id)
+				// for some bookkeeping — without an id the selector becomes '#' and
+				// throws SyntaxError before the game even boots.
+				id="godot-canvas"
+				className="block h-full w-full"
+				// Godot writes its own width/height every frame; defaults keep the
+				// initial paint sane before the engine takes over.
+				width={1280}
+				height={720}
+			/>
+			{!started && error === null && (
+				<div className="pointer-events-auto absolute inset-0 flex flex-col items-center justify-center bg-bg">
+					<div className="mb-8 font-sans text-display tracking-tight text-text">
+						IRONCLASH
+					</div>
+					<button
+						type="button"
+						onClick={() => {
+							// Burn the user gesture HERE — focus the canvas (so input
+							// events route into Godot) and pre-request pointer-lock
+							// from this click context. The browser then accepts later
+							// requestPointerLock calls from inside the engine's scene
+							// _ready, even though by then the gesture would otherwise
+							// have "expired".
+							const c = canvasRef.current;
+							if (c) {
+								c.focus();
+								try {
+									void c.requestPointerLock?.();
+								} catch {
+									// Some browsers throw if not user-initiated; we
+									// already are, but ignore to be defensive.
+								}
+							}
+							setStarted(true);
+						}}
+						className="border border-accent bg-transparent px-12 py-3 font-sans text-label uppercase tracking-label text-accent transition-colors duration-120 hover:bg-accent hover:text-bg"
+					>
+						Click to Play
+					</button>
+					<div className="mt-6 font-sans text-caption uppercase tracking-label text-text-muted">
+						Browser requires a click before pointer-lock + fullscreen
+					</div>
+				</div>
+			)}
+			{started && progress.total > 0 && progress.current < progress.total && (
+				<div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/70 font-mono text-sm text-white">
+					Loading {pct}%
+				</div>
+			)}
+			{error !== null && (
+				<div className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-red-950/80 p-8 text-center font-mono text-sm text-white">
+					<div>
+						<div className="mb-2 text-base font-bold">Failed to load game</div>
+						<div className="opacity-80">{error}</div>
+						<div className="mt-4 text-xs opacity-60">
+							Run a Godot Web export into <code>web/godot-export/</code>, then refresh.
+						</div>
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
+/** Wrap the engine's internal getModuleConfig() to override the locateFile it
+ *  hands to Emscripten. The stock impl returns gdextension basenames as-is,
+ *  which the browser then resolves against the React page URL — wrong base.
+ *  We force every relative path under GODOT_DIR. */
+interface PatchableEngine {
+	config?: {
+		getModuleConfig?: (loadPath: string, response: unknown) => {
+			locateFile?: (path: string) => string;
+		} & Record<string, unknown>;
+	};
+}
+
+function patchEngineLocateFile(engine: GodotEngine): void {
+	const e = engine as unknown as PatchableEngine;
+	const cfg = e.config;
+	if (cfg === undefined || typeof cfg.getModuleConfig !== "function") {
+		console.warn("[GameCanvas] engine.config.getModuleConfig missing — locateFile patch skipped");
+		return;
+	}
+	const original = cfg.getModuleConfig.bind(cfg);
+	cfg.getModuleConfig = function patched(loadPath: string, response: unknown) {
+		const moduleCfg = original(loadPath, response);
+		const stockLocate = moduleCfg.locateFile;
+		moduleCfg.locateFile = (path: string): string => {
+			const resolved: string =
+				typeof stockLocate === "function" ? stockLocate(path) : path;
+			if (resolved.startsWith("/") || /^https?:/i.test(resolved)) {
+				return resolved;
+			}
+			return `${GODOT_DIR}/${resolved}`;
+		};
+		return moduleCfg;
+	};
+}
+
+/** Hit the synthetic manifest endpoint that vite.config.ts serves to discover
+ *  the actual base name of the Godot export (Godot uses config/name → e.g.
+ *  "Ironclash4.3.pck", not "index.pck") plus the full GODOT_CONFIG block
+ *  parsed out of the auto-generated <Project>.html — critical because that's
+ *  where `gdextensionLibs` lives and the engine refuses to load addons
+ *  like terrain_3d without it. */
+async function fetchManifest(): Promise<GodotManifest> {
+	const res = await fetch(`${GODOT_DIR}/_manifest.json`, { cache: "no-store" });
+	if (!res.ok) {
+		throw new Error(`Manifest fetch failed (${res.status})`);
+	}
+	return (await res.json()) as GodotManifest;
+}
+
+const _scriptCache: Map<string, Promise<HTMLScriptElement>> = new Map();
+
+/** Inject a <script> tag once; subsequent calls return the same Promise. */
+function loadScriptOnce(src: string): Promise<HTMLScriptElement> {
+	const cached = _scriptCache.get(src);
+	if (cached !== undefined) return cached;
+	const promise = new Promise<HTMLScriptElement>((resolve, reject) => {
+		const el = document.createElement("script");
+		el.src = src;
+		el.async = true;
+		el.onload = () => resolve(el);
+		el.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+		document.body.appendChild(el);
+	});
+	_scriptCache.set(src, promise);
+	return promise;
+}

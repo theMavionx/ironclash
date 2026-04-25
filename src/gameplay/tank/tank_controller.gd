@@ -97,6 +97,29 @@ signal fired
 ## For Blender-exported rigs the bone's +Y often runs along its length.
 @export var muzzle_local_forward: Vector3 = Vector3(0.0, 1.0, 0.0)
 
+@export_group("Tread Marks")
+## Spawn black decal stripes under the tracks as the tank drives.
+@export var tread_marks_enabled: bool = true
+## Distance (m) the tank must travel between consecutive mark pairs. Lower = denser trail.
+@export var tread_mark_spacing: float = 0.5
+## Width (m) of one mark — lateral size across the track.
+@export var tread_mark_width: float = 0.22
+## Length (m) of one mark — along travel direction. Should be ≥ spacing for a continuous trail.
+@export var tread_mark_length: float = 1.4
+## Vertical projection range (m). Larger = the decal still hits ground on bumpy terrain.
+@export var tread_mark_height: float = 1.0
+## Distance (m) between left and right tread centerlines (gauge).
+## Set to 0 to auto-derive from average WheelLeft/WheelRight X positions.
+@export var tread_mark_gauge: float = 0.0
+## Local Z offset (m) of the spawn point. Default 0 = under tank center; negative = forward.
+@export var tread_mark_z_offset: float = 0.0
+## Seconds before a mark fades out and is freed.
+@export var tread_mark_lifetime: float = 5.0
+## Starting opacity of a mark (0..1). Lower = lighter / more translucent track.
+@export_range(0.0, 1.0) var tread_mark_initial_alpha: float = 0.5
+## Hard cap on simultaneously alive marks. Older marks are freed FIFO when exceeded.
+@export var tread_mark_max_alive: int = 240
+
 @export_group("Cook-Off (Turret Debris)")
 ## Mass of the detached turret RigidBody3D (kg). Still applied so the physics
 ## material + damping feel right, but launch velocity is set directly.
@@ -142,6 +165,30 @@ var _fire_timer: float = 0.0
 ## shot uses the bone pose written THIS frame (not the stale previous-frame pose).
 var _fire_requested: bool = false
 
+## Distance accumulator since last mark pair was spawned (m, horizontal only).
+var _tread_distance_acc: float = 0.0
+## Tank's horizontal position last physics tick — diff drives the accumulator.
+var _last_tread_pos: Vector3 = Vector3.ZERO
+## FIFO of currently-alive tread mark nodes (oldest first). Holds Decal on
+## desktop / Forward+ / Mobile and MeshInstance3D quads on web (Compatibility
+## renderer doesn't support Decals — they silently render nothing).
+var _tread_decals: Array[Node3D] = []
+## Cached at _ready: web platform uses MeshInstance3D quads, others use Decals.
+static var _USE_DECALS: bool = not OS.has_feature("web")
+## Black flat-shaded material shared by all web-fallback tread quads. Built
+## once on first spawn so we don't allocate one per mark.
+static var _tread_quad_material: StandardMaterial3D = null
+## PlaneMesh resource shared by all web-fallback tread marks (horizontal — FACE_Y).
+static var _tread_quad_mesh: PlaneMesh = null
+## Resolved gauge in meters — either tread_mark_gauge (if > 0) or auto-derived
+## from wheel positions one frame after _ready. Decals are spawned at ±half this
+## value laterally. Default 1.0 m matches the current StylizedTank model; used
+## as fallback when auto-derive fails (e.g. bone-driven wheels at Node3D origin).
+var _resolved_tread_gauge: float = 1.0
+## Tiny white texture used by all decals; tinted to black via modulate.
+## Static so all tanks share one texture (decal projects nothing without a texture).
+static var _tread_decal_texture: Texture2D = null
+
 # ---------------------------------------------------------------------------
 # Public methods
 # ---------------------------------------------------------------------------
@@ -185,6 +232,13 @@ func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	if _health != null:
 		_health.destroyed.connect(_on_destroyed)
+	_last_tread_pos = global_position
+	if _tread_decal_texture == null:
+		_tread_decal_texture = _build_white_texture()
+	# Defer gauge resolution so the Skeleton3D has already pushed bone transforms
+	# into bone-driven wheel meshes — otherwise their global_position would still
+	# be at the tank origin and auto-derive returns ~0.
+	call_deferred("_resolve_tread_gauge")
 
 
 func _on_destroyed(_by_source: int) -> void:
@@ -308,6 +362,8 @@ func _physics_process(delta: float) -> void:
 		velocity.y = 0.0
 
 	move_and_slide()
+
+	_update_tread_marks()
 
 	# Decrement fire cooldown.
 	if _fire_timer > 0.0:
@@ -513,3 +569,159 @@ func _animate_treads(linear_speed: float, delta: float) -> void:
 		_tread_material_left.set_shader_parameter("uv_offset", _tread_uv_offset)
 	if _tread_material_right:
 		_tread_material_right.set_shader_parameter("uv_offset", _tread_uv_offset)
+
+
+# ---------------------------------------------------------------------------
+# Tread Marks (ground decals)
+# ---------------------------------------------------------------------------
+
+## Track horizontal distance traveled and spawn a pair of black decals
+## (left + right tracks) every [member tread_mark_spacing] meters. Skips
+## while airborne so no marks float over jumps.
+func _update_tread_marks() -> void:
+	if not tread_marks_enabled or _is_destroyed:
+		return
+	if not is_on_floor():
+		_last_tread_pos = global_position
+		return
+	var moved: Vector3 = global_position - _last_tread_pos
+	moved.y = 0.0
+	var step: float = moved.length()
+	_last_tread_pos = global_position
+	if step <= 0.0001:
+		return
+	_tread_distance_acc += step
+	while _tread_distance_acc >= tread_mark_spacing:
+		_tread_distance_acc -= tread_mark_spacing
+		_spawn_tread_mark_pair()
+
+
+func _spawn_tread_mark_pair() -> void:
+	# Build a basis whose local Z-axis aligns with the tank's actual forward
+	# direction in world space. We can't just use Basis(UP, _hull_yaw) because
+	# the tank exposes `forward_axis` (the model's forward could be -Z, +Z, ±X);
+	# only `_get_forward_vector()` knows the truth. The decal's size.z extent
+	# spans both ±Z so direction (toward/away) doesn't matter — only the AXIS does.
+	var forward: Vector3 = _get_forward_vector()
+	forward.y = 0.0
+	if forward.length_squared() < 0.0001:
+		return
+	forward = forward.normalized()
+	# Basis.looking_at points -Z at the target; size.z still spans the travel axis.
+	var basis: Basis = Basis.looking_at(forward, Vector3.UP)
+	var half_gauge: float = _resolved_tread_gauge * 0.5
+	var left_local: Vector3 = Vector3(-half_gauge, 0.0, tread_mark_z_offset)
+	var right_local: Vector3 = Vector3(half_gauge, 0.0, tread_mark_z_offset)
+	_create_tread_decal(global_position + basis * left_local, basis)
+	_create_tread_decal(global_position + basis * right_local, basis)
+
+
+## Resolve the lateral spacing of tread marks. Honors `tread_mark_gauge` when
+## the user set it explicitly (> 0), else auto-derives from the average lateral
+## offset of WheelLeft / WheelRight nodes — so the tracks fall under the visible
+## treads regardless of which tank model is loaded.
+##
+## Uses [code]global_position[/code] transformed back to tank-local space so
+## bone-driven wheels (Node3D.position == origin, real offset baked into the
+## skeleton) report their correct lateral offset. Falls back to the default
+## [member _resolved_tread_gauge] if the derived value is implausibly small.
+func _resolve_tread_gauge() -> void:
+	if tread_mark_gauge > 0.0:
+		_resolved_tread_gauge = tread_mark_gauge
+		return
+	if _wheels_left.is_empty() or _wheels_right.is_empty():
+		return
+	var inv: Transform3D = global_transform.affine_inverse()
+	var sum_left: float = 0.0
+	for w: Node3D in _wheels_left:
+		sum_left += (inv * w.global_position).x
+	var sum_right: float = 0.0
+	for w: Node3D in _wheels_right:
+		sum_right += (inv * w.global_position).x
+	var avg_left: float = sum_left / _wheels_left.size()
+	var avg_right: float = sum_right / _wheels_right.size()
+	var derived: float = absf(avg_left - avg_right)
+	# Sanity floor — bone-driven wheels in some rigs still report 0 if the
+	# skeleton hasn't run a frame yet, or if wheels are nested under a
+	# transform we can't see. Keep the safe default in that case.
+	if derived >= 0.3:
+		_resolved_tread_gauge = derived
+
+
+func _create_tread_decal(world_pos: Vector3, yaw_basis: Basis) -> void:
+	var parent: Node = get_tree().current_scene
+	if parent == null:
+		return
+	var node: Node3D
+	if _USE_DECALS:
+		var decal: Decal = Decal.new()
+		decal.texture_albedo = _tread_decal_texture
+		decal.modulate = Color(0.0, 0.0, 0.0, tread_mark_initial_alpha)
+		decal.size = Vector3(tread_mark_width, tread_mark_height, tread_mark_length)
+		# Soften the lateral edges so adjacent marks blend instead of stamping rectangles.
+		decal.upper_fade = 0.3
+		decal.lower_fade = 0.3
+		node = decal
+	else:
+		# Web fallback: a flat black quad laid on the ground. Shares one Mesh,
+		# but each mark gets its own override material so it can fade alpha
+		# independently of its neighbours.
+		node = _build_tread_quad()
+	parent.add_child(node)
+	node.global_position = world_pos + Vector3(0.0, 0.02, 0.0)
+	node.global_basis = yaw_basis
+	_tread_decals.push_back(node)
+	# Enforce FIFO cap — kill oldest immediately when over the limit.
+	while _tread_decals.size() > tread_mark_max_alive:
+		var oldest: Node3D = _tread_decals.pop_front()
+		if is_instance_valid(oldest):
+			oldest.queue_free()
+	# Fade out over lifetime, then free. Tween bound to SceneTree so it survives
+	# tank destruction (mark still fades cleanly after a cook-off).
+	var tween: Tween = get_tree().create_tween()
+	if _USE_DECALS:
+		tween.tween_property(node, "modulate:a", 0.0, tread_mark_lifetime)
+	else:
+		# Animate the per-mark material's albedo alpha. Material was built with
+		# TRANSPARENCY_ALPHA already so the tween value reaches the rasterizer.
+		var mi: MeshInstance3D = node as MeshInstance3D
+		var mat: StandardMaterial3D = mi.get_surface_override_material(0) as StandardMaterial3D
+		if mat != null:
+			tween.tween_property(mat, "albedo_color:a", 0.0, tread_mark_lifetime)
+	tween.tween_callback(func() -> void:
+		if is_instance_valid(node):
+			_tread_decals.erase(node)
+			node.queue_free()
+	)
+
+
+## Build a flat horizontal PlaneMesh for the web tread-mark fallback. Uses
+## a unique material per mark so we can independently fade each one's alpha
+## without affecting siblings. Mesh resource itself is shared.
+func _build_tread_quad() -> MeshInstance3D:
+	if _tread_quad_mesh == null:
+		# PlaneMesh sits flat on XZ when orientation = FACE_Y, with normal +Y.
+		# That's exactly what we want for ground decals.
+		var plane: PlaneMesh = PlaneMesh.new()
+		plane.size = Vector2(tread_mark_width, tread_mark_length)
+		plane.orientation = PlaneMesh.FACE_Y
+		_tread_quad_mesh = plane
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	mi.mesh = _tread_quad_mesh
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# Per-mark material so each can fade independently.
+	var mat: StandardMaterial3D = StandardMaterial3D.new()
+	mat.albedo_color = Color(0.0, 0.0, 0.0, tread_mark_initial_alpha)
+	mat.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mi.set_surface_override_material(0, mat)
+	return mi
+
+
+## 4×4 fully-white texture so the Decal has something to project. We tint to
+## black via [member Decal.modulate] so no PNG asset is needed.
+static func _build_white_texture() -> Texture2D:
+	var img: Image = Image.create(4, 4, false, Image.FORMAT_RGBA8)
+	img.fill(Color.WHITE)
+	return ImageTexture.create_from_image(img)
