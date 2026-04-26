@@ -45,6 +45,15 @@ signal active_changed(is_active: bool)
 ## Multiplier applied to movement speed when walking backward (input.y > 0).
 @export var backward_speed_multiplier: float = 0.5
 
+@export_group("Dev Speed Boost")
+## Dev-only fast-travel multiplier. Toggled on/off by double-tapping Tab so a
+## developer can inspect the map from the player's POV without leaving the
+## game. Not shipped in release builds of the GDD — remove this export group
+## and the tab handler before gold.
+@export var dev_speed_boost_multiplier: float = 4.0
+## Max seconds between two Tab presses that still count as a double-tap.
+@export var dev_double_tap_threshold_sec: float = 0.4
+
 @export_group("Acceleration")
 @export var accel_rate_grounded: float = 12.0
 @export var accel_rate_airborne: float = 2.0
@@ -110,6 +119,10 @@ var _wants_jump: bool = false
 var _stamina: float = 100.0
 var _last_drain_time_msec: int = 0
 var _sprint_locked_out: bool = false
+
+## Dev-only: double-tap-Tab fast-travel toggle.
+var _dev_speed_boost_active: bool = false
+var _last_tab_press_msec: int = -1
 
 @onready var _body: CharacterBody3D = $Body
 @onready var _health: HealthComponent = $Body/HealthComponent
@@ -222,6 +235,19 @@ func _unhandled_input(event: InputEvent) -> void:
 		_wants_jump = true
 	elif event.is_action_pressed("interact"):
 		pass  # Hook for vehicle entry / drone entry.
+	elif event is InputEventKey:
+		# Dev-only: double-tap Tab toggles a 4× movement speed for map inspection.
+		# Raw keycode check — Tab is not in InputMap yet (reserved for scoreboard).
+		var key_ev := event as InputEventKey
+		if key_ev.pressed and not key_ev.echo and key_ev.keycode == KEY_TAB:
+			var now_msec: int = Time.get_ticks_msec()
+			var gap_sec: float = INF if _last_tab_press_msec < 0 \
+					else float(now_msec - _last_tab_press_msec) / 1000.0
+			if gap_sec <= dev_double_tap_threshold_sec:
+				_dev_speed_boost_active = not _dev_speed_boost_active
+				_last_tab_press_msec = -1  # reset so 3rd tap doesn't chain-toggle
+			else:
+				_last_tab_press_msec = now_msec
 
 
 func _physics_process(delta: float) -> void:
@@ -351,6 +377,10 @@ func _compute_target_velocity() -> Vector3:
 	# Backward movement (S dominant) is slower than forward.
 	if input_vector.y > 0.0:
 		speed *= backward_speed_multiplier
+	# Dev fast-travel (double-tap Tab). Applied after backward multiplier so
+	# backward speed still scales linearly with the boost.
+	if _dev_speed_boost_active:
+		speed *= dev_speed_boost_multiplier
 	return direction * speed
 
 
