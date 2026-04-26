@@ -617,8 +617,6 @@ static func _make_smoke_material(tint: Color = Color(0.55, 0.53, 0.50, 1.0), max
 	var smoke_tex: Texture2D = _get_shared_smoke_texture()
 	if smoke_tex == null:
 		return null
-	if OS.has_feature("web"):
-		return _make_billboard_material(smoke_tex, tint, 10, false)
 	var shader: Shader = load(_SMOKE_SHADER_PATH) as Shader
 	if shader == null:
 		push_warning("DestructionVFX: smoke shader missing at %s" % _SMOKE_SHADER_PATH)
@@ -691,8 +689,6 @@ static func _make_fire_material(
 	if fire_tex == null:
 		push_warning("DestructionVFX: fire teardrop texture failed to load — wreck fire will be invisible")
 		return null
-	if OS.has_feature("web"):
-		return _make_billboard_material(fire_tex, fire_color, 20, true)
 	if noise_tex == null:
 		push_warning("DestructionVFX: distortion noise texture failed to load")
 	var shader: Shader = load(_FIRE_SHADER_PATH) as Shader
@@ -722,8 +718,6 @@ static func _make_spark_material(
 	fire_color: Color = Color(8.0, 3.0, 0.5, 1.0)
 ) -> Material:
 	var circle_tex: Texture2D = _get_shared_circle_mask()
-	if OS.has_feature("web"):
-		return _make_billboard_material(circle_tex, fire_color, 30, true)
 	var shader: Shader = load(_FIRE_SHADER_PATH) as Shader
 	if shader == null:
 		push_warning("DestructionVFX: fire shader missing at %s" % _FIRE_SHADER_PATH)
