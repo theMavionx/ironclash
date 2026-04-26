@@ -307,14 +307,46 @@ static func spawn_ar_visuals(
 		return
 	_ensure_textures_loaded()
 	_spawn_muzzle_flash_at_node(muzzle_node)
-	var to_point: Vector3 = aim_origin + aim_dir.normalized() * max_range
 	var muzzle_world: Vector3 = muzzle_node.global_transform.origin
-	var convergence_dir: Vector3 = to_point - muzzle_world
-	if convergence_dir.length_squared() < 0.001:
-		convergence_dir = aim_dir
-	else:
-		convergence_dir = convergence_dir.normalized()
-	_spawn_tracer(world_root, muzzle_node, to_point, convergence_dir)
+	var to_point: Vector3 = aim_origin + aim_dir.normalized() * max_range
+	# Bypass `_spawn_tracer` — its pool path resolves the shared static
+	# `_tracer_pool` which is wired to the LOCAL player's TracerPool node.
+	# Spawning through that pool from a remote-shot context puts tracers under
+	# the wrong subtree. Allocate a dedicated mesh straight under world_root.
+	_spawn_remote_tracer_alloc(world_root, muzzle_world, to_point)
+
+
+## Pool-bypassed tracer for remote-shot VFX. Always allocates a fresh mesh +
+## Tween under [param world_root] so it's free of any local-side pool state.
+static func _spawn_remote_tracer_alloc(world_root: Node, from_pos: Vector3, to_pos: Vector3) -> void:
+	if world_root == null or not is_instance_valid(world_root):
+		return
+	var distance: float = from_pos.distance_to(to_pos)
+	if distance < 0.2:
+		return
+	var mesh: MeshInstance3D = MeshInstance3D.new()
+	# Always use the simple cylinder + StandardMaterial pipeline here — it's
+	# guaranteed valid after _ensure_textures_loaded() and renders identically
+	# on Forward+ and gl_compatibility renderers.
+	mesh.mesh = _tracer_mesh
+	mesh.material_override = _tracer_material
+	world_root.add_child(mesh)
+	mesh.global_position = from_pos
+	var up_ref: Vector3 = Vector3.UP
+	var forward: Vector3 = (to_pos - from_pos).normalized()
+	if absf(forward.dot(Vector3.UP)) > 0.99:
+		up_ref = Vector3.FORWARD
+	mesh.look_at(to_pos, up_ref)
+	# CylinderMesh's length is along local +Y; rotate -90° around X so the
+	# cylinder runs along -Z (the look_at forward direction).
+	mesh.rotate_object_local(Vector3.RIGHT, -PI / 2.0)
+	const BULLET_SPEED: float = 80.0
+	var travel_time: float = clampf(distance / BULLET_SPEED, 0.02, 0.35)
+	var tween: Tween = mesh.create_tween()
+	tween.tween_property(mesh, "global_position", to_pos, travel_time) \
+		.from(from_pos) \
+		.set_trans(Tween.TRANS_LINEAR)
+	tween.tween_callback(mesh.queue_free)
 
 
 ## Pool-bypassed muzzle flash spawn — always allocates a fresh Sprite3D as a
