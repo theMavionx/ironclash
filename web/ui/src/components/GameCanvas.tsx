@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { godotBridge } from "@/bridge/godotBridge";
+import { UiEvent } from "@/bridge/eventTypes";
 
 // Folder mounted by vite.config.ts where Godot's web export lives. The actual
 // file basename (Godot uses config/name → "Ironclash4.3.*") is discovered at
@@ -144,6 +146,17 @@ export default function GameCanvas() {
 				patchEngineLocateFile(engine);
 				engineRef.current = engine;
 				await engine.startGame();
+				// Hand off to Godot: once the GDScript autoload fires
+				// `godot_ready`, engineReady flips and the Play intent goes
+				// through. Bound the wait so a silent autoload failure
+				// surfaces an error instead of soft-locking on the loader.
+				const ready: Promise<void> = godotBridge.waitForReady();
+				const timeout: Promise<never> = new Promise((_, reject) =>
+					setTimeout(() => reject(new Error("Godot autoload didn't signal ready in 15s")), 15000),
+				);
+				await Promise.race([ready, timeout]);
+				if (cancelled) return;
+				godotBridge.emit(UiEvent.Play, {});
 			} catch (err: unknown) {
 				if (cancelled) return;
 				console.error("[GameCanvas] boot failed:", err);

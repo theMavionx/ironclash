@@ -302,6 +302,11 @@ func _spawn_rpg_projectile() -> void:
 
 	# Configure damage source and self-hit exclusion before adding to tree.
 	rocket.setup(DamageTypes.Source.PLAYER_RPG, rpg_damage, _shooter)
+	# Server is authoritative for damage when networked — local impact sends
+	# a hit-claim, no local HP mutation. In solo mode the shell falls back to
+	# its own apply_local_damage path (default true).
+	if rocket.has_method("setup_network"):
+		rocket.call("setup_network", "player_rpg", false)
 
 	# Cap lifetime so the rocket auto-expires at max range without a hit.
 	rocket.lifetime = rpg_max_range / rocket.speed

@@ -1,0 +1,41 @@
+[gd_scene load_steps=7 format=3 uid="uid://b3ironc1remplay"]
+
+[ext_resource type="Script" path="res://src/networking/remote_player_avatar.gd" id="1_avatar"]
+[ext_resource type="Script" path="res://src/gameplay/health/health_component.gd" id="2_health"]
+[ext_resource type="PackedScene" uid="uid://dy56h01ex3fl" path="res://Model/Player/SolderBoyFinal.glb" id="3_model"]
+[ext_resource type="Script" path="res://src/gameplay/player/player_animation_controller.gd" id="4_anim"]
+[ext_resource type="Script" path="res://src/gameplay/player/weapon_anim_visibility.gd" id="5_weapvis"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_remote_player"]
+radius = 0.4
+height = 1.8
+
+[node name="RemotePlayer" type="Node3D"]
+script = ExtResource("1_avatar")
+
+[node name="Body" type="CharacterBody3D" parent="."]
+collision_layer = 2
+collision_mask = 1
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Body"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+shape = SubResource("CapsuleShape3D_remote_player")
+
+[node name="Visual" parent="Body" instance=ExtResource("3_model")]
+transform = Transform3D(-1, 0, -8.74228e-08, 0, 1, 0, 8.74228e-08, 0, -1, 0, 0, 0)
+
+[node name="HealthComponent" type="Node" parent="Body"]
+script = ExtResource("2_health")
+
+[node name="WeaponAnimVisibility" type="Node" parent="Body"]
+script = ExtResource("5_weapvis")
+
+[node name="PlayerAnimController" type="Node" parent="."]
+script = ExtResource("4_anim")
+
+[node name="Label3D" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.2, 0)
+billboard = 1
+text = "P? ?"
+font_size = 64
+outline_size = 8

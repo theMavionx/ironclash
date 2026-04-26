@@ -16,6 +16,7 @@ const SHADER_PATH: String = "res://src/vfx/spatial_particles_fire.gdshader"
 const FIRE_TEX_PATH: String = "res://assets/textures/fire_vfx/T_fire_diff.png"
 const NOISE_PATH: String = "res://assets/textures/smoke_vfx/T_Noise_001R.png"
 const SMOKE_SHADER_PATH: String = "res://src/vfx/spatial_particles_smoke.gdshader"
+const SMOKE_TEX_PATH: String = "res://assets/textures/smoke_vfx/T_smoke_b7.png"
 const CIRCLE_MASK_PATH: String = "res://assets/textures/smoke_vfx/T_VFX_circle_1.png"
 
 const FIRE_COLOR: Color = Color(4.0, 0.8, 0.0, 1.0)
@@ -102,6 +103,8 @@ func _ensure_smoke_layer() -> void:
 	pm.emission_sphere_radius = 0.2     # Le Lu: 0.2
 	pm.direction = Vector3(0.0, 1.0, 0.0)
 	pm.spread = 90.0                    # Le Lu: ±90°
+	pm.angle_min = -180.0
+	pm.angle_max = 180.0
 	pm.angular_velocity_min = -180.0    # Le Lu: ±180°
 	pm.angular_velocity_max = 180.0
 	pm.gravity = Vector3(0.0, 5.0, 0.0)  # Le Lu: gravity Y = -5 → upward (Godot's -Y is down, so +Y for upward)
@@ -130,15 +133,19 @@ func _ensure_smoke_layer() -> void:
 
 	var smoke_shader: Shader = load(SMOKE_SHADER_PATH) as Shader
 	var smoke_noise: Texture2D = load(NOISE_PATH) as Texture2D
-	var smoke_mask: Texture2D = load(CIRCLE_MASK_PATH) as Texture2D
-	if smoke_shader and smoke_noise and smoke_mask:
+	var smoke_tex: Texture2D = load(SMOKE_TEX_PATH) as Texture2D
+	if smoke_shader and smoke_noise and smoke_tex:
 		var smat: ShaderMaterial = ShaderMaterial.new()
 		smat.shader = smoke_shader
-		smat.set_shader_parameter("noise_texture", smoke_noise)
-		smat.set_shader_parameter("circle_mask", smoke_mask)
+		smat.set_shader_parameter("smoke_texture", smoke_tex)
+		smat.set_shader_parameter("distortion_texture", smoke_noise)
 		smat.set_shader_parameter("smoke_color", Color(0.4, 0.36, 0.32, 1.0))
 		smat.set_shader_parameter("max_lod", 5.0)
 		smat.set_shader_parameter("fade_intensity", 0.7)
+		smat.set_shader_parameter("min_particle_alpha", 0.0)
+		smat.set_shader_parameter("edge_start", 0.22)
+		smat.set_shader_parameter("texture_power", 0.72)
+		smat.set_shader_parameter("dissolve_strength", 0.16)
 		var quad: QuadMesh = QuadMesh.new()
 		quad.size = Vector2(1.0, 1.0)
 		quad.material = smat

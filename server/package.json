@@ -1,0 +1,20 @@
+{
+	"name": "ironclash-server",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Authoritative Node.js game server for Ironclash 5v5.",
+	"scripts": {
+		"dev": "node --watch src/index.ts",
+		"start": "node src/index.ts"
+	},
+	"dependencies": {
+		"ws": "^8.18.0"
+	},
+	"devDependencies": {
+		"@types/node": "^22.10.0",
+		"@types/ws": "^8.5.13",
+		"tsx": "^4.19.2",
+		"typescript": "^5.7.2"
+	}
+}

@@ -89,6 +89,22 @@ var _active: bool = true
 var _current_rotor_speed: float = 0.0
 var _main_rotor: Node3D
 var _tail_rotor: Node3D
+## Set by VehicleSync when a non-local peer is driving — keeps rotors spinning
+## even though our `_physics_process` is suspended.
+var _remote_driver_active: bool = false
+
+
+## Called by VehicleSync every snapshot. When true, our `_process` continues
+## animating rotors so observers see the heli "alive".
+func set_remote_driver_active(active: bool) -> void:
+	_remote_driver_active = active
+
+
+func _process(delta: float) -> void:
+	# When the local controller is active, _physics_process drives rotors.
+	if _active:
+		return
+	_animate_rotors(_remote_driver_active, delta)
 
 ## Target yaw accumulated from mouse input (radians).
 var _yaw_target: float = 0.0
@@ -114,6 +130,9 @@ var _is_reloading: bool = false
 var _reload_label: Label
 
 signal missile_fired
+## Same as [signal missile_fired] but carries the spawn pose so network sync
+## can replicate the missile on remote clients.
+signal fired_with_aim(spawn_origin: Vector3, aim_dir: Vector3)
 signal reload_started
 signal reload_finished
 
@@ -355,6 +374,10 @@ func _spawn_missile(from_mesh: Node3D) -> void:
 	var shell: TankShell = missile_scene.instantiate() as TankShell
 	# setup() before add_child so the raycast self-hit exception is wired in _ready.
 	shell.setup(DamageTypes.Source.HELI_MISSILE, 34, self)
+	# Network-authoritative damage — same pattern as the tank shell. Local
+	# missiles only do VFX; server applies damage via vehicle_hit_claim.
+	if shell.has_method("setup_network"):
+		shell.call("setup_network", "heli_missile", false)
 	get_tree().current_scene.add_child(shell)
 	shell.global_position = from_mesh.global_position
 	# Crosshair convergence: trace from camera to find crosshair target, then
@@ -374,6 +397,8 @@ func _spawn_missile(from_mesh: Node3D) -> void:
 	if absf(aim_dir.dot(Vector3.UP)) > 0.95:
 		up_ref = Vector3.FORWARD
 	shell.look_at(shell.global_position + aim_dir, up_ref)
+	# Notify any network sync wrapper riding alongside the local controller.
+	fired_with_aim.emit(shell.global_position, aim_dir)
 
 
 func _start_reload() -> void:

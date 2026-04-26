@@ -4,6 +4,9 @@ extends CharacterBody3D
 ## Emitted after the drone has been teleported back to its spawn point and
 ## physics is re-enabled. FPV HUD listens to clear the "DRONE OFFLINE" overlay.
 signal respawned
+## Emitted when this drone is destroyed locally (kamikaze, bullets, missile).
+## VehicleSync forwards to the server so other clients see the explosion.
+signal self_destructed(at_position: Vector3)
 
 ## Helicopter-style FPV drone controller (arcade flight model).
 ## Body only YAWS — never pitches or rolls — so the rigid-mounted FPV camera
@@ -141,6 +144,9 @@ signal respawned
 # ---------------------------------------------------------------------------
 
 var _active: bool = true
+## Set by VehicleSync when a non-local peer is flying this drone — keeps
+## propellers spinning even though our `_physics_process` is suspended.
+var _remote_driver_active: bool = false
 ## Yaw target accumulated from mouse X motion (radians).
 var _yaw_target: float = 0.0
 ## Smoothed yaw applied to the body each tick.
@@ -310,6 +316,20 @@ func _unhandled_input(event: InputEvent) -> void:
 		)
 
 
+## Called by VehicleSync every snapshot to flag remote driver.
+func set_remote_driver_active(active: bool) -> void:
+	_remote_driver_active = active
+
+
+func _process(delta: float) -> void:
+	# Local controller running its own physics? Skip — _physics_process spins.
+	if _active or _is_destroyed:
+		return
+	# Remote pilot is flying this drone but our physics is suspended; keep
+	# propellers visually animated so observers see it "alive".
+	_animate_propellers(_remote_driver_active, delta)
+
+
 func _physics_process(delta: float) -> void:
 	# Destroyed wreck: only gravity + collision until _respawn() flips the flag.
 	if _is_destroyed:
@@ -348,7 +368,13 @@ func _check_kamikaze_collisions() -> void:
 		# Rule: ANY contact with a damageable target = kamikaze, regardless of speed.
 		# The threshold only applies to terrain so the drone can land softly on pads.
 		if target_health != null:
-			target_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
+			# Networked: damage to the target goes through the server via a
+			# vehicle_hit_claim. Locally we only blow up the drone itself
+			# (vehicle_self_destruct fires from the destroyed signal handler).
+			if _is_networked():
+				_send_kamikaze_claim(collider)
+			else:
+				target_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
 			if _health != null:
 				_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
 			return
@@ -356,6 +382,43 @@ func _check_kamikaze_collisions() -> void:
 		if fast_enough and _health != null:
 			_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
 			return
+
+
+func _is_networked() -> bool:
+	var nm: Node = get_node_or_null("/root/NetworkManager")
+	if nm == null:
+		return false
+	if not nm.has_method("is_online"):
+		return false
+	return bool(nm.call("is_online"))
+
+
+func _send_kamikaze_claim(collider: Node) -> void:
+	var nm = get_node_or_null("/root/NetworkManager")
+	if nm == null or not nm.has_method("send_message"):
+		return
+	# Walk up the collider hierarchy to find a target identifier the server
+	# knows about (peer_id for player avatars, vehicle_id for tank/heli/drone).
+	var node: Node = collider
+	var msg: Dictionary = {
+		"t": "vehicle_hit_claim",
+		"projectile": "drone_kamikaze",
+		"vehicle_id": "drone",
+		"client_t": Time.get_ticks_msec(),
+	}
+	while node != null:
+		var lower: String = node.name.to_lower()
+		if lower == "tank" or lower == "helicopter":
+			msg["target_vehicle_id"] = lower
+			break
+		if "peer_id" in node:
+			var pid: int = int(node.get("peer_id"))
+			if pid > 0:
+				msg["target_peer_id"] = pid
+				break
+		node = node.get_parent()
+	if msg.has("target_peer_id") or msg.has("target_vehicle_id"):
+		nm.call("send_message", msg)
 
 
 ## Locate a HealthComponent on the collider. Most vehicles parent it directly
@@ -501,6 +564,7 @@ func _on_self_destroyed(_by_source: int) -> void:
 	# mid-air instead of falling. Same pattern as HelicopterController._on_destroyed.
 	set_physics_process(true)
 	_apply_destroyed_visual()
+	self_destructed.emit(global_position)
 	# Schedule respawn — player sees the wreck plummet for ~1.5s before teleport.
 	var timer: SceneTreeTimer = get_tree().create_timer(respawn_delay)
 	timer.timeout.connect(_respawn)

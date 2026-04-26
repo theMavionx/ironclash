@@ -1,0 +1,25 @@
+{
+	"_doc": "Match-level tuning. Mirrors design/gdd/team-assignment.md and design/gdd/respawn-system.md tuning knobs. Server reads at boot.",
+
+	"max_per_team": 5,
+	"min_per_team_to_start": 3,
+	"max_total": 10,
+
+	"starting_hp": 100,
+	"respawn_delay_seconds": 5.0,
+
+	"tick_hz": 30,
+
+	"red_spawn": [-20.0, 1.0, 0.0],
+	"blue_spawn": [20.0, 1.0, 0.0],
+
+	"_anticheat_doc": "Server clamps horizontal step per transform packet. max_step = max_horizontal_speed * dt + tolerance. Higher tolerance = more lag-friendly but easier to teleport-cheat.",
+	"max_horizontal_speed_mps": 12.0,
+	"position_jitter_tolerance_m": 0.5,
+
+	"_flow_doc": "Match phase durations. waiting → warmup (when both teams have ≥1) → in_progress → post_match → waiting (reset). Tune for dev vs prod: short values speed iteration; production 5v5 wants warmup=15, duration=600, post=15.",
+	"warmup_seconds": 5.0,
+	"match_duration_seconds": 120.0,
+	"post_match_seconds": 10.0,
+	"kill_cap_per_team": 30
+}

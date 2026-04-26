@@ -3,11 +3,9 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://dm20snpwr3f0q"
-path.s3tc="res://.godot/imported/ApacheLowPoly_Image_1.png-f36fcd462acef76b7e1904dbc6f662b2.s3tc.ctex"
-path.etc2="res://.godot/imported/ApacheLowPoly_Image_1.png-f36fcd462acef76b7e1904dbc6f662b2.etc2.ctex"
+path="res://.godot/imported/ApacheLowPoly_Image_1.png-f36fcd462acef76b7e1904dbc6f662b2.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc", "etc2_astc"],
-"vram_texture": true
+"vram_texture": false
 }
 generator_parameters={
 "md5": "23a292ee24892cb64d22a2e9dc198ed8"
@@ -16,11 +14,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/helicopter/ApacheLowPoly_Image_1.png"
-dest_files=["res://.godot/imported/ApacheLowPoly_Image_1.png-f36fcd462acef76b7e1904dbc6f662b2.s3tc.ctex", "res://.godot/imported/ApacheLowPoly_Image_1.png-f36fcd462acef76b7e1904dbc6f662b2.etc2.ctex"]
+dest_files=["res://.godot/imported/ApacheLowPoly_Image_1.png-f36fcd462acef76b7e1904dbc6f662b2.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

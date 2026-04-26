@@ -23,6 +23,14 @@ extends Node3D
 @export var damage: int = 100
 ## Identifies the firing weapon for VFX/scoring branches.
 @export var damage_source: int = DamageTypes.Source.TANK_SHELL
+## When non-empty AND running networked, the shell sends a vehicle_hit_claim
+## packet to the server on impact (server applies authoritative damage).
+## When empty, the shell behaves like a solo-mode projectile and damages the
+## HealthComponent locally. Set via [method setup_network] by vehicle controllers.
+@export var network_projectile_id: String = ""
+## When false, skip the local take_damage call — used together with
+## network_projectile_id so we don't double-apply damage on top of the server.
+@export var apply_local_damage: bool = true
 
 var _remaining_life: float
 var _ray: RayCast3D
@@ -38,6 +46,15 @@ func setup(source: int, dmg: int, shooter: CollisionObject3D) -> void:
 	damage_source = source
 	damage = dmg
 	_shooter = shooter
+
+
+## Configure network-authoritative mode: shell sends a hit-claim packet on
+## impact and skips local HP mutation. Used by vehicle controllers (tank,
+## heli) so server is authoritative for damage. Must be called before
+## add_child.
+func setup_network(projectile_id: String, apply_local: bool = false) -> void:
+	network_projectile_id = projectile_id
+	apply_local_damage = apply_local
 
 
 func _ready() -> void:
@@ -73,9 +90,80 @@ func _physics_process(delta: float) -> void:
 func _apply_damage_if_health(collider: Node) -> void:
 	if collider == null:
 		return
+	# Network-authoritative path: tell the server about the hit and let it
+	# decide who took how much damage. Skip local HP mutation entirely so we
+	# don't double-apply on top of the server's `damage` broadcast.
+	if network_projectile_id != "" and _is_networked():
+		_send_hit_claim(collider)
+		return
+	if not apply_local_damage:
+		return
 	var health: HealthComponent = collider.get_node_or_null("HealthComponent") as HealthComponent
 	if health != null:
 		health.take_damage(damage, damage_source)
+
+
+func _is_networked() -> bool:
+	var nm: Node = get_node_or_null("/root/NetworkManager")
+	if nm == null:
+		return false
+	if not nm.has_method("is_online"):
+		return false
+	return bool(nm.call("is_online"))
+
+
+## Walk the collider hierarchy to find a target identifier the server knows
+## about. Returns either a peer_id (for player Bodies) or a vehicle_id (for
+## tank/helicopter/drone roots), or null if neither matched.
+func _resolve_target(collider: Node) -> Dictionary:
+	var node: Node = collider
+	while node != null:
+		# Vehicles in Main.tscn are named "Tank" / "Helicopter" / "Drone".
+		var lower: String = node.name.to_lower()
+		if lower == "tank" or lower == "helicopter" or lower == "drone":
+			return {"vehicle_id": lower}
+		# Local player root has a NetworkPlayerSync that knows our peer_id.
+		var sync: Node = node.get_node_or_null("NetworkPlayerSync")
+		if sync == null:
+			# Some scenes parent the sync above the body — also check parent.
+			sync = node.get_parent().get_node_or_null("NetworkPlayerSync") if node.get_parent() != null else null
+		if sync != null:
+			var nm = get_node_or_null("/root/NetworkManager")
+			if nm != null:
+				return {"peer_id": int(nm.local_peer_id)}
+		# Remote player avatars store peer_id directly.
+		if "peer_id" in node:
+			var pid: int = int(node.get("peer_id"))
+			if pid > 0:
+				return {"peer_id": pid}
+		node = node.get_parent()
+	return {}
+
+
+func _send_hit_claim(collider: Node) -> void:
+	var nm = get_node_or_null("/root/NetworkManager")
+	if nm == null:
+		return
+	var target: Dictionary = _resolve_target(collider)
+	if target.is_empty():
+		return  # hit terrain or unknown — no claim needed
+	var msg: Dictionary = {
+		"t": "vehicle_hit_claim",
+		"projectile": network_projectile_id,
+		"client_t": Time.get_ticks_msec(),
+	}
+	if target.has("peer_id"):
+		msg["target_peer_id"] = target["peer_id"]
+	if target.has("vehicle_id"):
+		msg["target_vehicle_id"] = target["vehicle_id"]
+	# Identify the firing vehicle (tank/heli) so server validates driver.
+	# Drones don't fire shells — drone kamikaze sends its own claim path.
+	if _shooter != null:
+		var shooter_name: String = _shooter.name.to_lower()
+		if shooter_name == "tank" or shooter_name == "helicopter":
+			msg["vehicle_id"] = shooter_name
+	if nm.has_method("send_message"):
+		nm.call("send_message", msg)
 
 
 func _spawn_impact(hit_point: Vector3, hit_normal: Vector3) -> void:

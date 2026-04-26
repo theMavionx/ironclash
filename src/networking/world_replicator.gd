@@ -1,0 +1,481 @@
+class_name WorldReplicator
+extends Node3D
+
+## Listens to NetworkManager and mirrors the server's view of the world into
+## the local scene by spawning / updating / despawning RemotePlayer avatars
+## (one per non-local peer). Routes per-peer events (damage, death, respawn,
+## anim_event) to the matching avatar.
+##
+## Implements: docs/architecture/adr-0005-node-authoritative-server.md
+
+const REMOTE_PLAYER_SCENE: PackedScene = preload("res://scenes/player/remote_player.tscn")
+const RPG_ROCKET_SCENE: PackedScene = preload("res://scenes/projectile/rpg_rocket.tscn")
+
+# Bone paths inside the remote player's skeleton — match the local player.
+const _AK_MUZZLE_PATH: String = "Body/Visual/Player/Skeleton3D/ak47/Muzzle"
+const _RPG_MUZZLE_PATH: String = "Body/Visual/Player/Skeleton3D/rocketbullet"
+
+## When true, also spawn a remote-player avatar for the local peer (debug
+## third-person view of own snapshot fidelity). Off in normal play.
+@export var include_local_peer: bool = false
+
+var _remote_players: Dictionary = {}  # peer_id (int) -> RemotePlayer Node3D
+var _last_local_vehicle: String = ""  # tracks what we last reported to React
+var _vehicle_alive: Dictionary = {}  # vehicle_id (String) -> bool
+var _vehicle_vfx_started: Dictionary = {}  # vehicle_id (String) -> bool
+var _network_smoke_anchors: Dictionary = {}  # vfx key (String) -> Node3D
+
+
+func _ready() -> void:
+	if not _network_manager_available():
+		push_warning("[net] WorldReplicator: NetworkManager autoload missing")
+		return
+	NetworkManager.snapshot_received.connect(_on_snapshot)
+	NetworkManager.player_left.connect(_on_player_left)
+	NetworkManager.disconnected_from_server.connect(_clear_all)
+	NetworkManager.damage_received.connect(_on_damage)
+	NetworkManager.death_received.connect(_on_death)
+	NetworkManager.respawn_received.connect(_on_respawn)
+	NetworkManager.anim_event.connect(_on_anim_event)
+	NetworkManager.vfx_event.connect(_on_vfx_event)
+
+
+func _network_manager_available() -> bool:
+	return get_node_or_null("/root/NetworkManager") != null
+
+
+# ---------------------------------------------------------------------------
+# Snapshot handling: spawn / update / despawn
+# ---------------------------------------------------------------------------
+
+func _on_snapshot(_tick: int, _server_t: int, players: Array, vehicles: Array) -> void:
+	var seen: Dictionary = {}
+	for raw in players:
+		if not (raw is Dictionary):
+			continue
+		var p_dict: Dictionary = raw
+		var pid: int = int(p_dict.get("id", -1))
+		if pid < 0:
+			continue
+		if not include_local_peer and pid == NetworkManager.local_peer_id:
+			continue
+		seen[pid] = true
+		var team: String = String(p_dict.get("team", ""))
+		var pos: Vector3 = _vec3_from_array(p_dict.get("pos", null))
+		var rot_y: float = float(p_dict.get("rot_y", 0.0))
+		var hp: int = int(p_dict.get("hp", 100))
+		var max_hp: int = int(p_dict.get("max_hp", 100))
+		var alive: bool = bool(p_dict.get("alive", true))
+		var weapon: String = String(p_dict.get("weapon", "ak"))
+		var move_state: String = String(p_dict.get("move_state", "idle"))
+		var rp: Node3D = _remote_players.get(pid)
+		if rp == null or not is_instance_valid(rp):
+			rp = _spawn(pid, team, pos, rot_y)
+		if rp != null and rp.has_method("update_from_snapshot"):
+			rp.call("update_from_snapshot", pos, rot_y, hp, max_hp, alive, weapon, move_state)
+
+	# Despawn anyone the server no longer reports.
+	for pid_old: int in _remote_players.keys():
+		if not seen.has(pid_old):
+			_despawn(pid_old)
+
+	_sync_vehicle_vfx(vehicles)
+	_sync_local_vehicle_hud(vehicles)
+
+
+## Tell the React HUD whether the local peer is driving a vehicle, and push
+## its current HP each snapshot so the React HUD can paint a vehicle bar.
+func _sync_local_vehicle_hud(vehicles: Array) -> void:
+	if NetworkManager.local_peer_id < 0:
+		return
+	var driving: Dictionary = {}
+	for raw in vehicles:
+		if not (raw is Dictionary):
+			continue
+		var v: Dictionary = raw
+		if int(v.get("driver_peer_id", -1)) != NetworkManager.local_peer_id:
+			continue
+		driving = v
+		break
+	if not has_node("/root/WebBridge"):
+		return
+	var bridge: Node = get_node("/root/WebBridge")
+	if not bridge.has_method("send_event"):
+		return
+	if driving.is_empty():
+		if _last_local_vehicle != "":
+			bridge.send_event("vehicle_drive_end", {})
+			_last_local_vehicle = ""
+		return
+	var vid: String = String(driving.get("id", ""))
+	if vid != _last_local_vehicle:
+		_last_local_vehicle = vid
+		bridge.send_event("vehicle_drive_start", {"vehicle_id": vid})
+	bridge.send_event("vehicle_hp", {
+		"vehicle_id": vid,
+		"hp": int(driving.get("hp", 0)),
+		"max_hp": int(driving.get("max_hp", 100)),
+		"alive": bool(driving.get("alive", true)),
+	})
+
+
+func _spawn(peer_id: int, team: String, pos: Vector3, rot_y: float) -> Node3D:
+	var rp: Node3D = REMOTE_PLAYER_SCENE.instantiate()
+	add_child(rp)
+	if rp.has_method("setup"):
+		rp.call("setup", peer_id, team, pos, rot_y)
+	_remote_players[peer_id] = rp
+	print("[net] spawned remote peer=%d team=%s at %s" % [peer_id, team, pos])
+	return rp
+
+
+func _despawn(peer_id: int) -> void:
+	var rp: Node3D = _remote_players.get(peer_id)
+	if rp != null and is_instance_valid(rp):
+		rp.queue_free()
+		print("[net] despawned remote peer=%d" % peer_id)
+	_remote_players.erase(peer_id)
+
+
+func _on_player_left(peer_id: int) -> void:
+	_despawn(peer_id)
+
+
+func _clear_all() -> void:
+	for pid: int in _remote_players.keys():
+		var rp: Node3D = _remote_players[pid]
+		if is_instance_valid(rp):
+			rp.queue_free()
+	_remote_players.clear()
+	for key: String in _network_smoke_anchors.keys():
+		var anchor: Node3D = _network_smoke_anchors[key]
+		if is_instance_valid(anchor):
+			anchor.queue_free()
+	_network_smoke_anchors.clear()
+	_vehicle_alive.clear()
+	_vehicle_vfx_started.clear()
+
+
+# ---------------------------------------------------------------------------
+# Per-peer event routing
+# ---------------------------------------------------------------------------
+
+func _on_damage(payload: Dictionary) -> void:
+	var victim_id: int = int(payload.get("victim", -1))
+	if victim_id == NetworkManager.local_peer_id:
+		return  # local player handled by NetworkPlayerSync
+	var rp: Node3D = _remote_players.get(victim_id)
+	if rp != null and rp.has_method("on_damage"):
+		rp.call("on_damage", int(payload.get("amount", 0)), int(payload.get("new_hp", 0)))
+
+
+func _on_death(payload: Dictionary) -> void:
+	var victim_id: int = int(payload.get("victim", -1))
+	if victim_id == NetworkManager.local_peer_id:
+		return
+	var rp: Node3D = _remote_players.get(victim_id)
+	if rp != null and rp.has_method("on_death"):
+		rp.call("on_death")
+
+
+func _on_respawn(payload: Dictionary) -> void:
+	var pid: int = int(payload.get("peer_id", -1))
+	if pid == NetworkManager.local_peer_id:
+		return
+	var rp: Node3D = _remote_players.get(pid)
+	if rp == null:
+		return
+	if rp.has_method("on_respawn"):
+		var pos: Vector3 = _vec3_from_array(payload.get("pos", null))
+		rp.call("on_respawn", pos)
+
+
+func _on_vfx_event(payload: Dictionary) -> void:
+	var kind: String = String(payload.get("kind", ""))
+	match kind:
+		"muzzle_flash":
+			_handle_muzzle_flash(payload)
+		"explosion":
+			_spawn_network_explosion(payload)
+		"smoke_fire_start":
+			_start_network_smoke_fire(payload)
+		"smoke_fire_stop":
+			_stop_network_smoke_fire(payload)
+		"vehicle_fire":
+			_handle_vehicle_fire(payload)
+		_:
+			pass
+
+
+func _handle_vehicle_fire(payload: Dictionary) -> void:
+	var pid: int = int(payload.get("peer_id", -1))
+	# Skip own — local controller already spawned the shell visually.
+	if pid == NetworkManager.local_peer_id:
+		return
+	var origin: Vector3 = _vec3_from_array(payload.get("pos", null))
+	var dir: Vector3 = _vec3_from_array(payload.get("dir", null))
+	if dir.length_squared() < 0.0001:
+		return
+	var projectile: String = String(payload.get("projectile", "tank_shell"))
+	# Both tank and heli currently reuse the tank_shell scene as the visual
+	# missile (per existing code) — same scene path is fine for both.
+	var scene_path: String = "res://scenes/projectile/tank_shell.tscn"
+	if not ResourceLoader.exists(scene_path):
+		return
+	var scene: PackedScene = load(scene_path)
+	var shell: Node3D = scene.instantiate() as Node3D
+	if shell == null:
+		return
+	# Visual-only: damage 0; source picks the right screen-shake amplitude
+	# (TANK_SHELL = strongest, HELI_MISSILE = milder).
+	var src: int = DamageTypes.Source.TANK_SHELL if projectile == "tank_shell" else DamageTypes.Source.HELI_MISSILE
+	if shell.has_method("setup"):
+		shell.call("setup", src, 0, null)
+	get_tree().current_scene.add_child(shell)
+	shell.global_position = origin
+	var up_ref: Vector3 = Vector3.UP
+	if absf(dir.normalized().dot(Vector3.UP)) > 0.95:
+		up_ref = Vector3.FORWARD
+	shell.look_at(origin + dir.normalized(), up_ref)
+
+
+func _handle_muzzle_flash(payload: Dictionary) -> void:
+	var pid: int = int(payload.get("peer_id", -1))
+	# Skip own muzzle flash — local weapon_controller already handled it.
+	if pid == NetworkManager.local_peer_id:
+		return
+	var origin: Vector3 = _vec3_from_array(payload.get("pos", null))
+	var dir: Vector3 = _vec3_from_array(payload.get("dir", null))
+	if dir.length_squared() < 0.0001:
+		return
+	var weapon: String = String(payload.get("weapon", "ak"))
+	var rp: Node3D = _remote_players.get(pid)
+	if rp == null or not is_instance_valid(rp):
+		return
+	if weapon == "rpg":
+		_spawn_remote_rpg_rocket(rp, dir)
+	else:
+		_spawn_remote_ar_visuals(rp, origin, dir)
+
+
+func _spawn_network_explosion(payload: Dictionary) -> void:
+	var pos: Vector3 = Vector3.ZERO
+	var vehicle_id: String = _payload_entity_id(payload)
+	var target: Node3D = _vehicle_node_for_id(vehicle_id)
+	if target != null:
+		pos = target.global_position + Vector3(0.0, _vehicle_vfx_offset(vehicle_id), 0.0)
+	elif _payload_has_vec3(payload, "pos"):
+		pos = _vec3_from_array(payload.get("pos", null))
+	else:
+		return
+	DestructionVFX.spawn_explosion(_scene_root(), pos)
+
+
+func _start_network_smoke_fire(payload: Dictionary) -> void:
+	var vehicle_id: String = _payload_entity_id(payload)
+	var target: Node3D = _vehicle_node_for_id(vehicle_id)
+	if target != null:
+		_start_vehicle_destroyed_vfx(vehicle_id, target)
+		return
+
+	if not _payload_has_vec3(payload, "pos"):
+		return
+	var key: String = _vfx_key(payload)
+	_stop_network_smoke_by_key(key)
+
+	var anchor: Node3D = Node3D.new()
+	anchor.name = "NetworkSmokeFire_%s" % _safe_node_suffix(key)
+	_scene_root().add_child(anchor)
+	anchor.global_position = _vec3_from_array(payload.get("pos", null))
+	_network_smoke_anchors[key] = anchor
+	var duration: float = float(payload.get("duration", 0.0))
+	DestructionVFX.spawn_smoke_fire(anchor, 0.0, true, duration)
+
+
+func _stop_network_smoke_fire(payload: Dictionary) -> void:
+	var vehicle_id: String = _payload_entity_id(payload)
+	var target: Node3D = _vehicle_node_for_id(vehicle_id)
+	if target != null:
+		DestructionVFX.clear_vfx(target)
+		_vehicle_vfx_started.erase(vehicle_id)
+		return
+	_stop_network_smoke_by_key(_vfx_key(payload))
+
+
+func _spawn_remote_ar_visuals(rp: Node3D, origin: Vector3, dir: Vector3) -> void:
+	var muzzle: Node3D = rp.get_node_or_null(_AK_MUZZLE_PATH) as Node3D
+	if muzzle == null:
+		# Late spawn timing: skeleton may not be wired yet on the very first
+		# fire after a peer joins. Drop silently instead of half-rendering.
+		return
+	# Use the same VFX pipeline the local weapon uses — flash + tracer share
+	# the pre-warmed mesh/material statics in PlayerFireVFX.
+	PlayerFireVFX.spawn_ar_visuals(get_tree().current_scene, muzzle, origin, dir, 100.0)
+
+
+func _spawn_remote_rpg_rocket(rp: Node3D, dir: Vector3) -> void:
+	if RPG_ROCKET_SCENE == null:
+		return
+	var muzzle: Node3D = rp.get_node_or_null(_RPG_MUZZLE_PATH) as Node3D
+	var spawn_origin: Vector3 = muzzle.global_transform.origin if muzzle != null else rp.global_transform.origin + Vector3.UP
+	var rocket: Node3D = RPG_ROCKET_SCENE.instantiate()
+	if rocket == null:
+		return
+	# Visual-only: 0 damage so collisions don't apply HP changes (server is
+	# authoritative). Pass the remote player's Body as `shooter` so the rocket
+	# doesn't immediately blow up on the shooter's own collider. Source is
+	# PLAYER_RPG so impact still triggers screen shake on nearby cameras.
+	if rocket.has_method("setup"):
+		var body: Node = rp.get_node_or_null("Body")
+		rocket.call("setup", DamageTypes.Source.PLAYER_RPG, 0, body)
+	get_tree().current_scene.add_child(rocket)
+	rocket.global_position = spawn_origin
+	rocket.look_at(spawn_origin + dir.normalized(), Vector3.UP)
+
+
+func _sync_vehicle_vfx(vehicles: Array) -> void:
+	for raw in vehicles:
+		if not (raw is Dictionary):
+			continue
+		var v: Dictionary = raw
+		var vehicle_id: String = String(v.get("id", ""))
+		if vehicle_id == "":
+			continue
+		var alive: bool = bool(v.get("alive", true))
+		var had_state: bool = _vehicle_alive.has(vehicle_id)
+		var was_alive: bool = bool(_vehicle_alive.get(vehicle_id, true))
+		_vehicle_alive[vehicle_id] = alive
+
+		if alive:
+			if had_state and not was_alive:
+				_clear_vehicle_destroyed_vfx(vehicle_id)
+			continue
+
+		if had_state and not was_alive:
+			continue
+
+		var target: Node3D = _vehicle_node_for_id(vehicle_id)
+		if target != null:
+			_start_vehicle_destroyed_vfx(vehicle_id, target)
+		elif _payload_has_vec3(v, "pos"):
+			var pos: Vector3 = _vec3_from_array(v.get("pos", null))
+			DestructionVFX.spawn_explosion(_scene_root(), pos)
+			_start_network_smoke_fire({
+				"entity_id": vehicle_id,
+				"pos": [pos.x, pos.y, pos.z],
+			})
+
+
+func _start_vehicle_destroyed_vfx(vehicle_id: String, vehicle: Node3D) -> void:
+	if bool(_vehicle_vfx_started.get(vehicle_id, false)):
+		return
+	_vehicle_vfx_started[vehicle_id] = true
+
+	var already_has_vfx: bool = vehicle.get_node_or_null("_DestructionVFX") != null
+	DestructionVFX.apply_charred(vehicle)
+	if not already_has_vfx:
+		var y_offset: float = _vehicle_vfx_offset(vehicle_id)
+		DestructionVFX.spawn_explosion(_scene_root(), vehicle.global_position + Vector3(0.0, y_offset, 0.0))
+		DestructionVFX.spawn_smoke_fire(vehicle, y_offset)
+
+
+func _clear_vehicle_destroyed_vfx(vehicle_id: String) -> void:
+	var vehicle: Node3D = _vehicle_node_for_id(vehicle_id)
+	if vehicle != null:
+		DestructionVFX.clear_vfx(vehicle)
+		DestructionVFX.clear_charred(vehicle)
+	_vehicle_vfx_started.erase(vehicle_id)
+
+
+func _on_anim_event(payload: Dictionary) -> void:
+	var pid: int = int(payload.get("peer_id", -1))
+	if pid == NetworkManager.local_peer_id:
+		return
+	var rp: Node3D = _remote_players.get(pid)
+	if rp != null and rp.has_method("play_anim_event"):
+		rp.call("play_anim_event", String(payload.get("state", "")), String(payload.get("weapon", "")))
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+func _scene_root() -> Node:
+	var root: Node = get_tree().current_scene
+	if root == null:
+		root = self
+	return root
+
+
+func _payload_entity_id(payload: Dictionary) -> String:
+	if payload.has("entity_id"):
+		return String(payload.get("entity_id"))
+	if payload.has("vehicle_id"):
+		return String(payload.get("vehicle_id"))
+	return ""
+
+
+func _vfx_key(payload: Dictionary) -> String:
+	var entity_id: String = _payload_entity_id(payload)
+	if entity_id != "":
+		return "entity:%s" % entity_id
+	if _payload_has_vec3(payload, "pos"):
+		return "pos:%s" % str(_vec3_from_array(payload.get("pos", null)))
+	return "event:%d" % Time.get_ticks_msec()
+
+
+func _stop_network_smoke_by_key(key: String) -> void:
+	var anchor: Node3D = _network_smoke_anchors.get(key)
+	if anchor != null and is_instance_valid(anchor):
+		anchor.queue_free()
+	_network_smoke_anchors.erase(key)
+
+
+func _vehicle_node_for_id(vehicle_id: String) -> Node3D:
+	var name: String = ""
+	match vehicle_id.to_lower():
+		"tank":
+			name = "Tank"
+		"helicopter", "heli":
+			name = "Helicopter"
+		"drone":
+			name = "Drone"
+		_:
+			return null
+
+	var root: Node = _scene_root()
+	var node: Node = root.get_node_or_null(name)
+	if node is Node3D:
+		return node as Node3D
+	node = root.find_child(name, true, false)
+	if node is Node3D:
+		return node as Node3D
+	return null
+
+
+func _vehicle_vfx_offset(vehicle_id: String) -> float:
+	match vehicle_id.to_lower():
+		"tank":
+			return 1.2
+		"helicopter", "heli":
+			return 1.5
+		"drone":
+			return 0.4
+		_:
+			return 1.0
+
+
+func _payload_has_vec3(payload: Dictionary, key: String) -> bool:
+	var value: Variant = payload.get(key, null)
+	return value is Array and (value as Array).size() >= 3
+
+
+func _safe_node_suffix(value: String) -> String:
+	return value.replace(":", "_").replace("/", "_").replace("\\", "_").replace(" ", "_")
+
+
+static func _vec3_from_array(a: Variant) -> Vector3:
+	if not (a is Array) or (a as Array).size() < 3:
+		return Vector3.ZERO
+	var arr: Array = a
+	return Vector3(float(arr[0]), float(arr[1]), float(arr[2]))

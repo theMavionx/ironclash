@@ -3,11 +3,9 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bqiv1cvl26blh"
-path.s3tc="res://.godot/imported/fpv_Image_1.png-1712b500c10b53a9fa295dd94fd29161.s3tc.ctex"
-path.etc2="res://.godot/imported/fpv_Image_1.png-1712b500c10b53a9fa295dd94fd29161.etc2.ctex"
+path="res://.godot/imported/fpv_Image_1.png-1712b500c10b53a9fa295dd94fd29161.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc", "etc2_astc"],
-"vram_texture": true
+"vram_texture": false
 }
 generator_parameters={
 "md5": "5c4fc3d198e6b6a7c3256f0856a66ecb"
@@ -16,11 +14,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/fpv/fpv_Image_1.png"
-dest_files=["res://.godot/imported/fpv_Image_1.png-1712b500c10b53a9fa295dd94fd29161.s3tc.ctex", "res://.godot/imported/fpv_Image_1.png-1712b500c10b53a9fa295dd94fd29161.etc2.ctex"]
+dest_files=["res://.godot/imported/fpv_Image_1.png-1712b500c10b53a9fa295dd94fd29161.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

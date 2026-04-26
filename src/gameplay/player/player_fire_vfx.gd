@@ -283,6 +283,61 @@ static func spawn_ar_shot(
 		_spawn_tracer(world_root, muzzle_node, hit_point, convergence_dir)
 
 
+## Visual-only AR shot — same flash + tracer as `spawn_ar_shot`, but skips
+## hitscan and damage. Used by remote player avatars to render a peer's shot
+## (server is authoritative for damage; we just paint pixels).
+##
+## We deliberately bypass the muzzle-flash pool here: the pool is parented
+## under the LOCAL player's muzzle, so reusing it for a remote shot would
+## render the flash at the wrong character. Allocating a per-shot Sprite3D
+## under the remote muzzle is cheap (one shot per peer per ~100 ms cap).
+## Tracer pool is fine because its `spawn()` takes explicit world positions.
+##
+## [param aim_origin] Camera-equivalent origin from the network packet.
+## [param aim_dir]    Direction sent by the shooter; tracer flies along it.
+## [param max_range]  Distance to draw the tracer if no hit point is known.
+static func spawn_ar_visuals(
+	world_root: Node,
+	muzzle_node: Node3D,
+	aim_origin: Vector3,
+	aim_dir: Vector3,
+	max_range: float = 100.0
+) -> void:
+	if muzzle_node == null or not is_instance_valid(muzzle_node):
+		return
+	_ensure_textures_loaded()
+	_spawn_muzzle_flash_at_node(muzzle_node)
+	var to_point: Vector3 = aim_origin + aim_dir.normalized() * max_range
+	var muzzle_world: Vector3 = muzzle_node.global_transform.origin
+	var convergence_dir: Vector3 = to_point - muzzle_world
+	if convergence_dir.length_squared() < 0.001:
+		convergence_dir = aim_dir
+	else:
+		convergence_dir = convergence_dir.normalized()
+	_spawn_tracer(world_root, muzzle_node, to_point, convergence_dir)
+
+
+## Pool-bypassed muzzle flash spawn — always allocates a fresh Sprite3D as a
+## child of [param parent]. Used for remote-player shots where the flash must
+## appear at the remote muzzle, not at the local pool's prewarmed position.
+static func _spawn_muzzle_flash_at_node(parent: Node3D) -> void:
+	if parent == null or not is_instance_valid(parent) or _flash_texture == null:
+		return
+	var sprite: Sprite3D = Sprite3D.new()
+	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	sprite.shaded = false
+	sprite.pixel_size = 0.00028
+	sprite.texture = _flash_texture
+	sprite.rotation.z = randf() * TAU
+	parent.add_child(sprite)
+	sprite.position = Vector3.ZERO
+	var done_t: SceneTreeTimer = parent.get_tree().create_timer(0.05)
+	done_t.timeout.connect(func() -> void:
+		if is_instance_valid(sprite):
+			sprite.queue_free()
+	)
+
+
 ## Spawn flash. Routes through pool if available; allocates otherwise.
 ## Muzzle-parenting guarantee is maintained by both paths:
 ##   - Pool path: MuzzleFlashPool lives as a child of the muzzle node, so all

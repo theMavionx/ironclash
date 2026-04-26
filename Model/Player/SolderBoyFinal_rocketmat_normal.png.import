@@ -3,11 +3,9 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://cirsmye2fydd7"
-path.s3tc="res://.godot/imported/SolderBoyFinal_rocketmat_normal.png-4e4128e001590ecebe8bbbd6494269d5.s3tc.ctex"
-path.etc2="res://.godot/imported/SolderBoyFinal_rocketmat_normal.png-4e4128e001590ecebe8bbbd6494269d5.etc2.ctex"
+path="res://.godot/imported/SolderBoyFinal_rocketmat_normal.png-4e4128e001590ecebe8bbbd6494269d5.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc", "etc2_astc"],
-"vram_texture": true
+"vram_texture": false
 }
 generator_parameters={
 "md5": "058472bf517fca72f2ce29888d92e64b"
@@ -16,11 +14,11 @@ generator_parameters={
 [deps]
 
 source_file="res://Model/Player/SolderBoyFinal_rocketmat_normal.png"
-dest_files=["res://.godot/imported/SolderBoyFinal_rocketmat_normal.png-4e4128e001590ecebe8bbbd6494269d5.s3tc.ctex", "res://.godot/imported/SolderBoyFinal_rocketmat_normal.png-4e4128e001590ecebe8bbbd6494269d5.etc2.ctex"]
+dest_files=["res://.godot/imported/SolderBoyFinal_rocketmat_normal.png-4e4128e001590ecebe8bbbd6494269d5.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

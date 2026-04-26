@@ -17,6 +17,7 @@ const _SOOT_NOISE_PATH: String = "res://assets/textures/3d_noise.png"
 const _FLICKER_SCRIPT_PATH: String = "res://src/vfx/fire_flicker.gd"
 const _SMOKE_SHADER_PATH: String = "res://src/vfx/spatial_particles_smoke.gdshader"
 const _FIRE_SHADER_PATH: String = "res://src/vfx/spatial_particles_fire.gdshader"
+const _SMOKE_TEXTURE_PATH: String = "res://assets/textures/smoke_vfx/T_smoke_b7.png"
 const _SMOKE_NOISE_TEXTURE_PATH: String = "res://assets/textures/smoke_vfx/T_Noise_001R.png"
 const _SMOKE_CIRCLE_MASK_PATH: String = "res://assets/textures/smoke_vfx/T_VFX_circle_1.png"
 const _FIRE_TEARDROP_PATH: String = "res://assets/textures/fire_vfx/T_fire_diff.png"
@@ -24,13 +25,14 @@ const _VFX_NODE_NAME: String = "_DestructionVFX"
 
 # Shared textures — loaded once on first material build, reused by every
 # subsequent smoke/fire/spark instance.
-#  • smoke_noise — distortion / LOD noise. Smoke shader samples via textureLod
-#    (mipmaps required), fire shader uses plain texture (filter_linear).
-#  • circle_mask — radial alpha mask. Used by smoke (kills square corners) AND
-#    by sparks (round bright dots).
+#  • smoke_texture — authored wispy smoke alpha. This is what prevents the
+#    wreck plume from reading as round billboard bubbles.
+#  • smoke_noise — subtle UV distortion for smoke / fire.
+#  • circle_mask — radial alpha mask used by sparks (round bright dots).
 #  • fire_teardrop — procedurally-painted 3-layer fire shape from
 #    tools/vfx/generate_fire_texture.gd. Used by flame columns; sparks use
 #    the circle_mask instead since their tiny quads can't show teardrop detail.
+static var _shared_smoke_texture: Texture2D = null
 static var _shared_smoke_noise: Texture2D = null
 static var _shared_circle_mask: Texture2D = null
 static var _shared_fire_teardrop: Texture2D = null
@@ -60,19 +62,64 @@ static func clear_charred(vehicle: Node) -> void:
 	)
 
 
-## Spawn a self-contained VFX node (smoke column + fire + flicker light) as
-## a child of [param vehicle]. Pass [param y_offset] to lift the emitters
-## above the model origin (vehicles often sit slightly under their visual centre).
-static func spawn_smoke_fire(vehicle: Node3D, y_offset: float = 1.0) -> Node3D:
-	# Replace any existing VFX node so respawn doesn't stack effects.
+## Spawn a self-contained VFX node (smoke column + fire + flicker light).
+## By default it is attached to [param vehicle]; pass attach_to_vehicle=false
+## for short-lived wrecks that respawn or teleport soon after destruction.
+static func spawn_smoke_fire(
+	vehicle: Node3D,
+	y_offset: float = 1.0,
+	attach_to_vehicle: bool = true,
+	auto_free_after: float = 0.0
+) -> Node3D:
+	# Replace any existing attached VFX node so respawn doesn't stack effects.
 	clear_vfx(vehicle)
 	var root: Node3D = Node3D.new()
 	root.name = _VFX_NODE_NAME
-	root.position = Vector3(0.0, y_offset, 0.0)
-	vehicle.add_child(root)
-	root.add_child(_build_smoke())
-	root.add_child(_build_fire())
+	if attach_to_vehicle:
+		vehicle.add_child(root)
+		root.position = Vector3(0.0, y_offset, 0.0)
+	else:
+		var parent: Node = null
+		if vehicle.is_inside_tree():
+			parent = vehicle.get_tree().current_scene
+		if parent == null:
+			parent = vehicle.get_parent()
+		if parent != null:
+			parent.add_child(root)
+			root.global_transform = Transform3D(
+				Basis.IDENTITY,
+				vehicle.global_position + Vector3(0.0, y_offset, 0.0)
+			)
+		else:
+			vehicle.add_child(root)
+			root.position = Vector3(0.0, y_offset, 0.0)
+
+	var smoke_footprint: Vector2 = _estimate_smoke_footprint(vehicle)
+
+	# All combustion layers start from one shared point. The smoke emitter uses
+	# the vehicle footprint for its horizontal spawn area, so tank wreck smoke
+	# spreads over the hull instead of rising as a thin chimney.
+	var source_pos: Vector3 = Vector3.ZERO
+	var smoke: GPUParticles3D = _build_smoke(smoke_footprint)
+	smoke.position = source_pos
+	root.add_child(smoke)
+
+	var fire: GPUParticles3D = _build_fire()
+	fire.position = source_pos
+	root.add_child(fire)
+	var flame_licks: GPUParticles3D = _build_flame_licks()
+	flame_licks.position = source_pos
+	root.add_child(flame_licks)
+	var embers: GPUParticles3D = _build_embers()
+	embers.position = source_pos + Vector3(0.0, 0.25, 0.0)
+	root.add_child(embers)
+
 	root.add_child(_build_light())
+	if auto_free_after > 0.0 and root.is_inside_tree():
+		root.get_tree().create_timer(auto_free_after).timeout.connect(func() -> void:
+			if is_instance_valid(root):
+				root.queue_free()
+		)
 	return root
 
 
@@ -265,46 +312,104 @@ static func _collect_visible_mesh_info(root: Node, out: Array[String]) -> void:
 		_collect_visible_mesh_info(child, out)
 
 
+static func _estimate_smoke_footprint(vehicle: Node3D) -> Vector2:
+	var bounds: Dictionary = {
+		"found": false,
+		"min_x": 999999.0,
+		"max_x": -999999.0,
+		"min_z": 999999.0,
+		"max_z": -999999.0,
+	}
+	_accumulate_mesh_footprint(vehicle, vehicle.global_transform.affine_inverse(), bounds)
+	if not bool(bounds["found"]):
+		return Vector2(0.8, 0.8)
+	var size_x: float = float(bounds["max_x"]) - float(bounds["min_x"])
+	var size_z: float = float(bounds["max_z"]) - float(bounds["min_z"])
+	return Vector2(
+		clampf(size_x, 0.8, 6.0),
+		clampf(size_z, 0.8, 8.0)
+	)
+
+
+static func _accumulate_mesh_footprint(root: Node, vehicle_inverse: Transform3D, bounds: Dictionary) -> void:
+	if root is MeshInstance3D:
+		var mi: MeshInstance3D = root as MeshInstance3D
+		if mi.mesh != null and mi.is_visible_in_tree():
+			var aabb: AABB = mi.mesh.get_aabb()
+			for ix: int in range(2):
+				for iz: int in range(2):
+					var local_corner: Vector3 = aabb.position + Vector3(
+						aabb.size.x * float(ix),
+						0.0,
+						aabb.size.z * float(iz)
+					)
+					var vehicle_pos: Vector3 = vehicle_inverse * (mi.global_transform * local_corner)
+					bounds["found"] = true
+					bounds["min_x"] = minf(float(bounds["min_x"]), vehicle_pos.x)
+					bounds["max_x"] = maxf(float(bounds["max_x"]), vehicle_pos.x)
+					bounds["min_z"] = minf(float(bounds["min_z"]), vehicle_pos.z)
+					bounds["max_z"] = maxf(float(bounds["max_z"]), vehicle_pos.z)
+	for child: Node in root.get_children():
+		_accumulate_mesh_footprint(child, vehicle_inverse, bounds)
+
+
 # ---------------------------------------------------------------------------
 # Internal builders
 # ---------------------------------------------------------------------------
 
-static func _build_smoke() -> GPUParticles3D:
-	# Mirrors smoke_volume.gd's particle settings (which the user calibrated
-	# against a Unity reference image of a dense mushroom plume) so wreck
-	# columns read as solid mass, not as scattered puffs.
+static func _build_smoke(footprint: Vector2 = Vector2(0.8, 0.8)) -> GPUParticles3D:
+	# Wreck smoke plume. Uses authored smoke sprites instead of radial discs so
+	# individual particles blend into a soft, torn smoke column rather than
+	# visible circular bubbles.
+	var footprint_x: float = clampf(footprint.x, 0.5, 3.6)
+	var footprint_z: float = clampf(footprint.y, 0.5, 4.8)
+	var footprint_scale: float = clampf(maxf(footprint_x, footprint_z) / 2.8, 0.75, 1.35)
 	var p: GPUParticles3D = GPUParticles3D.new()
 	p.name = "Smoke"
-	p.amount = 60
-	p.lifetime = 3.0
-	p.preprocess = 1.0
+	p.amount = int(roundf(72.0 * footprint_scale))
+	p.lifetime = 4.4
+	p.preprocess = 1.1
 	p.explosiveness = 0.0
-	p.randomness = 0.4
+	p.randomness = 0.62
+	p.fixed_fps = 30
+	p.emitting = true
+	p.local_coords = true
+	p.visibility_aabb = AABB(
+		Vector3(-footprint_x, -0.5, -footprint_z),
+		Vector3(footprint_x * 2.0, 7.0, footprint_z * 2.0)
+	)
 
 	var pm: ParticleProcessMaterial = ParticleProcessMaterial.new()
-	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
-	pm.emission_sphere_radius = 0.3
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(footprint_x * 0.26, 0.04, footprint_z * 0.22)
 	pm.direction = Vector3(0.0, 1.0, 0.0)
-	pm.spread = 10.0
-	pm.initial_velocity_min = 0.5
-	pm.initial_velocity_max = 1.1
-	pm.gravity = Vector3.ZERO
-	pm.scale_min = 0.7
-	pm.scale_max = 1.5
+	pm.spread = 24.0
+	pm.initial_velocity_min = 0.42
+	pm.initial_velocity_max = 0.98
+	pm.gravity = Vector3(0.0, 0.10, 0.0)
+	pm.linear_accel_min = -0.20
+	pm.linear_accel_max = 0.05
+	pm.angle_min = -180.0
+	pm.angle_max = 180.0
+	pm.angular_velocity_min = -18.0
+	pm.angular_velocity_max = 18.0
+	pm.scale_min = 0.52
+	pm.scale_max = 1.02
 	var scale_curve: Curve = Curve.new()
-	scale_curve.add_point(Vector2(0.0, 0.7))
-	scale_curve.add_point(Vector2(1.0, 1.3))
+	scale_curve.add_point(Vector2(0.0, 0.42))
+	scale_curve.add_point(Vector2(0.28, 0.92))
+	scale_curve.add_point(Vector2(0.76, 1.28))
+	scale_curve.add_point(Vector2(1.0, 1.48))
 	var scale_tex: CurveTexture = CurveTexture.new()
 	scale_tex.curve = scale_curve
 	pm.scale_curve = scale_tex
-	# COLOR ramp drives the LOD-trick smoke shader:
-	#   • RED 0 → 1 over lifetime → LOD 0 → max_lod (sharp → fully blurred).
-	#   • ALPHA 0 → 0.7 → 0 → fade-in / fade-out, peak 0.7 lets sky show through.
+	# RED carries lifetime to the shader; ALPHA now genuinely fades particles
+	# out, avoiding the old "ghost circles" caused by a high alpha floor.
 	var grad: Gradient = Gradient.new()
 	grad.set_color(0, Color(0.0, 0.0, 0.0, 0.0))
 	grad.set_offset(0, 0.0)
-	grad.add_point(0.2, Color(0.15, 0.0, 0.0, 0.7))
-	grad.add_point(0.7, Color(0.6, 0.0, 0.0, 0.55))
+	grad.add_point(0.14, Color(0.18, 0.0, 0.0, 0.42))
+	grad.add_point(0.68, Color(0.64, 0.0, 0.0, 0.30))
 	grad.add_point(1.0, Color(1.0, 0.0, 0.0, 0.0))
 	var grad_tex: GradientTexture1D = GradientTexture1D.new()
 	grad_tex.gradient = grad
@@ -312,56 +417,98 @@ static func _build_smoke() -> GPUParticles3D:
 	p.process_material = pm
 
 	var quad: QuadMesh = QuadMesh.new()
-	quad.size = Vector2(1.5, 1.5)
-	# Medium-light grey tint — atmospheric without the blinding white from the
-	# previous tuning iteration. max_lod=4 keeps noise detail visible.
-	quad.material = _make_smoke_material(Color(0.65, 0.65, 0.68, 1.0), 4.0)
+	quad.size = Vector2(1.55, 1.32)
+	var smoke_mat: Material = _make_smoke_material(Color(0.42, 0.43, 0.46, 0.78), 4.0)
+	if smoke_mat != null:
+		quad.material = smoke_mat
+	else:
+		quad.material = _make_fallback_smoke_material()
 	p.draw_pass_1 = quad
 
 	return p
 
 
 static func _build_fire() -> GPUParticles3D:
-	# Wreck flame — multiple short-lived flame licks dancing at the wreck base.
-	# Le Lu uses a single persistent particle for a torch flame, but a wreck
-	# needs the chaotic multi-lick look so we keep amount=12 with random spread.
+	# Wreck flame follows the Le Lu tutorial setup: one persistent billboard,
+	# no particle scatter, with all motion coming from shader UV distortion.
+	# Multiple particles looked like separate vertical layers on the wreck.
 	var p: GPUParticles3D = GPUParticles3D.new()
 	p.name = "Fire"
-	p.amount = 16
-	p.lifetime = 1.4
-	p.preprocess = 0.4
+	p.amount = 1
+	p.lifetime = 100.0
+	p.preprocess = 0.0
 	p.explosiveness = 0.0
-	p.randomness = 0.5
-	# Render fire ON TOP of smoke (Le Lu's sorting_offset=2 trick) — without
-	# this, the smoke quad covers the flame from camera-facing angles.
+	p.randomness = 0.0
+	p.fixed_fps = 60
+	p.emitting = true
+	p.local_coords = true
 	p.sorting_offset = 2.0
+	p.visibility_aabb = AABB(Vector3(-3.0, -1.0, -3.0), Vector3(6.0, 6.0, 6.0))
 
 	var pm: ParticleProcessMaterial = ParticleProcessMaterial.new()
-	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-	pm.emission_box_extents = Vector3(0.5, 0.1, 0.5)
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_POINT
+	pm.direction = Vector3(0.0, 1.0, 0.0)
+	pm.spread = 0.0
+	pm.initial_velocity_min = 0.0
+	pm.initial_velocity_max = 0.0
+	pm.gravity = Vector3.ZERO
+	pm.scale_min = 1.0
+	pm.scale_max = 1.0
+	# Particle COLOR stays white/alpha=1 for the entire lifetime. Animation is
+	# shader-driven, matching the tutorial instead of a particle birth/death loop.
+	p.process_material = pm
+
+	var quad: QuadMesh = QuadMesh.new()
+	quad.size = Vector2(0.72, 0.98)
+	var fire_mat: Material = _make_fire_material(Color(2.0, 0.82, 0.16, 0.76), 0.25, 1.0, 0.09, 0.18)
+	if fire_mat == null:
+		push_warning("DestructionVFX._build_fire: fire material build returned null — "
+				+ "check that T_fire_diff.png exists and the fire shader compiles")
+	if fire_mat == null:
+		fire_mat = _make_billboard_material(null, Color(1.0, 0.42, 0.08, 0.78), 20, true)
+	quad.material = fire_mat
+	p.draw_passes = 1
+	p.draw_pass_1 = quad
+
+	return p
+
+
+static func _build_flame_licks() -> GPUParticles3D:
+	var p: GPUParticles3D = GPUParticles3D.new()
+	p.name = "FlameLicks"
+	p.amount = 8
+	p.lifetime = 0.9
+	p.preprocess = 0.5
+	p.explosiveness = 0.0
+	p.randomness = 0.55
+	p.fixed_fps = 60
+	p.emitting = true
+	p.local_coords = true
+	p.sorting_offset = 3.0
+	p.visibility_aabb = AABB(Vector3(-2.0, -0.5, -2.0), Vector3(4.0, 4.0, 4.0))
+
+	var pm: ParticleProcessMaterial = ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = 0.09
 	pm.direction = Vector3(0.0, 1.0, 0.0)
 	pm.spread = 12.0
-	pm.initial_velocity_min = 0.2
-	pm.initial_velocity_max = 0.6
-	pm.gravity = Vector3(0.0, 0.6, 0.0)  # buoyant — flames rise slowly
-	# Bigger flames — peak ~1m tall to read clearly against the smoke column.
-	pm.scale_min = 0.7
-	pm.scale_max = 1.3
-	# Grow then collapse — flickery feel.
+	pm.initial_velocity_min = 0.24
+	pm.initial_velocity_max = 0.64
+	pm.gravity = Vector3(0.0, 0.9, 0.0)
+	pm.scale_min = 0.22
+	pm.scale_max = 0.44
 	var scale_curve: Curve = Curve.new()
-	scale_curve.add_point(Vector2(0.0, 0.6))
-	scale_curve.add_point(Vector2(0.5, 1.0))
-	scale_curve.add_point(Vector2(1.0, 0.4))
+	scale_curve.add_point(Vector2(0.0, 0.55))
+	scale_curve.add_point(Vector2(0.45, 1.0))
+	scale_curve.add_point(Vector2(1.0, 0.35))
 	var scale_tex: CurveTexture = CurveTexture.new()
 	scale_tex.curve = scale_curve
 	pm.scale_curve = scale_tex
-	# COLOR.a drives the shader's ALPHA fade — alpha 0 → 1 → 0 over lifetime.
-	# RGB values are ignored by the Le Lu shader (it uses fire_color uniform),
-	# so the gradient is effectively pure alpha animation.
 	var grad: Gradient = Gradient.new()
-	grad.add_point(0.0, Color(1.0, 1.0, 1.0, 0.0))
-	grad.add_point(0.15, Color(1.0, 1.0, 1.0, 1.0))
-	grad.add_point(0.7, Color(1.0, 1.0, 1.0, 0.85))
+	grad.set_color(0, Color(1.0, 1.0, 1.0, 0.0))
+	grad.set_offset(0, 0.0)
+	grad.add_point(0.18, Color(1.0, 1.0, 1.0, 0.85))
+	grad.add_point(0.68, Color(1.0, 1.0, 1.0, 0.7))
 	grad.add_point(1.0, Color(1.0, 1.0, 1.0, 0.0))
 	var grad_tex: GradientTexture1D = GradientTexture1D.new()
 	grad_tex.gradient = grad
@@ -369,24 +516,66 @@ static func _build_fire() -> GPUParticles3D:
 	p.process_material = pm
 
 	var quad: QuadMesh = QuadMesh.new()
-	# Bulbous aspect (~1:1.2) to match Le Lu's painted teardrop shape.
-	# 1.1 × 1.4 with scale_curve max 1.0 → peak ~1.1×1.4m at mid-life, plenty
-	# big to read clearly through the smoke column.
-	quad.size = Vector2(1.1, 1.4)
-	# Le Lu HDR (4, 0.8, 0) — bright orange core blooms past glow_hdr_threshold.
-	var fire_mat: ShaderMaterial = _make_fire_material(Color(4.0, 0.8, 0.0, 1.0), 0.28, 1.2)
-	if fire_mat == null:
-		push_warning("DestructionVFX._build_fire: fire material build returned null — "
-				+ "check that T_fire_diff.png exists and the fire shader compiles")
-	quad.material = fire_mat
+	quad.size = Vector2(0.40, 0.58)
+	quad.material = _make_fire_material(Color(2.0, 0.72, 0.1, 0.72), 0.32, 0.75, 0.12, 0.03)
 	p.draw_pass_1 = quad
 
 	return p
 
 
-## Lazily load the 2D noise texture used by the LOD-trick smoke shader.
-## MUST be imported with mipmaps/generate=true so textureLod can sample down
-## to a uniform gray as the LOD parameter increases over particle lifetime.
+static func _build_embers() -> GPUParticles3D:
+	var p: GPUParticles3D = GPUParticles3D.new()
+	p.name = "Embers"
+	p.amount = 18
+	p.lifetime = 1.7
+	p.preprocess = 0.8
+	p.explosiveness = 0.0
+	p.randomness = 0.35
+	p.emitting = true
+	p.local_coords = true
+	p.visibility_aabb = AABB(Vector3(-2.0, -0.5, -2.0), Vector3(4.0, 5.0, 4.0))
+
+	var pm: ParticleProcessMaterial = ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = 0.35
+	pm.direction = Vector3(0.0, 1.0, 0.0)
+	pm.spread = 28.0
+	pm.initial_velocity_min = 0.55
+	pm.initial_velocity_max = 1.3
+	pm.gravity = Vector3(0.0, 0.7, 0.0)
+	pm.scale_min = 0.18
+	pm.scale_max = 0.36
+	var grad: Gradient = Gradient.new()
+	grad.set_color(0, Color(1.0, 0.78, 0.35, 0.0))
+	grad.set_offset(0, 0.0)
+	grad.add_point(0.18, Color(1.0, 0.36, 0.08, 0.9))
+	grad.add_point(0.72, Color(0.8, 0.08, 0.02, 0.55))
+	grad.add_point(1.0, Color(0.25, 0.0, 0.0, 0.0))
+	var grad_tex: GradientTexture1D = GradientTexture1D.new()
+	grad_tex.gradient = grad
+	pm.color_ramp = grad_tex
+	p.process_material = pm
+
+	var quad: QuadMesh = QuadMesh.new()
+	quad.size = Vector2(0.12, 0.12)
+	quad.material = _make_spark_material(Color(4.5, 1.2, 0.28, 0.95))
+	p.draw_pass_1 = quad
+
+	return p
+
+
+## Lazily load the authored smoke sprite used by the wreck plume. This texture
+## carries an irregular alpha silhouette, replacing the old radial puff mask.
+static func _get_shared_smoke_texture() -> Texture2D:
+	if _shared_smoke_texture != null:
+		return _shared_smoke_texture
+	_shared_smoke_texture = load(_SMOKE_TEXTURE_PATH) as Texture2D
+	if _shared_smoke_texture == null:
+		push_warning("DestructionVFX: smoke texture missing at %s" % _SMOKE_TEXTURE_PATH)
+	return _shared_smoke_texture
+
+
+## Lazily load the 2D noise texture used for subtle smoke/fire UV distortion.
 static func _get_shared_smoke_noise() -> Texture2D:
 	if _shared_smoke_noise != null:
 		return _shared_smoke_noise
@@ -420,23 +609,63 @@ static func _get_shared_fire_teardrop() -> Texture2D:
 	return _shared_fire_teardrop
 
 
-## Build a ShaderMaterial bound to spatial_particles_smoke.gdshader — the
-## LOD-trick stylized smoke shader from the Lelu tutorial (3rd method).
+## Build a ShaderMaterial bound to spatial_particles_smoke.gdshader.
 ## Web-compatible (no Forward+ features). [param tint] is the smoke_color
-## uniform; particle COLOR is hijacked to drive LOD so designer-visible color
-## comes from this parameter.
-static func _make_smoke_material(tint: Color = Color(0.55, 0.53, 0.50, 1.0), max_lod: float = 8.0) -> ShaderMaterial:
+## uniform; particle alpha shapes the lifetime fade while the smoke texture
+## supplies the non-circular silhouette.
+static func _make_smoke_material(tint: Color = Color(0.55, 0.53, 0.50, 1.0), max_lod: float = 8.0) -> Material:
+	var smoke_tex: Texture2D = _get_shared_smoke_texture()
+	if smoke_tex == null:
+		return null
+	if OS.has_feature("web"):
+		return _make_billboard_material(smoke_tex, tint, 10, false)
 	var shader: Shader = load(_SMOKE_SHADER_PATH) as Shader
 	if shader == null:
 		push_warning("DestructionVFX: smoke shader missing at %s" % _SMOKE_SHADER_PATH)
 		return null
 	var mat: ShaderMaterial = ShaderMaterial.new()
 	mat.shader = shader
-	mat.set_shader_parameter("noise_texture", _get_shared_smoke_noise())
-	mat.set_shader_parameter("circle_mask", _get_shared_circle_mask())
+	# Transparent particles: smoke stays above the world, but fire uses an even
+	# higher priority so the flame core remains visible at the plume base.
+	mat.render_priority = 10
+	mat.set_shader_parameter("smoke_texture", smoke_tex)
+	mat.set_shader_parameter("distortion_texture", _get_shared_smoke_noise())
 	mat.set_shader_parameter("smoke_color", tint)
 	mat.set_shader_parameter("max_lod", max_lod)
-	mat.set_shader_parameter("fade_intensity", 1.0)
+	mat.set_shader_parameter("fade_intensity", 0.9)
+	mat.set_shader_parameter("min_particle_alpha", 0.03)
+	mat.set_shader_parameter("edge_start", 0.22)
+	mat.set_shader_parameter("texture_power", 0.68)
+	mat.set_shader_parameter("dissolve_strength", 0.16)
+	return mat
+
+
+static func _make_fallback_smoke_material() -> StandardMaterial3D:
+	return _make_billboard_material(null, Color(0.48, 0.49, 0.52, 0.68), 3, false)
+
+
+static func _make_billboard_material(
+	texture: Texture2D,
+	tint: Color,
+	priority: int,
+	additive: bool = false
+) -> StandardMaterial3D:
+	var mat: StandardMaterial3D = StandardMaterial3D.new()
+	mat.render_priority = priority
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.no_depth_test = true
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	mat.billboard_keep_scale = true
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.albedo_color = tint
+	if texture != null:
+		mat.albedo_texture = texture
+	if additive:
+		mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		mat.emission_enabled = true
+		mat.emission = Color(tint.r, tint.g, tint.b, tint.a)
+		mat.emission_energy_multiplier = maxf(1.0, maxf(tint.r, maxf(tint.g, tint.b)))
 	return mat
 
 
@@ -448,30 +677,40 @@ static func _make_smoke_material(tint: Color = Color(0.55, 0.53, 0.50, 1.0), max
 ## Main.tscn) so the bloom pass picks up the flame outline.
 ## [param distortion_amount] controls how violently the panning noise warps
 ## the silhouette — ~0.20 for stationary wreck flames, ~0.30 for embers.
+##
+## Fire renders after smoke so the flame remains readable at the plume base.
 static func _make_fire_material(
 	fire_color: Color = Color(4.0, 0.8, 0.0, 1.0),
 	distortion_amount: float = 0.20,
-	anchor_power: float = 1.5
-) -> ShaderMaterial:
-	var shader: Shader = load(_FIRE_SHADER_PATH) as Shader
-	if shader == null:
-		push_warning("DestructionVFX: fire shader missing at %s" % _FIRE_SHADER_PATH)
-		return null
+	anchor_power: float = 1.5,
+	edge_softness: float = 0.16,
+	base_glow: float = 0.42
+) -> Material:
 	var fire_tex: Texture2D = _get_shared_fire_teardrop()
 	var noise_tex: Texture2D = _get_shared_smoke_noise()
 	if fire_tex == null:
 		push_warning("DestructionVFX: fire teardrop texture failed to load — wreck fire will be invisible")
 		return null
+	if OS.has_feature("web"):
+		return _make_billboard_material(fire_tex, fire_color, 20, true)
 	if noise_tex == null:
 		push_warning("DestructionVFX: distortion noise texture failed to load")
+	var shader: Shader = load(_FIRE_SHADER_PATH) as Shader
+	if shader == null:
+		push_warning("DestructionVFX: fire shader missing at %s" % _FIRE_SHADER_PATH)
+		return null
 	var mat: ShaderMaterial = ShaderMaterial.new()
 	mat.shader = shader
+	mat.render_priority = 20
 	mat.set_shader_parameter("fire_texture", fire_tex)
 	mat.set_shader_parameter("distortion_texture", noise_tex)
 	mat.set_shader_parameter("fire_color", fire_color)
-	mat.set_shader_parameter("distortion_speed", Vector2(0.0, -1.0))
+	mat.set_shader_parameter("distortion_speed", Vector2(0.0, -1.4))
 	mat.set_shader_parameter("distortion_amount", distortion_amount)
 	mat.set_shader_parameter("anchor_power", anchor_power)
+	mat.set_shader_parameter("edge_softness", edge_softness)
+	mat.set_shader_parameter("base_glow", base_glow)
+	mat.set_shader_parameter("procedural_flame", true)
 	return mat
 
 
@@ -481,7 +720,10 @@ static func _make_fire_material(
 ## are too small (~0.25 m) for noise warping to read.
 static func _make_spark_material(
 	fire_color: Color = Color(8.0, 3.0, 0.5, 1.0)
-) -> ShaderMaterial:
+) -> Material:
+	var circle_tex: Texture2D = _get_shared_circle_mask()
+	if OS.has_feature("web"):
+		return _make_billboard_material(circle_tex, fire_color, 30, true)
 	var shader: Shader = load(_FIRE_SHADER_PATH) as Shader
 	if shader == null:
 		push_warning("DestructionVFX: fire shader missing at %s" % _FIRE_SHADER_PATH)
@@ -489,12 +731,15 @@ static func _make_spark_material(
 	var mat: ShaderMaterial = ShaderMaterial.new()
 	mat.shader = shader
 	# Circle mask (soft radial alpha) makes the spark a round glowing dot.
-	mat.set_shader_parameter("fire_texture", _get_shared_circle_mask())
+	mat.set_shader_parameter("fire_texture", circle_tex)
 	mat.set_shader_parameter("distortion_texture", _get_shared_smoke_noise())
 	mat.set_shader_parameter("fire_color", fire_color)
 	mat.set_shader_parameter("distortion_speed", Vector2(0.0, 0.0))
 	mat.set_shader_parameter("distortion_amount", 0.0)
 	mat.set_shader_parameter("anchor_power", 1.0)
+	mat.set_shader_parameter("edge_softness", 0.12)
+	mat.set_shader_parameter("base_glow", 0.0)
+	mat.set_shader_parameter("procedural_flame", false)
 	return mat
 
 

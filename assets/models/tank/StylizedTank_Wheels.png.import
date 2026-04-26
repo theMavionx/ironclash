@@ -3,11 +3,9 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://dwrjdo2i0poil"
-path.s3tc="res://.godot/imported/StylizedTank_Wheels.png-39f2fe1f5cbeba097c38352ef419a6c3.s3tc.ctex"
-path.etc2="res://.godot/imported/StylizedTank_Wheels.png-39f2fe1f5cbeba097c38352ef419a6c3.etc2.ctex"
+path="res://.godot/imported/StylizedTank_Wheels.png-39f2fe1f5cbeba097c38352ef419a6c3.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc", "etc2_astc"],
-"vram_texture": true
+"vram_texture": false
 }
 generator_parameters={
 "md5": "4ad79f4218fe2cbf38bafc1d37610397"
@@ -16,11 +14,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/tank/StylizedTank_Wheels.png"
-dest_files=["res://.godot/imported/StylizedTank_Wheels.png-39f2fe1f5cbeba097c38352ef419a6c3.s3tc.ctex", "res://.godot/imported/StylizedTank_Wheels.png-39f2fe1f5cbeba097c38352ef419a6c3.etc2.ctex"]
+dest_files=["res://.godot/imported/StylizedTank_Wheels.png-39f2fe1f5cbeba097c38352ef419a6c3.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

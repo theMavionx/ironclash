@@ -50,12 +50,10 @@ mesh = SubResource("PlaneMesh_floor")
 
 [node name="SmokeA" parent="." instance=ExtResource("1_smoke")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 0.4, 0)
-emitting = false
 sustain_time = 9999.0
 
 [node name="SmokeB" parent="." instance=ExtResource("1_smoke")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 0.4, 0)
-emitting = false
 sustain_time = 9999.0
 max_lod = 6.0
 

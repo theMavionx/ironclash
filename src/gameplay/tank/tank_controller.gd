@@ -29,6 +29,9 @@ enum ForwardAxis {
 
 ## Emitted each time the tank fires a shell.
 signal fired
+## Same as [signal fired] but carries the spawn pose so network sync can
+## replicate the shell on remote clients without re-running the camera ray.
+signal fired_with_aim(spawn_origin: Vector3, aim_dir: Vector3)
 
 # ---------------------------------------------------------------------------
 # Exports — movement
@@ -325,6 +328,16 @@ func _unhandled_input(event: InputEvent) -> void:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
+## Always-on tick for visuals that should keep working when a remote peer is
+## driving this tank (our `_physics_process` is suspended in that case).
+## Tread marks are position-driven, so calling `_update_tread_marks` while
+## VehicleSync lerps the body works without any extra plumbing.
+func _process(_delta: float) -> void:
+	if _active or _is_destroyed:
+		return
+	_update_tread_marks()
+
+
 func _physics_process(delta: float) -> void:
 	if not _active:
 		return
@@ -487,6 +500,11 @@ func _try_fire() -> void:
 		parent = get_parent()
 	# setup() MUST run before add_child so _ready wires the self-hit exception.
 	shell.setup(DamageTypes.Source.TANK_SHELL, 100, self)
+	# Server is authoritative for this shot — local impact sends a hit-claim
+	# packet instead of mutating HP. Solo play (no NetworkManager autoload)
+	# falls back to local damage automatically inside the shell.
+	if shell.has_method("setup_network"):
+		shell.call("setup_network", "tank_shell", false)
 	parent.add_child(shell)
 	# Spawn ALWAYS at the barrel's muzzle tip (barrel-local offset).
 	var barrel_world: Transform3D = _skeleton.global_transform * _skeleton.get_bone_global_pose(_barrel_bone)
@@ -523,6 +541,7 @@ func _try_fire() -> void:
 		flash.transform = flash_xform
 		parent.add_child(flash)
 	fired.emit()
+	fired_with_aim.emit(shell.global_position, aim_dir)
 
 
 ## Tank's local forward vector in hull-local space (before world yaw).

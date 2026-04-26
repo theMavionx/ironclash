@@ -1,0 +1,23 @@
+{
+	"_doc": "Weapon registry. Both server (validates fire) and Godot client (HUD/animation hints) read this. Source of truth for all weapon stats.",
+
+	"ak": {
+		"display_name": "AK-74",
+		"damage": 25,
+		"headshot_multiplier": 2.0,
+		"range_meters": 100,
+		"fire_rate_hz": 10,
+		"cone_deg": 3.0,
+		"is_hitscan": true
+	},
+
+	"rpg": {
+		"display_name": "RPG-7",
+		"damage": 120,
+		"headshot_multiplier": 1.0,
+		"range_meters": 150,
+		"fire_rate_hz": 0.4,
+		"cone_deg": 1.5,
+		"is_hitscan": false
+	}
+}

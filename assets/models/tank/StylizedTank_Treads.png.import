@@ -3,11 +3,9 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://c1rseb6obl3u3"
-path.s3tc="res://.godot/imported/StylizedTank_Treads.png-1041bcff691448d25296ed62f60a0fd3.s3tc.ctex"
-path.etc2="res://.godot/imported/StylizedTank_Treads.png-1041bcff691448d25296ed62f60a0fd3.etc2.ctex"
+path="res://.godot/imported/StylizedTank_Treads.png-1041bcff691448d25296ed62f60a0fd3.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc", "etc2_astc"],
-"vram_texture": true
+"vram_texture": false
 }
 generator_parameters={
 "md5": "69ce4c2e1ef44f843f344bd78c7bc707"
@@ -16,11 +14,11 @@ generator_parameters={
 [deps]
 
 source_file="res://assets/models/tank/StylizedTank_Treads.png"
-dest_files=["res://.godot/imported/StylizedTank_Treads.png-1041bcff691448d25296ed62f60a0fd3.s3tc.ctex", "res://.godot/imported/StylizedTank_Treads.png-1041bcff691448d25296ed62f60a0fd3.etc2.ctex"]
+dest_files=["res://.godot/imported/StylizedTank_Treads.png-1041bcff691448d25296ed62f60a0fd3.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

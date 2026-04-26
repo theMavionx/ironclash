@@ -126,6 +126,19 @@ func get_aim_yaw() -> float:
 func get_aim_pitch() -> float:
 	return _pitch
 
+## Wire-protocol-friendly snapshot of the controller's state machine.
+## Used by NetworkPlayerSync to attach `move_state` to outgoing transforms so
+## remote viewers can adjust the avatar pose (crouch / ADS / sprint).
+func get_move_state_string() -> String:
+	match _state:
+		State.IDLE:     return "idle"
+		State.WALK:     return "walk"
+		State.SPRINT:   return "sprint"
+		State.CROUCH:   return "crouch"
+		State.ADS:      return "ads"
+		State.AIRBORNE: return "airborne"
+		_:              return "idle"
+
 func get_stamina() -> float:
 	return _stamina
 

@@ -22,6 +22,7 @@ extends GPUParticles3D
 ## Implements: design/gdd/projectile-system.md (smoke volume section)
 
 const _SHADER_PATH: String = "res://src/vfx/spatial_particles_smoke.gdshader"
+const _SMOKE_TEXTURE_PATH: String = "res://assets/textures/smoke_vfx/T_smoke_b7.png"
 const _NOISE_TEXTURE_PATH: String = "res://assets/textures/smoke_vfx/T_Noise_001R.png"
 const _CIRCLE_MASK_PATH: String = "res://assets/textures/smoke_vfx/T_VFX_circle_1.png"
 
@@ -51,6 +52,7 @@ const _CIRCLE_MASK_PATH: String = "res://assets/textures/smoke_vfx/T_VFX_circle_
 # subsequent instances to avoid per-spawn file IO and texture allocation.
 # ---------------------------------------------------------------------------
 static var _shared_shader: Shader = null
+static var _shared_smoke_texture: Texture2D = null
 static var _shared_noise: Texture2D = null
 static var _shared_mask: Texture2D = null
 
@@ -60,6 +62,10 @@ func _ready() -> void:
 		_shared_shader = load(_SHADER_PATH) as Shader
 		if _shared_shader == null:
 			push_warning("SmokeVolume: shader missing at %s" % _SHADER_PATH)
+	if _shared_smoke_texture == null:
+		_shared_smoke_texture = load(_SMOKE_TEXTURE_PATH) as Texture2D
+		if _shared_smoke_texture == null:
+			push_warning("SmokeVolume: smoke texture missing at %s" % _SMOKE_TEXTURE_PATH)
 	if _shared_noise == null:
 		_shared_noise = load(_NOISE_TEXTURE_PATH) as Texture2D
 		if _shared_noise == null:
@@ -105,6 +111,10 @@ func _build_process_material() -> ParticleProcessMaterial:
 	pm.direction = Vector3(0.0, 1.0, 0.0)
 	# Tight spread keeps the column narrow.
 	pm.spread = 10.0
+	pm.angle_min = -180.0
+	pm.angle_max = 180.0
+	pm.angular_velocity_min = -18.0
+	pm.angular_velocity_max = 18.0
 	pm.initial_velocity_min = 0.5
 	pm.initial_velocity_max = 1.1
 	# No gravity — smoke drifts neutrally so the column stays vertical.
@@ -141,10 +151,14 @@ func _build_quad() -> QuadMesh:
 	quad.size = Vector2(1.5, 1.5)
 	var mat: ShaderMaterial = ShaderMaterial.new()
 	mat.shader = _shared_shader
-	mat.set_shader_parameter("noise_texture", _shared_noise)
-	mat.set_shader_parameter("circle_mask", _shared_mask)
+	mat.set_shader_parameter("smoke_texture", _shared_smoke_texture)
+	mat.set_shader_parameter("distortion_texture", _shared_noise)
 	mat.set_shader_parameter("smoke_color", smoke_color)
 	mat.set_shader_parameter("max_lod", max_lod)
 	mat.set_shader_parameter("fade_intensity", 1.0)
+	mat.set_shader_parameter("min_particle_alpha", 0.0)
+	mat.set_shader_parameter("edge_start", 0.22)
+	mat.set_shader_parameter("texture_power", 0.72)
+	mat.set_shader_parameter("dissolve_strength", 0.16)
 	quad.material = mat
 	return quad
