@@ -15,8 +15,25 @@ extends RefCounted
 const _CHARRED_SHADER_PATH: String = "res://src/vfx/charred_overlay.gdshader"
 const _SOOT_NOISE_PATH: String = "res://assets/textures/3d_noise.png"
 const _FLICKER_SCRIPT_PATH: String = "res://src/vfx/fire_flicker.gd"
-const _SOFT_PARTICLE_SHADER_PATH: String = "res://src/vfx/soft_particle.gdshader"
+const _SMOKE_SHADER_PATH: String = "res://src/vfx/spatial_particles_smoke.gdshader"
+const _FIRE_SHADER_PATH: String = "res://src/vfx/spatial_particles_fire.gdshader"
+const _SMOKE_NOISE_TEXTURE_PATH: String = "res://assets/textures/smoke_vfx/T_Noise_001R.png"
+const _SMOKE_CIRCLE_MASK_PATH: String = "res://assets/textures/smoke_vfx/T_VFX_circle_1.png"
+const _FIRE_TEARDROP_PATH: String = "res://assets/textures/fire_vfx/T_fire_diff.png"
 const _VFX_NODE_NAME: String = "_DestructionVFX"
+
+# Shared textures — loaded once on first material build, reused by every
+# subsequent smoke/fire/spark instance.
+#  • smoke_noise — distortion / LOD noise. Smoke shader samples via textureLod
+#    (mipmaps required), fire shader uses plain texture (filter_linear).
+#  • circle_mask — radial alpha mask. Used by smoke (kills square corners) AND
+#    by sparks (round bright dots).
+#  • fire_teardrop — procedurally-painted 3-layer fire shape from
+#    tools/vfx/generate_fire_texture.gd. Used by flame columns; sparks use
+#    the circle_mask instead since their tiny quads can't show teardrop detail.
+static var _shared_smoke_noise: Texture2D = null
+static var _shared_circle_mask: Texture2D = null
+static var _shared_fire_teardrop: Texture2D = null
 
 
 ## Apply the charred overlay to every MeshInstance3D under [param vehicle].
@@ -253,108 +270,231 @@ static func _collect_visible_mesh_info(root: Node, out: Array[String]) -> void:
 # ---------------------------------------------------------------------------
 
 static func _build_smoke() -> GPUParticles3D:
+	# Mirrors smoke_volume.gd's particle settings (which the user calibrated
+	# against a Unity reference image of a dense mushroom plume) so wreck
+	# columns read as solid mass, not as scattered puffs.
 	var p: GPUParticles3D = GPUParticles3D.new()
 	p.name = "Smoke"
-	p.amount = 24
-	p.lifetime = 4.0
+	p.amount = 60
+	p.lifetime = 3.0
 	p.preprocess = 1.0
 	p.explosiveness = 0.0
-	p.randomness = 0.3
+	p.randomness = 0.4
 
 	var pm: ParticleProcessMaterial = ParticleProcessMaterial.new()
-	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-	pm.emission_box_extents = Vector3(0.6, 0.1, 0.6)
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = 0.3
 	pm.direction = Vector3(0.0, 1.0, 0.0)
-	pm.spread = 18.0
-	pm.initial_velocity_min = 1.2
-	pm.initial_velocity_max = 2.5
-	pm.gravity = Vector3(0.0, -0.15, 0.0)
-	pm.scale_min = 0.4
-	pm.scale_max = 0.6
-	# Grow over lifetime — column widens as it rises.
+	pm.spread = 10.0
+	pm.initial_velocity_min = 0.5
+	pm.initial_velocity_max = 1.1
+	pm.gravity = Vector3.ZERO
+	pm.scale_min = 0.7
+	pm.scale_max = 1.5
 	var scale_curve: Curve = Curve.new()
-	scale_curve.add_point(Vector2(0.0, 1.0))
-	scale_curve.add_point(Vector2(1.0, 3.5))
+	scale_curve.add_point(Vector2(0.0, 0.7))
+	scale_curve.add_point(Vector2(1.0, 1.3))
 	var scale_tex: CurveTexture = CurveTexture.new()
 	scale_tex.curve = scale_curve
 	pm.scale_curve = scale_tex
-	# Color ramp: dark charcoal at base → warm grey → light ash fading to clear.
+	# COLOR ramp drives the LOD-trick smoke shader:
+	#   • RED 0 → 1 over lifetime → LOD 0 → max_lod (sharp → fully blurred).
+	#   • ALPHA 0 → 0.7 → 0 → fade-in / fade-out, peak 0.7 lets sky show through.
 	var grad: Gradient = Gradient.new()
-	grad.set_color(0, Color(0.08, 0.07, 0.06, 1.0))
+	grad.set_color(0, Color(0.0, 0.0, 0.0, 0.0))
 	grad.set_offset(0, 0.0)
-	grad.add_point(0.4, Color(0.28, 0.26, 0.24, 0.9))
-	grad.add_point(1.0, Color(0.55, 0.53, 0.50, 0.0))
+	grad.add_point(0.2, Color(0.15, 0.0, 0.0, 0.7))
+	grad.add_point(0.7, Color(0.6, 0.0, 0.0, 0.55))
+	grad.add_point(1.0, Color(1.0, 0.0, 0.0, 0.0))
 	var grad_tex: GradientTexture1D = GradientTexture1D.new()
 	grad_tex.gradient = grad
 	pm.color_ramp = grad_tex
 	p.process_material = pm
 
 	var quad: QuadMesh = QuadMesh.new()
-	quad.size = Vector2(1.0, 1.0)
-	quad.material = _make_soft_material(0.55, 0.0)
+	quad.size = Vector2(1.5, 1.5)
+	# Medium-light grey tint — atmospheric without the blinding white from the
+	# previous tuning iteration. max_lod=4 keeps noise detail visible.
+	quad.material = _make_smoke_material(Color(0.65, 0.65, 0.68, 1.0), 4.0)
 	p.draw_pass_1 = quad
 
 	return p
 
 
 static func _build_fire() -> GPUParticles3D:
+	# Wreck flame — multiple short-lived flame licks dancing at the wreck base.
+	# Le Lu uses a single persistent particle for a torch flame, but a wreck
+	# needs the chaotic multi-lick look so we keep amount=12 with random spread.
 	var p: GPUParticles3D = GPUParticles3D.new()
 	p.name = "Fire"
-	p.amount = 18
-	p.lifetime = 0.35
-	p.preprocess = 0.2
-	p.explosiveness = 0.15
-	p.randomness = 0.6
+	p.amount = 16
+	p.lifetime = 1.4
+	p.preprocess = 0.4
+	p.explosiveness = 0.0
+	p.randomness = 0.5
+	# Render fire ON TOP of smoke (Le Lu's sorting_offset=2 trick) — without
+	# this, the smoke quad covers the flame from camera-facing angles.
+	p.sorting_offset = 2.0
 
 	var pm: ParticleProcessMaterial = ParticleProcessMaterial.new()
 	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
 	pm.emission_box_extents = Vector3(0.5, 0.1, 0.5)
 	pm.direction = Vector3(0.0, 1.0, 0.0)
-	pm.spread = 30.0
-	pm.initial_velocity_min = 0.5
-	pm.initial_velocity_max = 1.4
-	pm.gravity = Vector3(0.0, 0.3, 0.0)  # flames lick upward
-	pm.scale_min = 0.15
-	pm.scale_max = 0.40
+	pm.spread = 12.0
+	pm.initial_velocity_min = 0.2
+	pm.initial_velocity_max = 0.6
+	pm.gravity = Vector3(0.0, 0.6, 0.0)  # buoyant — flames rise slowly
+	# Bigger flames — peak ~1m tall to read clearly against the smoke column.
+	pm.scale_min = 0.7
+	pm.scale_max = 1.3
 	# Grow then collapse — flickery feel.
 	var scale_curve: Curve = Curve.new()
-	scale_curve.add_point(Vector2(0.0, 1.0))
-	scale_curve.add_point(Vector2(0.7, 1.6))
-	scale_curve.add_point(Vector2(1.0, 0.0))
+	scale_curve.add_point(Vector2(0.0, 0.6))
+	scale_curve.add_point(Vector2(0.5, 1.0))
+	scale_curve.add_point(Vector2(1.0, 0.4))
 	var scale_tex: CurveTexture = CurveTexture.new()
 	scale_tex.curve = scale_curve
 	pm.scale_curve = scale_tex
-	# Yellow-white core → orange → red ember → fade.
+	# COLOR.a drives the shader's ALPHA fade — alpha 0 → 1 → 0 over lifetime.
+	# RGB values are ignored by the Le Lu shader (it uses fire_color uniform),
+	# so the gradient is effectively pure alpha animation.
 	var grad: Gradient = Gradient.new()
-	grad.set_color(0, Color(1.0, 0.85, 0.30, 1.0))
-	grad.set_offset(0, 0.0)
-	grad.add_point(0.35, Color(1.0, 0.45, 0.05, 0.9))
-	grad.add_point(0.70, Color(0.6, 0.15, 0.02, 0.5))
-	grad.add_point(1.0, Color(0.2, 0.05, 0.0, 0.0))
+	grad.add_point(0.0, Color(1.0, 1.0, 1.0, 0.0))
+	grad.add_point(0.15, Color(1.0, 1.0, 1.0, 1.0))
+	grad.add_point(0.7, Color(1.0, 1.0, 1.0, 0.85))
+	grad.add_point(1.0, Color(1.0, 1.0, 1.0, 0.0))
 	var grad_tex: GradientTexture1D = GradientTexture1D.new()
 	grad_tex.gradient = grad
 	pm.color_ramp = grad_tex
 	p.process_material = pm
 
 	var quad: QuadMesh = QuadMesh.new()
-	quad.size = Vector2(0.3, 0.5)
-	# softness 0.4 = tighter falloff (flames are denser than smoke);
-	# emission_strength 4.0 pushes past WorldEnvironment glow_hdr_threshold (0.9).
-	quad.material = _make_soft_material(0.4, 4.0)
+	# Bulbous aspect (~1:1.2) to match Le Lu's painted teardrop shape.
+	# 1.1 × 1.4 with scale_curve max 1.0 → peak ~1.1×1.4m at mid-life, plenty
+	# big to read clearly through the smoke column.
+	quad.size = Vector2(1.1, 1.4)
+	# Le Lu HDR (4, 0.8, 0) — bright orange core blooms past glow_hdr_threshold.
+	var fire_mat: ShaderMaterial = _make_fire_material(Color(4.0, 0.8, 0.0, 1.0), 0.28, 1.2)
+	if fire_mat == null:
+		push_warning("DestructionVFX._build_fire: fire material build returned null — "
+				+ "check that T_fire_diff.png exists and the fire shader compiles")
+	quad.material = fire_mat
 	p.draw_pass_1 = quad
 
 	return p
 
 
-static func _make_soft_material(softness: float, emission_strength: float) -> ShaderMaterial:
-	var shader: Shader = load(_SOFT_PARTICLE_SHADER_PATH) as Shader
+## Lazily load the 2D noise texture used by the LOD-trick smoke shader.
+## MUST be imported with mipmaps/generate=true so textureLod can sample down
+## to a uniform gray as the LOD parameter increases over particle lifetime.
+static func _get_shared_smoke_noise() -> Texture2D:
+	if _shared_smoke_noise != null:
+		return _shared_smoke_noise
+	_shared_smoke_noise = load(_SMOKE_NOISE_TEXTURE_PATH) as Texture2D
+	if _shared_smoke_noise == null:
+		push_warning("DestructionVFX: smoke noise missing at %s" % _SMOKE_NOISE_TEXTURE_PATH)
+	return _shared_smoke_noise
+
+
+## Lazily load the radial alpha mask used to kill the square corners of the
+## noise quad. Same circle_mask used by the impact-smoke volume.
+static func _get_shared_circle_mask() -> Texture2D:
+	if _shared_circle_mask != null:
+		return _shared_circle_mask
+	_shared_circle_mask = load(_SMOKE_CIRCLE_MASK_PATH) as Texture2D
+	if _shared_circle_mask == null:
+		push_warning("DestructionVFX: circle mask missing at %s" % _SMOKE_CIRCLE_MASK_PATH)
+	return _shared_circle_mask
+
+
+## Lazily load the procedural fire teardrop texture (3-layer brightness
+## gradient with eraser-style holes — outer 50%, middle 75%, white core).
+## Generated by tools/vfx/generate_fire_texture.gd. Bound as fire_texture
+## uniform on the wreck-flame ShaderMaterial.
+static func _get_shared_fire_teardrop() -> Texture2D:
+	if _shared_fire_teardrop != null:
+		return _shared_fire_teardrop
+	_shared_fire_teardrop = load(_FIRE_TEARDROP_PATH) as Texture2D
+	if _shared_fire_teardrop == null:
+		push_warning("DestructionVFX: fire teardrop missing at %s — run the generator at tools/vfx/generate_fire_texture.gd" % _FIRE_TEARDROP_PATH)
+	return _shared_fire_teardrop
+
+
+## Build a ShaderMaterial bound to spatial_particles_smoke.gdshader — the
+## LOD-trick stylized smoke shader from the Lelu tutorial (3rd method).
+## Web-compatible (no Forward+ features). [param tint] is the smoke_color
+## uniform; particle COLOR is hijacked to drive LOD so designer-visible color
+## comes from this parameter.
+static func _make_smoke_material(tint: Color = Color(0.55, 0.53, 0.50, 1.0), max_lod: float = 8.0) -> ShaderMaterial:
+	var shader: Shader = load(_SMOKE_SHADER_PATH) as Shader
 	if shader == null:
-		push_warning("DestructionVFX: soft particle shader missing at %s" % _SOFT_PARTICLE_SHADER_PATH)
+		push_warning("DestructionVFX: smoke shader missing at %s" % _SMOKE_SHADER_PATH)
 		return null
 	var mat: ShaderMaterial = ShaderMaterial.new()
 	mat.shader = shader
-	mat.set_shader_parameter("softness", softness)
-	mat.set_shader_parameter("emission_strength", emission_strength)
+	mat.set_shader_parameter("noise_texture", _get_shared_smoke_noise())
+	mat.set_shader_parameter("circle_mask", _get_shared_circle_mask())
+	mat.set_shader_parameter("smoke_color", tint)
+	mat.set_shader_parameter("max_lod", max_lod)
+	mat.set_shader_parameter("fade_intensity", 1.0)
+	return mat
+
+
+## Build a ShaderMaterial bound to spatial_particles_fire.gdshader — the
+## Le Lu stylized fire pipeline (pre-painted teardrop + panning distortion +
+## HDR color mix). Web-compatible.
+## [param fire_color] is the HDR tint multiplied into the texture; values >1
+## (e.g. (4, 0.8, 0)) push the bright core past glow_hdr_threshold (0.9 in
+## Main.tscn) so the bloom pass picks up the flame outline.
+## [param distortion_amount] controls how violently the panning noise warps
+## the silhouette — ~0.20 for stationary wreck flames, ~0.30 for embers.
+static func _make_fire_material(
+	fire_color: Color = Color(4.0, 0.8, 0.0, 1.0),
+	distortion_amount: float = 0.20,
+	anchor_power: float = 1.5
+) -> ShaderMaterial:
+	var shader: Shader = load(_FIRE_SHADER_PATH) as Shader
+	if shader == null:
+		push_warning("DestructionVFX: fire shader missing at %s" % _FIRE_SHADER_PATH)
+		return null
+	var fire_tex: Texture2D = _get_shared_fire_teardrop()
+	var noise_tex: Texture2D = _get_shared_smoke_noise()
+	if fire_tex == null:
+		push_warning("DestructionVFX: fire teardrop texture failed to load — wreck fire will be invisible")
+		return null
+	if noise_tex == null:
+		push_warning("DestructionVFX: distortion noise texture failed to load")
+	var mat: ShaderMaterial = ShaderMaterial.new()
+	mat.shader = shader
+	mat.set_shader_parameter("fire_texture", fire_tex)
+	mat.set_shader_parameter("distortion_texture", noise_tex)
+	mat.set_shader_parameter("fire_color", fire_color)
+	mat.set_shader_parameter("distortion_speed", Vector2(0.0, -1.0))
+	mat.set_shader_parameter("distortion_amount", distortion_amount)
+	mat.set_shader_parameter("anchor_power", anchor_power)
+	return mat
+
+
+## Build a ShaderMaterial for explosion sparks — same fire shader but bound
+## to a soft circle mask instead of the teardrop, with high HDR color so the
+## tiny billboards bloom hard. Distortion is disabled because the spark quads
+## are too small (~0.25 m) for noise warping to read.
+static func _make_spark_material(
+	fire_color: Color = Color(8.0, 3.0, 0.5, 1.0)
+) -> ShaderMaterial:
+	var shader: Shader = load(_FIRE_SHADER_PATH) as Shader
+	if shader == null:
+		push_warning("DestructionVFX: fire shader missing at %s" % _FIRE_SHADER_PATH)
+		return null
+	var mat: ShaderMaterial = ShaderMaterial.new()
+	mat.shader = shader
+	# Circle mask (soft radial alpha) makes the spark a round glowing dot.
+	mat.set_shader_parameter("fire_texture", _get_shared_circle_mask())
+	mat.set_shader_parameter("distortion_texture", _get_shared_smoke_noise())
+	mat.set_shader_parameter("fire_color", fire_color)
+	mat.set_shader_parameter("distortion_speed", Vector2(0.0, 0.0))
+	mat.set_shader_parameter("distortion_amount", 0.0)
+	mat.set_shader_parameter("anchor_power", 1.0)
 	return mat
 
 
@@ -455,9 +595,10 @@ static func _build_spark_burst() -> GPUParticles3D:
 
 	var quad: QuadMesh = QuadMesh.new()
 	quad.size = Vector2(0.25, 0.25)
-	# emission_strength = 12 clears ACES + glow_hdr_threshold=0.9 in Main.tscn.
-	# Anything below ~10 gets compressed by ACES tonemap and won't bloom.
-	quad.material = _make_soft_material(0.4, 12.0)
+	# Spark material: circle-mask billboard with high HDR (8, 3, 0.5) so
+	# sparks read as bright glowing dots and reliably trigger the bloom pass
+	# even past ACES tonemap compression.
+	quad.material = _make_spark_material(Color(8.0, 3.0, 0.5, 1.0))
 	p.draw_pass_1 = quad
 
 	p.finished.connect(p.queue_free)

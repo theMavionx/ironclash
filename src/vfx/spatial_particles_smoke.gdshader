@@ -1,25 +1,48 @@
-// Toon-posterized billboard smoke particle.
-// Matches the stylized aesthetic of src/gameplay/projectile/smoke.gdshader
-// (3-band posterization, noise-driven silhouette churn) without the ALU cost
-// of inline 3D simplex — samples a pre-baked noise texture with time-scrolled
-// UV and per-instance desync.
+// LOD-trick stylized smoke. Single noise texture sampled via textureLod —
+// the mip level is driven per-particle by COLOR.r so the same noise texture
+// progressively "blurs out" over each particle's lifetime. The lower mip
+// levels of a 256² seamless Perlin texture converge on a uniform gray, which
+// after the circle-mask multiply reads visually as the smoke wisp dispersing.
 //
-// Alpha-blended (blend_mix) for smoke column. Fire uses blend_add variant.
+// Adapted from Lelu's "Smoke VFX" tutorial (3rd method) for Godot 4.
+//
+// Usage:
+//   • noise_texture  : seamless tileable noise (e.g. T_Noise_001R), MUST be
+//                      imported with mipmaps/generate=true, filter=linear_mipmap.
+//   • circle_mask    : radial alpha mask (e.g. T_VFX_circle_1) to kill the
+//                      square corners of the noise quad.
+//   • smoke_color    : uniform tint, since particle COLOR is hijacked for LOD.
+//   • max_lod        : highest mip the trick reaches at end-of-life. 8 ≈ 1×1
+//                      for a 256² source, giving a fully diffuse blob.
+//
+// The driving ParticleProcessMaterial must have a color_ramp whose ALPHA
+// goes 0 → ~1 → 0 (visual fade) and whose RED channel goes 0 → 1 (LOD ramp).
+// The shader treats COLOR.r as the LOD parameter and COLOR.a as the fade.
 shader_type spatial;
 render_mode blend_mix, depth_draw_never, cull_disabled, unshaded;
 
-uniform float softness : hint_range(0.0, 1.0) = 0.55;
-uniform float silhouette_break : hint_range(0.0, 0.5) = 0.25;
+// ---------------------------------------------------------------------------
+// Uniforms
+// ---------------------------------------------------------------------------
 
-uniform sampler2D noise_texture : hint_default_white, filter_linear_mipmap;
-uniform float noise_scale : hint_range(0.5, 8.0) = 2.5;
-uniform vec2 noise_scroll_speed = vec2(0.05, 0.10);
+uniform sampler2D noise_texture : filter_linear_mipmap, repeat_enable;
+uniform sampler2D circle_mask : filter_linear, hint_default_white;
+uniform vec4 smoke_color : source_color = vec4(0.55, 0.53, 0.50, 1.0);
+// Highest mip the trick reaches at end-of-life. Higher = more pronounced
+// "fade through blur". 8 maps the 256² source down to 1×1 (uniform gray).
+uniform float max_lod : hint_range(0.0, 12.0, 0.1) = 8.0;
+// Final opacity multiplier — lets designers dial the smoke down without
+// touching the gradient. Multiplied on top of COLOR.a × mask × noise.
+uniform float fade_intensity : hint_range(0.0, 2.0, 0.05) = 1.0;
 
-uniform float toon_steps : hint_range(1.0, 8.0, 1.0) = 3.0;
-uniform float toon_strength : hint_range(0.0, 1.0) = 1.0;
 
+// ---------------------------------------------------------------------------
+// Vertex — standard GPUParticles3D billboard. Replaces the model basis with
+// the camera basis while preserving per-particle scale (read from the length
+// of each MODEL_MATRIX column). Same pattern Godot's StandardMaterial3D uses
+// when "Particle Billboard" is selected.
+// ---------------------------------------------------------------------------
 void vertex() {
-	// Billboard: rotate quad to face camera while preserving per-particle scale.
 	mat4 mv = VIEW_MATRIX * mat4(
 		INV_VIEW_MATRIX[0],
 		INV_VIEW_MATRIX[1],
@@ -36,38 +59,27 @@ void vertex() {
 	MODELVIEW_NORMAL_MATRIX = mat3(mv);
 }
 
+
+// ---------------------------------------------------------------------------
+// Fragment — sample noise at LOD driven by COLOR.r, multiply by circle mask
+// to remove square corners, multiply by COLOR.a for opacity fade.
+// ---------------------------------------------------------------------------
 void fragment() {
-	// Per-particle phase offset so all particles don't scroll in sync.
-	// Irrational multipliers prevent accidental alignment.
-	float id = float(INSTANCE_ID);
-	vec2 id_offset = vec2(id * 0.137, id * 0.731);
+	// COLOR.r ∈ [0, 1] from particle color ramp → LOD ∈ [0, max_lod].
+	// LOD 0 = full-resolution noise (sharp wisps); LOD max_lod = blurred to
+	// nearly uniform gray. The progression is what produces the "smoke
+	// dispersing" look without any actual frame animation.
+	float lod_level = COLOR.r * max_lod;
+	float noise = textureLod(noise_texture, UV, lod_level).r;
 
-	vec2 scrolled_uv = UV * noise_scale + TIME * noise_scroll_speed + id_offset;
-	float n = texture(noise_texture, scrolled_uv).r;
+	// Circle mask kills the texture's square edges so the silhouette stays round.
+	float mask = texture(circle_mask, UV).r;
 
-	// Center-bias: mimics the fog shader's spherical density falloff.
-	n = n - 0.5;
-	float d_from_center = distance(UV, vec2(0.5));
-	n = n - smoothstep(0.3, 0.7, d_from_center);
-	n = n + 0.5;
-
-	// Toon posterization — snap noise into 3 discrete bands like smoke.gdshader.
-	float n_steps = max(toon_steps, 1.0);
-	float n_posterized = floor(clamp(n, 0.0, 1.0) * n_steps) / n_steps;
-	n = mix(n, n_posterized, toon_strength);
-
-	// Radial mask: soft disc, with silhouette_break allowing noise to break the circle.
-	vec2 centered = UV - vec2(0.5);
-	float dist = length(centered) * 2.0;
-	float radial = 1.0 - smoothstep(softness, 1.0, dist);
-
-	float combined = radial * (n + silhouette_break * (n - 0.5));
-	float final_alpha = COLOR.a * clamp(combined, 0.0, 1.0);
-
-	if (final_alpha < 0.01) {
+	float alpha = noise * mask * COLOR.a * fade_intensity;
+	if (alpha < 0.005) {
 		discard;
 	}
 
-	ALBEDO = COLOR.rgb;
-	ALPHA = final_alpha;
+	ALBEDO = smoke_color.rgb;
+	ALPHA = alpha;
 }

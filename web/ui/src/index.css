@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ----------------------------------------------------------------------------
+ * Global defaults — driven by design/gdd/art-bible-ui.md.
+ * ------------------------------------------------------------------------- */
+
+@layer base {
+  html {
+    color: theme(colors.text);
+    background: theme(colors.bg);
+    font-family: theme(fontFamily.sans);
+    font-size: 14px;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Tabular numerals for everything that looks like a number — prevents the
+     HUD ammo / HP from jittering as digits change. */
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Selection style — accent on dark bg. */
+  ::selection {
+    background: theme(colors.accent);
+    color: theme(colors.bg);
+  }
+
+  /* Canvas: kill default focus ring + selection over the game viewport. */
+  canvas {
+    outline: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+}
+
+@layer components {
+  /* Reusable label style — uppercase, tracked. Use on any tiny caption. */
+  .ui-label {
+    @apply text-label uppercase text-text-muted;
+  }
+}

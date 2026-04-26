@@ -1,17 +1,150 @@
-extends FogVolume
+extends GPUParticles3D
 
-@export var density_path: String = 'density'
-@export var smoke_density: float = 8.0
+## Web-compatible smoke "volume". Replaces the prior FogVolume implementation
+## which required Forward+ rendering (unavailable in HTML5 / gl_compatibility
+## builds). Renders a column of LOD-trick stylized billboard particles using
+## [code]src/vfx/spatial_particles_smoke.gdshader[/code] — a single noise texture
+## sampled via textureLod, with the LOD level driven per-particle by COLOR.r.
+## Each particle's noise progressively "blurs out" over its lifetime, reading
+## visually as the wisp dispersing. Technique adapted from Lelu's "Smoke VFX"
+## YouTube tutorial (the third / LOD-trick method).
+##
+## Lifecycle (driven by a single Tween):
+##   amount_ratio: 0 → 1 over [member spawn_time]
+##   hold for [member sustain_time]
+##   amount_ratio: 1 → 0 over [member fade_time] (ease-in)
+##   stop emitting, wait [member lifetime] more seconds for in-flight particles
+##   to finish, then queue_free.
+##
+## Process material + draw mesh are built in [method _ready] from exports so
+## designers can tune per-instance look without editing a sub-resource graph.
+##
+## Implements: design/gdd/projectile-system.md (smoke volume section)
 
-@export var spawn_time: float = 1.0
-@export var sustain_time: float = 10.0
-@export var fade_time: float = 5.0
+const _SHADER_PATH: String = "res://src/vfx/spatial_particles_smoke.gdshader"
+const _NOISE_TEXTURE_PATH: String = "res://assets/textures/smoke_vfx/T_Noise_001R.png"
+const _CIRCLE_MASK_PATH: String = "res://assets/textures/smoke_vfx/T_VFX_circle_1.png"
 
-func _ready():
-	material = material.duplicate(true)
-	material.set(density_path, 0.0)
-	var tween = get_tree().create_tween()
-	tween.tween_property(self.material, density_path, smoke_density, spawn_time)
+@export_group("Animation")
+## Time to ramp emission from 0 to full (seconds).
+@export var spawn_time: float = 0.3
+## Hold time at full emission (seconds).
+@export var sustain_time: float = 2.0
+## Time to ramp emission from full to 0 (seconds, ease-in).
+@export var fade_time: float = 1.5
+
+@export_group("Look")
+## Sphere radius (m) where particles are seeded around the node origin.
+@export var emission_radius: float = 0.3
+## Per-particle peak scale multiplier (smaller = denser cloud, larger = wispier).
+@export var particle_scale: float = 1.5
+## Tint sent to the shader as smoke_color uniform. Particle COLOR.rgb is
+## hijacked to drive LOD, so all per-particle tinting comes from this export.
+@export var smoke_color: Color = Color(0.65, 0.65, 0.68, 1.0)
+## Highest mip level the LOD trick reaches at end-of-life. 4 keeps texture
+## detail visible through most of the lifetime — the original 8 blurred too
+## aggressively for a column-shaped plume.
+@export var max_lod: float = 4.0
+
+# ---------------------------------------------------------------------------
+# Shared resources — generated/loaded once on first instance, reused by all
+# subsequent instances to avoid per-spawn file IO and texture allocation.
+# ---------------------------------------------------------------------------
+static var _shared_shader: Shader = null
+static var _shared_noise: Texture2D = null
+static var _shared_mask: Texture2D = null
+
+
+func _ready() -> void:
+	if _shared_shader == null:
+		_shared_shader = load(_SHADER_PATH) as Shader
+		if _shared_shader == null:
+			push_warning("SmokeVolume: shader missing at %s" % _SHADER_PATH)
+	if _shared_noise == null:
+		_shared_noise = load(_NOISE_TEXTURE_PATH) as Texture2D
+		if _shared_noise == null:
+			push_warning("SmokeVolume: noise texture missing at %s" % _NOISE_TEXTURE_PATH)
+	if _shared_mask == null:
+		_shared_mask = load(_CIRCLE_MASK_PATH) as Texture2D
+		if _shared_mask == null:
+			push_warning("SmokeVolume: circle mask missing at %s" % _CIRCLE_MASK_PATH)
+
+	process_material = _build_process_material()
+	draw_pass_1 = _build_quad()
+	# Generous AABB — particles drift up to ~3 m vertically and ~1 m laterally
+	# over their lifetime. Without an explicit AABB, GPUParticles3D defaults to
+	# a tiny box and frustum-culls the column the moment its origin leaves view.
+	visibility_aabb = AABB(Vector3(-2.0, -1.0, -2.0), Vector3(4.0, 8.0, 4.0))
+	amount_ratio = 0.0
+	emitting = true
+
+	var tween: Tween = create_tween()
+	tween.tween_property(self, "amount_ratio", 1.0, spawn_time)
 	tween.tween_interval(sustain_time)
-	tween.tween_property(self.material, density_path, 0.0, fade_time).set_ease(Tween.EASE_IN)
-	tween.tween_callback(func(): queue_free())
+	tween.tween_property(self, "amount_ratio", 0.0, fade_time).set_ease(Tween.EASE_IN)
+	# After fade, stop new emission and wait one full particle lifetime so
+	# the last in-flight particles finish their fade-out gradient before the
+	# node is freed (otherwise the cloud pops out instantly).
+	tween.tween_callback(_stop_emitting)
+	tween.tween_interval(lifetime)
+	tween.tween_callback(queue_free)
+
+
+func _stop_emitting() -> void:
+	emitting = false
+
+
+# ---------------------------------------------------------------------------
+# Resource builders
+# ---------------------------------------------------------------------------
+
+func _build_process_material() -> ParticleProcessMaterial:
+	var pm: ParticleProcessMaterial = ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_SPHERE
+	pm.emission_sphere_radius = emission_radius
+	pm.direction = Vector3(0.0, 1.0, 0.0)
+	# Tight spread keeps the column narrow.
+	pm.spread = 10.0
+	pm.initial_velocity_min = 0.5
+	pm.initial_velocity_max = 1.1
+	# No gravity — smoke drifts neutrally so the column stays vertical.
+	pm.gravity = Vector3.ZERO
+	pm.scale_min = 0.7
+	pm.scale_max = particle_scale
+	# Slight grow over lifetime — keeps the column roughly column-shaped
+	# instead of fanning out into a wide mushroom cap.
+	var scale_curve: Curve = Curve.new()
+	scale_curve.add_point(Vector2(0.0, 0.7))
+	scale_curve.add_point(Vector2(1.0, 1.3))
+	var scale_tex: CurveTexture = CurveTexture.new()
+	scale_tex.curve = scale_curve
+	pm.scale_curve = scale_tex
+	# COLOR ramp drives the shader:
+	#   • RED channel 0 → 1 over lifetime → controls LOD (0 = sharp, 1 = max blur).
+	#   • ALPHA channel 0 → 0.7 → 0 → fade-in / fade-out for opacity.
+	# Peak 0.7 lets background read through — full 0.95 produced an opaque wall.
+	# RGB is hijacked, so visual color comes from the shader's smoke_color uniform.
+	var grad: Gradient = Gradient.new()
+	grad.set_color(0, Color(0.0, 0.0, 0.0, 0.0))
+	grad.set_offset(0, 0.0)
+	grad.add_point(0.2, Color(0.15, 0.0, 0.0, 0.7))
+	grad.add_point(0.7, Color(0.6, 0.0, 0.0, 0.55))
+	grad.add_point(1.0, Color(1.0, 0.0, 0.0, 0.0))
+	var grad_tex: GradientTexture1D = GradientTexture1D.new()
+	grad_tex.gradient = grad
+	pm.color_ramp = grad_tex
+	return pm
+
+
+func _build_quad() -> QuadMesh:
+	var quad: QuadMesh = QuadMesh.new()
+	quad.size = Vector2(1.5, 1.5)
+	var mat: ShaderMaterial = ShaderMaterial.new()
+	mat.shader = _shared_shader
+	mat.set_shader_parameter("noise_texture", _shared_noise)
+	mat.set_shader_parameter("circle_mask", _shared_mask)
+	mat.set_shader_parameter("smoke_color", smoke_color)
+	mat.set_shader_parameter("max_lod", max_lod)
+	mat.set_shader_parameter("fade_intensity", 1.0)
+	quad.material = mat
+	return quad

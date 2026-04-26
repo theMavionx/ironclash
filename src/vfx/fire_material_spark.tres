@@ -1,0 +1,16 @@
+[gd_resource type="ShaderMaterial" load_steps=3 format=3 uid="uid://dd5tjltoe6mku"]
+
+[ext_resource type="Shader" path="res://src/vfx/spatial_particles_fire.gdshader" id="1_shader"]
+[ext_resource type="Texture2D" uid="uid://3jmlnpch3hpr" path="res://assets/textures/smoke_vfx/T_Noise_001R.png" id="2_noise"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_shader")
+shader_parameter/noise_texture = ExtResource("2_noise")
+shader_parameter/core_color = Color(1.0, 0.95, 0.7, 1.0)
+shader_parameter/edge_color = Color(1.0, 0.4, 0.0, 1.0)
+shader_parameter/fire_intensity = 12.0
+shader_parameter/fire_filter = 2.0
+shader_parameter/shape_strength = 0.0
+shader_parameter/distortion_speed = Vector2(0.0, -1.0)
+shader_parameter/distortion_amount = 0.06

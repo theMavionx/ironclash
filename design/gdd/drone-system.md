@@ -2,14 +2,14 @@
 status: reverse-documented
 source: src/gameplay/drone/drone_controller.gd
 scenes: scenes/drone/drone.tscn
-date: 2026-04-21
+date: 2026-04-25
 ---
 
 # Drone System (Kamikaze FPV)
 
 > **Status**: Draft (8/8 sections filled, reverse-documented)
 > **Author**: AI-assisted reverse-engineering of existing implementation
-> **Last Updated**: 2026-04-21
+> **Last Updated**: 2026-04-25 — flight model rewritten from full Mode 2 ACRO to **arcade helicopter-style** (body yaw-only, mouse Y = camera pitch only, lighter damping than helicopter for "less stable" feel). Controls now mirror `helicopter_controller.gd` for consistency.
 > **Implements Pillar**: Pillar 2 — *Every Tool Has A Counter* (drone counters entrenched infantry; infantry counters drone with AK/timing); Pillar 1 — *Skill Is The Ceiling* (flight + aim skill decides outcomes)
 > **MVP Scope**: **Promoted from Post-MVP to MVP** per implementation on 2026-04-21. Kamikaze FPV drone as a shared map pickup vehicle. One-pilot-at-a-time. Sacrifices pilot's current life for a high-damage strike.
 
@@ -44,6 +44,12 @@ to an impact that you cannot back out of. You are not a duelist; you are a
 missile with a human brain. Every mission has a one-chance feel: if you
 miss, you have given up your position and must recover.
 
+Compared to the helicopter, the drone feels **lighter and twitchier**:
+gravity always pulls (no auto-hover — pilot must hold lift), drift is
+real (lighter horizontal damping than the helicopter), and yaw lags
+slightly behind mouse input. It is approachable for any player who has
+flown the helicopter, but rewards practice with tighter approach lines.
+
 For defenders, the fantasy is the inverse: the **distant buzz** that warns
 a drone is inbound, the quick pivot to AK fire, the satisfying pop as the
 drone fragments midair. Drones are intentionally audible (buzz SFX) so
@@ -56,28 +62,32 @@ defenders always have a fair chance to react.
 1. One drone exists on the map at any time, parked at a fixed **drone pad** (authored by the map designer). Drone respawns at this pad after destruction.
 2. Any infantry player can interact with the pad (stand on it + press the interact key) to **enter** the drone. Entry replaces the player's third-person camera with the drone's first-person mount camera. The player's body remains at the pad and is dealt with when they exit or die.
 3. A drone may have **at most one pilot** at any time. If occupied, the interact prompt on the pad shows "occupied" and cannot be entered.
-4. Flight controls (Mode 2 acro):
-   - **W / S** — throttle up / down (accumulator 0..1, NOT a held-input — throttle persists between frames)
-   - **A / D** — yaw left / right (continuous rate × delta)
-   - **Mouse X** — roll (body rotation around local forward axis)
-   - **Mouse Y** — pitch (body rotation around local right axis; forward mouse = nose down)
-5. Thrust is applied along the drone's local UP axis (body orientation determines thrust direction). Tilt = translation.
-6. Gravity applies continuously. At `hover_throttle = 0.5`, thrust equals gravity and the drone hovers. Above = climb, below = descend.
-7. No auto-leveling. When the mouse stops moving, the drone holds its current angle. This is intentional pure-acro feel per Open Source racing drone convention.
-8. Camera is rigid-mounted to the drone body with a static 30° upward tilt — the pilot sees forward while flying nose-down at speed (matching real racing-drone practice).
+4. Flight controls (arcade helicopter-style — **mirrors `helicopter_controller.gd`**):
+   - **Space** — lift up (collective; held-input acceleration along world-up)
+   - **Ctrl** or **C** — descend (additive downward acceleration; for fast dives onto kamikaze targets)
+   - **W / A / S / D** — strafe in the body's yaw-aligned local XZ frame
+   - **Mouse X** — yaw the body (smoothed; lags slightly behind input — see formula)
+   - **Mouse Y** — **camera pitch only**. The body NEVER pitches or rolls — only the FPV camera mount rotates. This keeps the rigid-mounted FPV view level for accurate kamikaze approaches.
+5. **Body never pitches or rolls.** Only `rotation.y` (yaw) is touched on the `CharacterBody3D` root. This guarantees the FPV camera (child of body via `FPVMount`) stays level regardless of strafe input.
+6. **Visual strafe-tilt** is applied to the child `Model` node (sibling of `FPVMount`). The model leans into strafe direction (max ±18° pitch / ±15° roll) for visual feedback only — the camera mount is unaffected.
+7. **No auto-hover.** Gravity (9.8 m/s²) pulls continuously. Pilot must hold Space to maintain altitude. This is the primary "less stable than helicopter" lever — the helicopter auto-decays vertical velocity to zero on neutral input; the drone does not.
+8. Camera is rigid-mounted to the drone body. With body always level, no static uptilt is needed — pilot uses Mouse Y to look up/down freely (range −75° to +60°, wider than infantry/heli for kamikaze diving).
 9. Maximum altitude is clamped to `max_altitude = 50 m` (matches helicopter ceiling from helicopter-controller.md).
-10. Kamikaze detection: on any physics-slide collision, if `pre_slide_velocity.length >= kamikaze_speed_threshold` (default 6.0 m/s), the collision qualifies as kamikaze.
+10. Kamikaze detection — two rules:
+    - **Target rule (no threshold)**: any physics-slide collision with a body that has a `HealthComponent` triggers kamikaze regardless of impact speed. Even a gentle touch on a tank, helicopter, drone, or infantry detonates the drone and kills the target. This is the kamikaze fantasy: contact = death.
+    - **Terrain rule (threshold)**: collisions with bodies that have NO `HealthComponent` (terrain, walls, pads, props) only detonate the drone if `pre_slide_velocity.length >= kamikaze_speed_threshold` (default 6.0 m/s). Below the threshold the drone bounces / slides without damage — pilots can land softly on pads or graze geometry.
 11. Kamikaze effect:
-    - If collider has a `HealthComponent`, apply `kamikaze_damage = 999` damage with source `DamageTypes.Source.DRONE_KAMIKAZE` → one-shot kill any target including tanks and helicopters at MVP values.
+    - Target's `HealthComponent` takes `kamikaze_damage = 999` with source `DamageTypes.Source.DRONE_KAMIKAZE` → one-shot kill any target at MVP values.
     - The drone also damages itself with 999 (self-destruct) — triggers its own destroyed state.
-12. Non-kamikaze collisions (below threshold) bounce/slide without damage — you can land softly on a pad or nudge geometry without detonating.
+    - HealthComponent lookup is recursive: tries `collider.HealthComponent` first, then `find_child("HealthComponent", true)` so colliders that nest the component (e.g. Player puts it under `Body`) are still detected.
+12. (See rule 10 — non-kamikaze terrain collisions below threshold bounce/slide without damage.)
 13. On destruction:
     - Drone enters "wreck mode" (no input, gravity-only fall, no propeller animation)
     - `DestructionVFX.apply_charred()` and `DestructionVFX.spawn_smoke_fire()` applied to wreck
     - A `respawn_delay = 1.5 s` timer is started
     - At timeout, drone teleports back to spawn transform, clears destruction VFX, resets health, emits `respawned` signal
 14. The `respawned` signal is listened to by the FPV HUD, which clears the "DRONE OFFLINE" overlay.
-15. Linear damping (horizontal 1.5/s, vertical 0.8/s) ensures the drone slows down when the pilot is not actively thrusting — prevents runaway slides.
+15. Linear damping is **lighter than the helicopter on purpose** — horizontal 1.0/s (heli: 2.0/s) means the drone drifts farther after releasing strafe input. Vertical damping 0.5/s gently bleeds vertical spikes but does NOT counter gravity, so released Space still sinks.
 16. 12 propeller blades in 4 motor groups are animated programmatically, rotating at a rate that scales from `idle_rotor_speed_rad_per_sec` (16) to `max_rotor_speed_rad_per_sec` (60) with throttle. When parked on the floor at near-zero throttle, rotors coast to a stop.
 17. The drone is a `CharacterBody3D` (not a `RigidBody3D`) — motion uses `move_and_slide()` with explicit velocity manipulation. This gives deterministic behavior for multiplayer sync (vs. physics integration which is non-deterministic).
 18. Input is captured only when `_active == true`. `set_active(true/false)` is the public API used by the vehicle switcher to toggle between infantry and drone views.
@@ -115,51 +125,76 @@ pilot's own respawn-lifetime for a one-shot kill on a high-value target.
 
 ## Formulas
 
-### Throttle Accumulator
+### Vertical (Lift + Gravity, no auto-hover)
 
 ```
-on W held: throttle += throttle_rate * delta
-on S held: throttle -= throttle_rate * delta
-throttle = clamp(throttle, 0.0, 1.0)
+velocity.y -= gravity * delta                          # gravity = 9.8, always
+if Space held:  velocity.y += lift_acceleration * delta   # lift = 14.0
+if Ctrl/C held: velocity.y -= lift_down_acceleration * delta  # down = 8.0
+velocity.y = lerp(velocity.y, velocity.y * exp(-vertical_damping * delta), 1.0)  # vd = 0.5
 ```
 
-Default: `throttle_rate = 1.0`, so W for 1 second = full throttle up.
-Throttle **persists between frames** — no input = no change.
+Net vertical acceleration when holding Space at hover: **+4.2 m/s²** (climb).
+Released: gravity dominates → drone drifts down. There is no auto-hover —
+this is the "less stable" lever vs. the helicopter (which auto-decays
+vertical velocity to zero on neutral input).
 
-### Thrust along Local Up
-
-```
-local_up = drone.global_basis.y  # body-local up vector in world space
-velocity += local_up * (throttle * max_thrust * delta)
-velocity.y -= gravity * delta
-```
-
-`max_thrust = 20.0`, `gravity = 9.8`. At `hover_throttle = 0.5`:
-thrust = 0.5 × 20 = 10 m/s², exactly cancels 9.8 m/s² down with 0.2 m/s²
-overhead = slight climb at hover throttle. Adjust `hover_throttle = 0.49`
-for true hover, if desired.
-
-### Linear Damping (frame-rate independent)
+### Horizontal (Strafe in Yaw-Aligned Local Frame)
 
 ```
-horizontal_decay = exp(-horizontal_damping * delta)  # horizontal_damping = 1.5/s
-vertical_decay   = exp(-vertical_damping * delta)    # vertical_damping = 0.8/s
-velocity.x *= horizontal_decay
-velocity.z *= horizontal_decay
-velocity.y *= vertical_decay
+strafe_input = Vector2(D-A, S-W).clamp_length(1.0)
+yaw_basis = Basis(Vector3.UP, _yaw_current)
+world_strafe = yaw_basis * Vector3(strafe_input.x, 0, strafe_input.y)
+target_vx = world_strafe.x * strafe_speed     # strafe_speed = 10.0
+target_vz = world_strafe.z * strafe_speed
+horizontal_blend = 1.0 - exp(-horizontal_damping * delta)   # damping = 1.0
+velocity.x = lerp(velocity.x, target_vx, horizontal_blend)
+velocity.z = lerp(velocity.z, target_vz, horizontal_blend)
 ```
 
-### Mouse Rotation (per frame, clamped)
+Same shape as the helicopter, but with **half the damping** (1.0 vs 2.0)
+— drone never quite snaps to target velocity, leaving residual drift.
+
+### Yaw (smoothed mouse target)
 
 ```
-sens_rad = deg_to_rad(mouse_sensitivity_deg_per_px)  # 0.3 deg/px
-pitch_amount = clamp(-mouse_delta.y * sens_rad, -max_pitch_per_frame, +max_pitch_per_frame)
-roll_amount  = clamp(mouse_delta.x * sens_rad, -max_roll_per_frame, +max_roll_per_frame)
-rotate_object_local(Vector3.RIGHT, pitch_amount)
-rotate_object_local(Vector3.FORWARD, roll_amount)
+on mouse motion: _yaw_target -= relative.x * mouse_sensitivity   # 0.0025 rad/px
+yaw_blend = 1.0 - exp(-yaw_smooth_speed * delta)                 # smooth = 8.0
+_yaw_current = lerp_angle(_yaw_current, _yaw_target, yaw_blend)
+rotation.y = _yaw_current
 ```
 
-`max_pitch_rate_deg = 360`, `max_roll_rate_deg = 360` — full inversion per second.
+`yaw_smooth_speed = 8` (heli: 10) — slightly laggier; the floaty feel.
+
+### Camera Pitch (mouse Y → camera mount only)
+
+```
+on mouse motion:
+  pitch_sign = -1 if invert_camera_pitch else 1
+  _camera_pitch = clamp(
+    _camera_pitch - relative.y * camera_pitch_sensitivity * pitch_sign,
+    deg_to_rad(camera_min_pitch_deg),    # -75°
+    deg_to_rad(camera_max_pitch_deg),    # +60°
+  )
+FPVMount.rotation.x = _camera_pitch       # body untouched
+```
+
+Wider than the helicopter's ±45° so the pilot can dive-look at kamikaze
+targets directly below.
+
+### Visual Strafe Tilt (Model node only — camera unaffected)
+
+```
+target_pitch = (S - W) * deg_to_rad(max_pitch_tilt_deg)   # max = 18°
+target_roll  = (A - D) * deg_to_rad(max_roll_tilt_deg)    # max = 15°
+tilt_blend = 1.0 - exp(-tilt_smooth_speed * delta)        # smooth = 4.0
+_pitch_tilt_current = lerp(_pitch_tilt_current, target_pitch, tilt_blend)
+_roll_tilt_current  = lerp(_roll_tilt_current,  target_roll,  tilt_blend)
+Model.rotation.x = _pitch_tilt_current
+Model.rotation.z = _roll_tilt_current
+```
+
+`tilt_smooth_speed = 4` (heli: 6) — drone leans into turns more lazily.
 
 ### Kamikaze Threshold
 
@@ -169,9 +204,9 @@ if pre_slide_velocity.length_squared >= kamikaze_speed_threshold^2:
     self_damage(kamikaze_damage)
 ```
 
-`kamikaze_speed_threshold = 6.0 m/s` — slower than full-throttle forward at
-hover tilt (~10 m/s). Allows careful pilots to land safely without
-detonating.
+`kamikaze_speed_threshold = 6.0 m/s` — slower than `strafe_speed = 10 m/s`,
+so a full forward strafe will detonate on contact. Allows careful pilots
+to land softly (e.g. drift onto pad at < 6 m/s) without detonating.
 
 ## Edge Cases
 
@@ -182,9 +217,10 @@ detonating.
 | Drone kamikazes into own teammate | No friendly fire per weapon-system.md rule 22; teammate unharmed; drone still self-destructs | No friendly fire |
 | Drone grounded at throttle 0 | Rotors coast to stop; drone sits on ground | `is_on_floor() && not is_armed` check |
 | Drone exceeds max_altitude (> 50m) and still has upward velocity | Upward velocity clamped to 0; drone hovers at ceiling | Rule 9 |
-| Mouse input at high polling rate (e.g., 1000 Hz) | Accumulated delta summed across events before physics tick; per-frame clamp prevents teleport-spin | Rule 4 |
+| Mouse input at high polling rate (e.g., 1000 Hz) | `_yaw_target` and `_camera_pitch` integrate every motion event; smoothing applied per physics tick — no teleport-spin | Rule 4 |
 | Pilot disconnects while piloting drone | Drone enters idle state (no input); lingers for server timeout; then returned to pad as unoccupied | TBD — see Open Questions |
-| Drone body orientation inverted (e.g., after complex mouse flicks) | `get_aim_pitch()` returns 0 to chase camera to prevent lurch on exit | `return 0.0` in current code |
+| Pilot releases all keys mid-flight | Body holds yaw, gravity pulls drone down, horizontal velocity bleeds toward zero. No auto-hover. | Rule 7 (less stable than helicopter by design) |
+| Pilot re-enters drone after exiting | `set_active(true)` syncs `_yaw_target` to current body yaw — no snap-turn on entry | `set_active()` body |
 | Drone collides with terrain at < 6 m/s | Slide/bounce without damage; drone remains intact | Non-kamikaze |
 | Drone's charred overlay applied after respawn before VFX cleared | `clear_charred` runs on respawn before other logic | Rule 13 |
 | Drone respawned but pilot already respawned into infantry | Drone remains unoccupied at pad; any player can re-enter | Expected flow |
@@ -210,16 +246,20 @@ detonating.
 
 | Parameter | Current | Safe Range | Increase | Decrease |
 |-----------|---------|-----------|----------|----------|
-| `max_thrust` (m/s²) | 20.0 | 10-50 | Snappier climb, faster flight | Sluggish |
-| `hover_throttle` | 0.5 | 0.3-0.8 | Less climbing power at 50% | Always climbing at neutral |
-| `throttle_rate` (1/s) | 1.0 | 0.3-3.0 | Snap to full throttle | Gradual throttle |
-| `gravity` (m/s²) | 9.8 | 5-15 | Harder to fly up | Floaty |
-| `max_pitch_rate_deg` | 360/s | 180-720 | Crazy acrobatics | Sluggish |
-| `max_roll_rate_deg` | 360/s | 180-720 | Crazy acrobatics | Sluggish |
-| `max_yaw_rate_deg` | 180/s | 90-360 | Fast turns | Slow spinning |
-| `mouse_sensitivity_deg_per_px` | 0.3 | 0.1-1.0 | Twitchy mouse | Sluggish mouse |
-| `horizontal_damping` (1/s) | 1.5 | 0.5-4.0 | Brake hard | Slippery |
-| `vertical_damping` (1/s) | 0.8 | 0.3-2.0 | Tight altitude hold | Drifty Y |
+| `lift_acceleration` (m/s²) | 14.0 | 10-30 | Snappier climb | Cannot out-thrust gravity |
+| `lift_down_acceleration` (m/s²) | 8.0 | 0-30 | Faster dives | No assisted descent |
+| `gravity` (m/s²) | 9.8 | 5-15 | Drone falls fast when neutral | Floatier (closer to helicopter feel) |
+| `strafe_speed` (m/s) | 10.0 | 4-25 | Fast traversal | Sluggish |
+| `horizontal_damping` (1/s) | 1.0 | 0.3-3.0 | Closer to helicopter (tight stops) | More drift, harder to control |
+| `vertical_damping` (1/s) | 0.5 | 0.0-2.0 | Tighter altitude hold | Bouncier vertical |
+| `mouse_sensitivity` (rad/px) | 0.0025 | 0.001-0.01 | Twitchy yaw | Sluggish yaw |
+| `yaw_smooth_speed` (1/s) | 8.0 | 4-20 | Snappier yaw (toward heli's 10) | Floatier yaw |
+| `camera_pitch_sensitivity` (rad/px) | 0.0025 | 0.001-0.01 | Twitchy look | Sluggish look |
+| `camera_min_pitch_deg` | -75 | -89..-30 | Look further down (kamikaze diving) | Less downward visibility |
+| `camera_max_pitch_deg` | 60 | 30..89 | Look further up | Less upward visibility |
+| `max_pitch_tilt_deg` | 18 | 0-45 | More dramatic forward lean | Stiff visual |
+| `max_roll_tilt_deg` | 15 | 0-45 | More dramatic side lean | Stiff visual |
+| `tilt_smooth_speed` (1/s) | 4.0 | 1-15 | Snappier visual lean | Lazier lean |
 | `max_altitude` (m) | 50 | 20-150 | Higher ceiling | Ground-level only |
 | `kamikaze_speed_threshold` (m/s) | 6.0 | 3-15 | Harder to accidentally detonate | Detonates on light touch |
 | `kamikaze_damage` | 999 | 100-9999 | Instakill everything | Requires follow-up |
@@ -259,16 +299,25 @@ detonating.
 
 - [ ] Exactly one drone exists per map at a designer-authored pad location
 - [ ] Only one pilot may occupy the drone at a time; others see "occupied" on the pad
-- [ ] WASD + mouse controls produce the documented flight behavior (Mode 2 acro)
-- [ ] Thrust exactly counters gravity at `hover_throttle = 0.5` within a tolerance of 2 m/s drift over 10 seconds
-- [ ] Mouse stops → drone holds angle (no auto-leveling)
+- [ ] **Body never pitches or rolls** — only `rotation.y` is touched (verified by inspecting the body's `rotation.x` and `rotation.z` always == 0 during flight)
+- [ ] **Mouse Y rotates `FPVMount` only** — body untouched, FPV camera looks up/down freely in [-75°, +60°]
+- [ ] **Visual tilt appears on `Model` node only** — strafe lean is visible in third-person view but does NOT affect FPV camera
+- [ ] Space held → drone climbs (vertical velocity becomes positive within 1 frame)
+- [ ] Space released → drone sinks (vertical velocity trends negative — there is NO auto-hover)
+- [ ] Ctrl/C held → drone descends faster than gravity alone
+- [ ] WASD strafe is yaw-aligned (W always moves forward in camera direction, regardless of drone's spawn orientation)
+- [ ] Yaw lags behind mouse target by ~125ms (`yaw_smooth_speed = 8` → time-constant ≈ 0.125s)
+- [ ] Horizontal velocity bleeds toward zero on neutral input within 4-5 seconds (vs. helicopter's 2 seconds — drone drifts longer)
+- [ ] Re-entering the drone (`set_active(true)`) does NOT cause it to snap-turn — `_yaw_target` resyncs to current body yaw
 - [ ] Max altitude enforced at 50m; upward velocity clamped
-- [ ] Kamikaze impact at 6+ m/s applies 999 damage to target HealthComponent and self-destructs drone
-- [ ] Non-kamikaze collisions below 6 m/s slide/bounce without damage
+- [ ] Any contact with a body that has a HealthComponent (tank, heli, drone, infantry) applies 999 damage and self-destructs the drone — regardless of impact speed
+- [ ] Terrain / wall / pad collisions below `kamikaze_speed_threshold` (6 m/s) slide/bounce without damage
+- [ ] Terrain / wall / pad collisions at or above 6 m/s self-destruct the drone (no target damage — terrain takes none)
+- [ ] HealthComponent lookup also finds it when nested under a child (Player → Body → HealthComponent)
 - [ ] Drone destruction triggers wreck-fall state, charred VFX, smoke/fire, and 1.5s respawn timer
-- [ ] Drone respawn teleports to original spawn transform with full HP
+- [ ] Drone respawn teleports to original spawn transform with full HP and resets `_camera_pitch`, `_pitch_tilt_current`, `_roll_tilt_current` to zero
 - [ ] Pilot dying with drone enters normal respawn flow (5s, respawn UI)
-- [ ] All propellers (12 blades in 4 motors) animate proportional to throttle; stop when parked + idle
+- [ ] All propellers (12 blades in 4 motors) animate proportional to synthetic throttle (Space=1, Ctrl=0, neutral=0.5); stop when parked + idle
 - [ ] Drone state syncs to all clients at 30 Hz per ADR-0001
 - [ ] No friendly fire on teammate kamikaze collision
 - [ ] Performance: drone physics tick completes in < 2 ms
@@ -292,9 +341,12 @@ detonating.
 `drone_controller.gd` exposes nearly all tuning via `@export` fields with
 hardcoded defaults:
 
-- Flight tunables: `max_thrust=20`, `hover_throttle=0.5`, `throttle_rate=1`, `gravity=9.8`, etc.
-- Combat tunables: `kamikaze_speed_threshold=6`, `kamikaze_damage=999`, `respawn_delay=1.5`
-- Rotor tunables: `max_rotor_speed_rad_per_sec=60`, `idle_rotor_speed_rad_per_sec=16`, etc.
+- Lift / strafe: `lift_acceleration=14`, `lift_down_acceleration=8`, `gravity=9.8`, `strafe_speed=10`
+- Damping: `horizontal_damping=1.0`, `vertical_damping=0.5`
+- Yaw / camera: `mouse_sensitivity=0.0025`, `yaw_smooth_speed=8`, `camera_pitch_sensitivity=0.0025`, `camera_min/max_pitch_deg=-75/+60`
+- Visual tilt: `max_pitch_tilt_deg=18`, `max_roll_tilt_deg=15`, `tilt_smooth_speed=4`
+- Combat: `kamikaze_speed_threshold=6`, `kamikaze_damage=999`, `respawn_delay=1.5`
+- Rotor: `max_rotor_speed_rad_per_sec=60`, `idle_rotor_speed_rad_per_sec=16`, etc.
 - Hardcoded string `propeller_node_names` array (12 entries)
 
 This allows Inspector override in scene but NOT `Resource`-file configuration per project rules.
