@@ -1,4 +1,4 @@
-[gd_scene load_steps=49 format=3 uid="uid://c8j7f5yqg2bbp"]
+[gd_scene load_steps=45 format=3 uid="uid://c8j7f5yqg2bbp"]
 
 [ext_resource type="PackedScene" uid="uid://ctank00000001" path="res://scenes/tank/tank.tscn" id="1_tank"]
 [ext_resource type="Script" path="res://src/gameplay/camera/chase_camera.gd" id="2_pkq0h"]
@@ -14,23 +14,32 @@
 [ext_resource type="Texture2D" uid="uid://o2jkwpo6v585" path="res://textures/road.png" id="14_73b1h"]
 [ext_resource type="Texture2D" uid="uid://b07vplpba7ed3" path="res://textures/rockdown.png" id="14_bamak"]
 [ext_resource type="Texture2D" uid="uid://b74dnqpvgmjsj" path="res://textures/downdown.png" id="15_0qxjd"]
+[ext_resource type="PackedScene" uid="uid://clmfyga88ogxl" path="res://Model/Grass/gameready_grass.glb" id="15_1nwrh"]
 [ext_resource type="Texture2D" uid="uid://budyfnk5aya5l" path="res://textures/graund.png" id="15_8ks7g"]
 [ext_resource type="Texture2D" uid="uid://hymx42p1rspv" path="res://textures/snow.png" id="16_hglb3"]
 [ext_resource type="Script" path="res://src/networking/network_player_sync.gd" id="16_netsync"]
 [ext_resource type="Script" path="res://src/networking/world_replicator.gd" id="17_replicator"]
 [ext_resource type="Script" path="res://src/networking/vehicle_sync.gd" id="18_vehsync"]
 [ext_resource type="Script" path="res://src/networking/network_debug_overlay.gd" id="19_netdbg"]
+[ext_resource type="Texture2D" uid="uid://f31buqbfaysj" path="res://textures/graund_normal.png" id="normal_1"]
+[ext_resource type="Texture2D" uid="uid://cbmj63jdv741a" path="res://textures/maountines_normal.png" id="normal_2"]
+[ext_resource type="Texture2D" uid="uid://bqmaekjykccnx" path="res://textures/road_normal.png" id="normal_3"]
+[ext_resource type="Texture2D" uid="uid://cuqtkw1rpv4p6" path="res://textures/rockdown_normal.png" id="normal_4"]
+[ext_resource type="Texture2D" uid="uid://b8x5p6x0ucnd2" path="res://textures/rocksdown2_normal.png" id="normal_5"]
+[ext_resource type="Texture2D" uid="uid://ca2cmrkh2aytr" path="res://textures/snow_normal.png" id="normal_6"]
+[ext_resource type="PackedScene" uid="uid://dredsphmarker1" path="res://scenes/debug/red_sphere_marker.tscn" id="20_redsphere"]
 
-[ext_resource type="Texture2D" path="res://textures/graund_normal.png" id="normal_1"]
-[ext_resource type="Texture2D" path="res://textures/maountines_normal.png" id="normal_2"]
-[ext_resource type="Texture2D" path="res://textures/road_normal.png" id="normal_3"]
-[ext_resource type="Texture2D" path="res://textures/rockdown_normal.png" id="normal_4"]
-[ext_resource type="Texture2D" path="res://textures/rocksdown2_normal.png" id="normal_5"]
-[ext_resource type="Texture2D" path="res://textures/snow_normal.png" id="normal_6"]
-[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_7bqai"]
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_day"]
+sky_top_color = Color(0.28, 0.52, 0.85, 1)
+sky_horizon_color = Color(0.78, 0.86, 0.92, 1)
+sky_curve = 0.12
+ground_bottom_color = Color(0.32, 0.28, 0.24, 1)
+ground_horizon_color = Color(0.78, 0.86, 0.92, 1)
+ground_curve = 0.05
+sun_angle_max = 22.0
 
 [sub_resource type="Sky" id="Sky_tqk6l"]
-sky_material = SubResource("ProceduralSkyMaterial_7bqai")
+sky_material = SubResource("ProceduralSkyMaterial_day")
 
 [sub_resource type="Environment" id="Environment_w4xet"]
 background_mode = 2
@@ -93,7 +102,16 @@ _shader_parameters = {
 "world_space_normal_blend": true
 }
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_h81w7"]
+[sub_resource type="Terrain3DMeshAsset" id="Terrain3DMeshAsset_yse2f"]
+name = "gameready_grass"
+scene_file = ExtResource("15_1nwrh")
+height_offset = 1.0
+density = 5.0
+last_lod = 0
+last_shadow_lod = 0
+lod0_range = 128.0
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_58qmb"]
 transparency = 4
 cull_mode = 2
 vertex_color_use_as_albedo = true
@@ -103,23 +121,25 @@ distance_fade_mode = 1
 distance_fade_min_distance = 128.0
 distance_fade_max_distance = 96.0
 
-[sub_resource type="Terrain3DMeshAsset" id="Terrain3DMeshAsset_fd4k4"]
+[sub_resource type="Terrain3DMeshAsset" id="Terrain3DMeshAsset_nf5lr"]
+id = 1
 generated_type = 1
 height_offset = 0.5
-material_override = SubResource("StandardMaterial3D_h81w7")
+material_override = SubResource("StandardMaterial3D_58qmb")
 last_lod = 0
 last_shadow_lod = 0
 lod0_range = 128.0
 
 [sub_resource type="Terrain3DTextureAsset" id="Terrain3DTextureAsset_4gwvl"]
 name = "graund"
+albedo_color = Color(0.797659, 0.797658, 0.797659, 1)
 albedo_texture = ExtResource("15_8ks7g")
 normal_texture = ExtResource("normal_1")
 
 [sub_resource type="Terrain3DTextureAsset" id="Terrain3DTextureAsset_v6yw5"]
 name = "maountines"
 id = 1
-albedo_color = Color(0.550293, 0.550293, 0.550293, 1)
+albedo_color = Color(0.445488, 0.445488, 0.445488, 1)
 albedo_texture = ExtResource("13_lgf56")
 normal_texture = ExtResource("normal_2")
 
@@ -133,13 +153,14 @@ normal_texture = ExtResource("normal_3")
 [sub_resource type="Terrain3DTextureAsset" id="Terrain3DTextureAsset_2ykaw"]
 name = "rockdown"
 id = 3
-albedo_color = Color(0.82891, 0.82891, 0.82891, 1)
+albedo_color = Color(0.58775, 0.587751, 0.58775, 1)
 albedo_texture = ExtResource("14_bamak")
 normal_texture = ExtResource("normal_4")
 
 [sub_resource type="Terrain3DTextureAsset" id="Terrain3DTextureAsset_4asrw"]
 name = "rocksDown2"
 id = 4
+albedo_color = Color(0.735797, 0.735797, 0.735797, 1)
 albedo_texture = ExtResource("15_0qxjd")
 normal_texture = ExtResource("normal_5")
 
@@ -150,7 +171,7 @@ albedo_texture = ExtResource("16_hglb3")
 normal_texture = ExtResource("normal_6")
 
 [sub_resource type="Terrain3DAssets" id="Terrain3DAssets_sfo7h"]
-mesh_list = Array[Terrain3DMeshAsset]([SubResource("Terrain3DMeshAsset_fd4k4")])
+mesh_list = Array[Terrain3DMeshAsset]([SubResource("Terrain3DMeshAsset_yse2f"), SubResource("Terrain3DMeshAsset_nf5lr")])
 texture_list = Array[Terrain3DTextureAsset]([SubResource("Terrain3DTextureAsset_4gwvl"), SubResource("Terrain3DTextureAsset_v6yw5"), SubResource("Terrain3DTextureAsset_di3fe"), SubResource("Terrain3DTextureAsset_2ykaw"), SubResource("Terrain3DTextureAsset_4asrw"), SubResource("Terrain3DTextureAsset_5ecn0")])
 
 [node name="Node3D" type="Node3D"]
@@ -245,3 +266,6 @@ material = SubResource("Terrain3DMaterial_3ae8t")
 assets = SubResource("Terrain3DAssets_sfo7h")
 top_level = true
 metadata/_edit_lock_ = true
+
+[node name="RedSphereMarker" parent="." instance=ExtResource("20_redsphere")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 5, 0)
