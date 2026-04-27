@@ -22,9 +22,6 @@ production/session-state/*.md
 docs/IMPROVEMENTS-PROPOSAL.md
 docs/MULTI-STAGE-DOCUMENT-WORKFLOW.md
 
-# === Terrain3D region data (locally generated; binary, non-mergeable) ===
-MapData/
-
 # === Godot Web Export Output (regenerated; .pck > 100 MB exceeds GitHub limit) ===
 # Each `Project → Export → Web` overwrites these. Run the export locally and
 # serve via Vite (web/ui/) — no need to track the binaries.
