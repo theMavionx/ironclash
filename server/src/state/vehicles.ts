@@ -73,6 +73,7 @@ export function reset_all_vehicles(): void {
 		const spec: VehicleSpec | undefined = _spec_by_id.get(v.id);
 		v.hp = v.max_hp;
 		v.alive = true;
+		v.driver_peer_id = -1;
 		// Park at the canonical spawn so wreckage from last round doesn't ghost.
 		if (spec !== undefined) {
 			v.pos = [...spec.spawn_pos];

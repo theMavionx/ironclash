@@ -5,6 +5,7 @@
 //   - Team distribution honors auto-balance (no team gets 3 of 3).
 //   - All 3 receive snapshots with their peers visible.
 //   - `fire` from client 1 produces `vfx_event` on clients 2 and 3.
+//   - AK hitscan damage uses the fire origin, matching the Godot camera ray.
 //   - `anim_state` from client 1 produces `anim_event` on clients 2 and 3 (not on 1 itself).
 //   - `match_state` flips to `in_progress` once both teams have ≥1.
 //   - `kicked: match_full` arrives if we connect 11.
@@ -124,6 +125,37 @@ async function main() {
 	for (let i = 0; i < clients.length; i++) {
 		const delta = clients[i].vfx_events.length - fireBefore[i];
 		assert(delta >= 1, `${clients[i].label} got vfx_event after fire (${delta})`);
+	}
+
+	console.log("# AK fire origin -> server hitscan damage");
+	const shooter = clients.find(c => c.welcome?.team === "red") ?? clients[0];
+	const target = clients.find(c => c.welcome?.team !== shooter.welcome?.team);
+	assert(target != null, "found an enemy target for AK damage test");
+	if (target != null) {
+		const damageBefore = target.damages.length;
+		shooter.send({
+			t: "transform",
+			pos: [0, 0, 0],
+			rot_y: 0,
+			aim_pitch: 0,
+			vel: [0, 0, 0],
+			client_t: Date.now(),
+		});
+		target.send({
+			t: "transform",
+			pos: [0, 3, 20],
+			rot_y: Math.PI,
+			aim_pitch: 0,
+			vel: [0, 0, 0],
+			client_t: Date.now(),
+		});
+		await sleep(50);
+		shooter.send({ t: "fire", seq: 2, weapon: "ak", origin: [0, 3, 0], dir: [0, 0, 1], client_t: Date.now() });
+		await sleep(200);
+		const damage = target.damages.at(-1);
+		assert(target.damages.length > damageBefore, `${target.label} took AK damage`);
+		assert(damage?.attacker === shooter.welcome?.peer_id, `damage attacker is ${shooter.label}`);
+		assert(damage?.weapon === "ak", "damage weapon is ak");
 	}
 
 	console.log("# anim_state → anim_event broadcast (excluding shooter)");

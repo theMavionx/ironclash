@@ -4,7 +4,7 @@
 import { PROTOCOL_VERSION } from "../../../shared/protocol.ts";
 import { LIMITS } from "../config.ts";
 import { cfg } from "../config.ts";
-import { is_finite_vec3 } from "../util/vec.ts";
+import { is_finite_vec3, vec_dist } from "../util/vec.ts";
 import type { Player } from "../state/players.ts";
 import { players } from "../state/players.ts";
 import { vehicles } from "../state/vehicles.ts";
@@ -88,6 +88,7 @@ export function register_all_handlers(): void {
 		const cooldown_ms: number = 1000 / weapon.fire_rate_hz;
 		if (now - last < cooldown_ms - LIMITS.cooldown_slack_ms) return;
 		p.last_fire_ms.set(msg.weapon, now);
+		p.weapon = msg.weapon;
 
 		broadcast({ t: "vfx_event", kind: "muzzle_flash", peer_id: p.peer_id, pos: msg.origin, dir: msg.dir, weapon: msg.weapon });
 		broadcast({ t: "anim_event", peer_id: p.peer_id, state: "fire", weapon: msg.weapon }, p.peer_id);
@@ -95,7 +96,8 @@ export function register_all_handlers(): void {
 		// Hitscan weapons (AK) cone-pick instantly. Projectile weapons (RPG)
 		// resolve damage via vehicle_hit_claim from the rocket's local impact.
 		if (weapon.is_hitscan ?? true) {
-			const ctx = { shooter_pos: p.pos, shooter_team: p.team, shooter_player_id: p.peer_id };
+			const shooter_pos: Vec3 = vec_dist(p.pos, msg.origin) <= LIMITS.fire_origin_max_offset_m ? msg.origin : p.pos;
+			const ctx = { shooter_pos, shooter_team: p.team, shooter_player_id: p.peer_id };
 			const player_target = pick_player_target(ctx, weapon, msg.dir);
 			if (player_target !== null) {
 				apply_player_damage(player_target, p.peer_id, p.team, weapon.damage, msg.weapon, false);

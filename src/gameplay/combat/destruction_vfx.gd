@@ -36,6 +36,12 @@ static var _shared_smoke_texture: Texture2D = null
 static var _shared_smoke_noise: Texture2D = null
 static var _shared_circle_mask: Texture2D = null
 static var _shared_fire_teardrop: Texture2D = null
+static var _shared_web_fire_mask: Texture2D = null
+static var _shared_web_spark_mask: Texture2D = null
+
+
+static func _is_web_build() -> bool:
+	return OS.has_feature("web")
 
 
 ## Apply the charred overlay to every MeshInstance3D under [param vehicle].
@@ -100,19 +106,22 @@ static func spawn_smoke_fire(
 	# the vehicle footprint for its horizontal spawn area, so tank wreck smoke
 	# spreads over the hull instead of rising as a thin chimney.
 	var source_pos: Vector3 = Vector3.ZERO
-	var smoke: GPUParticles3D = _build_smoke(smoke_footprint)
-	smoke.position = source_pos
-	root.add_child(smoke)
+	if _is_web_build():
+		_build_web_smoke_fire(root, smoke_footprint, source_pos)
+	else:
+		var smoke: GPUParticles3D = _build_smoke(smoke_footprint)
+		smoke.position = source_pos
+		root.add_child(smoke)
 
-	var fire: GPUParticles3D = _build_fire()
-	fire.position = source_pos
-	root.add_child(fire)
-	var flame_licks: GPUParticles3D = _build_flame_licks()
-	flame_licks.position = source_pos
-	root.add_child(flame_licks)
-	var embers: GPUParticles3D = _build_embers()
-	embers.position = source_pos + Vector3(0.0, 0.25, 0.0)
-	root.add_child(embers)
+		var fire: GPUParticles3D = _build_fire()
+		fire.position = source_pos
+		root.add_child(fire)
+		var flame_licks: GPUParticles3D = _build_flame_licks()
+		flame_licks.position = source_pos
+		root.add_child(flame_licks)
+		var embers: GPUParticles3D = _build_embers()
+		embers.position = source_pos + Vector3(0.0, 0.25, 0.0)
+		root.add_child(embers)
 
 	root.add_child(_build_light())
 	if auto_free_after > 0.0 and root.is_inside_tree():
@@ -564,6 +573,78 @@ static func _build_embers() -> GPUParticles3D:
 	return p
 
 
+static func _build_web_smoke_fire(root: Node3D, footprint: Vector2, source_pos: Vector3) -> void:
+	var smoke_tex: Texture2D = _get_shared_smoke_texture()
+	var smoke_count: int = 8
+	for i: int in range(smoke_count):
+		var smoke_card: MeshInstance3D = _make_web_billboard_card(
+			smoke_tex,
+			Color(0.42, 0.43, 0.46, 0.18 + randf() * 0.12),
+			Vector2(randf_range(1.8, 2.8), randf_range(1.8, 3.0)),
+			10,
+			false
+		)
+		smoke_card.name = "WebSmokeCard"
+		smoke_card.position = source_pos + Vector3(
+			randf_range(-footprint.x, footprint.x) * 0.45,
+			randf_range(0.35, 2.35),
+			randf_range(-footprint.y, footprint.y) * 0.45
+		)
+		smoke_card.rotation.z = randf() * TAU
+		root.add_child(smoke_card)
+
+	var fire_count: int = 4
+	for i: int in range(fire_count):
+		var fire_card: MeshInstance3D = _make_web_billboard_card(
+			_get_web_fire_mask(),
+			Color(2.0, 0.82, 0.16, 0.68),
+			Vector2(randf_range(0.95, 1.35), randf_range(1.35, 1.85)),
+			20,
+			true
+		)
+		fire_card.name = "WebFireCard"
+		fire_card.position = source_pos + Vector3(
+			randf_range(-footprint.x, footprint.x) * 0.22,
+			randf_range(0.0, 0.28),
+			randf_range(-footprint.y, footprint.y) * 0.22
+		)
+		fire_card.rotation.z = randf_range(-0.18, 0.18)
+		root.add_child(fire_card)
+
+	for i: int in range(10):
+		var ember_card: MeshInstance3D = _make_web_billboard_card(
+			_get_web_spark_mask(),
+			Color(4.5, 1.2, 0.28, 0.72),
+			Vector2(0.12, 0.12),
+			30,
+			true
+		)
+		ember_card.name = "WebEmberCard"
+		ember_card.position = source_pos + Vector3(
+			randf_range(-footprint.x, footprint.x) * 0.42,
+			randf_range(0.4, 2.2),
+			randf_range(-footprint.y, footprint.y) * 0.42
+		)
+		root.add_child(ember_card)
+
+
+static func _make_web_billboard_card(
+	texture: Texture2D,
+	tint: Color,
+	size: Vector2,
+	priority: int,
+	additive: bool
+) -> MeshInstance3D:
+	var card: MeshInstance3D = MeshInstance3D.new()
+	var quad: QuadMesh = QuadMesh.new()
+	quad.size = size
+	var mat: StandardMaterial3D = _make_billboard_material(texture, tint, priority, additive)
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	quad.material = mat
+	card.mesh = quad
+	return card
+
+
 ## Lazily load the authored smoke sprite used by the wreck plume. This texture
 ## carries an irregular alpha silhouette, replacing the old radial puff mask.
 static func _get_shared_smoke_texture() -> Texture2D:
@@ -617,6 +698,8 @@ static func _make_smoke_material(tint: Color = Color(0.55, 0.53, 0.50, 1.0), max
 	var smoke_tex: Texture2D = _get_shared_smoke_texture()
 	if smoke_tex == null:
 		return null
+	if _is_web_build():
+		return _make_billboard_material(smoke_tex, tint, 10, false)
 	var shader: Shader = load(_SMOKE_SHADER_PATH) as Shader
 	if shader == null:
 		push_warning("DestructionVFX: smoke shader missing at %s" % _SMOKE_SHADER_PATH)
@@ -639,7 +722,7 @@ static func _make_smoke_material(tint: Color = Color(0.55, 0.53, 0.50, 1.0), max
 
 
 static func _make_fallback_smoke_material() -> StandardMaterial3D:
-	return _make_billboard_material(null, Color(0.48, 0.49, 0.52, 0.68), 3, false)
+	return _make_billboard_material(_get_shared_smoke_texture(), Color(0.48, 0.49, 0.52, 0.68), 3, false)
 
 
 static func _make_billboard_material(
@@ -677,6 +760,46 @@ static func _make_billboard_material(
 ## the silhouette — ~0.20 for stationary wreck flames, ~0.30 for embers.
 ##
 ## Fire renders after smoke so the flame remains readable at the plume base.
+## Browser fallback masks generated from scratch so imported compressed textures
+## never need Image readback/conversion on WebGL.
+static func _get_web_fire_mask() -> Texture2D:
+	if _shared_web_fire_mask != null:
+		return _shared_web_fire_mask
+	const SIZE: int = 128
+	var img: Image = Image.create(SIZE, SIZE, false, Image.FORMAT_RGBA8)
+	for y: int in range(SIZE):
+		var t: float = 1.0 - float(y) / float(SIZE - 1)
+		var width: float = lerpf(0.33, 0.045, pow(t, 1.22))
+		var bottom: float = smoothstep(0.0, 0.12, t)
+		var top: float = 1.0 - smoothstep(0.88, 1.0, t)
+		for x: int in range(SIZE):
+			var u: float = float(x) / float(SIZE - 1)
+			var center_shift: float = sin(t * TAU * 1.35) * 0.035 * t
+			var dist: float = absf(u - 0.5 - center_shift)
+			var side: float = 1.0 - smoothstep(width, width + 0.10, dist)
+			var mask: float = pow(clampf(side * bottom * top, 0.0, 1.0), 0.72)
+			img.set_pixel(x, y, Color(1.0, 1.0, 1.0, mask))
+	_shared_web_fire_mask = ImageTexture.create_from_image(img)
+	return _shared_web_fire_mask
+
+
+static func _get_web_spark_mask() -> Texture2D:
+	if _shared_web_spark_mask != null:
+		return _shared_web_spark_mask
+	const SIZE: int = 64
+	var img: Image = Image.create(SIZE, SIZE, false, Image.FORMAT_RGBA8)
+	for y: int in range(SIZE):
+		var v: float = (float(y) / float(SIZE - 1)) * 2.0 - 1.0
+		for x: int in range(SIZE):
+			var u: float = (float(x) / float(SIZE - 1)) * 2.0 - 1.0
+			var r: float = sqrt(u * u + v * v)
+			var mask: float = 1.0 - smoothstep(0.42, 1.0, r)
+			img.set_pixel(x, y, Color(1.0, 1.0, 1.0, mask))
+	_shared_web_spark_mask = ImageTexture.create_from_image(img)
+	return _shared_web_spark_mask
+
+
+## Desktop/editor uses the authored fire shader; browser uses StandardMaterial3D.
 static func _make_fire_material(
 	fire_color: Color = Color(4.0, 0.8, 0.0, 1.0),
 	distortion_amount: float = 0.20,
@@ -684,6 +807,8 @@ static func _make_fire_material(
 	edge_softness: float = 0.16,
 	base_glow: float = 0.42
 ) -> Material:
+	if _is_web_build():
+		return _make_billboard_material(_get_web_fire_mask(), fire_color, 20, true)
 	var fire_tex: Texture2D = _get_shared_fire_teardrop()
 	var noise_tex: Texture2D = _get_shared_smoke_noise()
 	if fire_tex == null:
@@ -717,6 +842,8 @@ static func _make_fire_material(
 static func _make_spark_material(
 	fire_color: Color = Color(8.0, 3.0, 0.5, 1.0)
 ) -> Material:
+	if _is_web_build():
+		return _make_billboard_material(_get_web_spark_mask(), fire_color, 30, true)
 	var circle_tex: Texture2D = _get_shared_circle_mask()
 	var shader: Shader = load(_FIRE_SHADER_PATH) as Shader
 	if shader == null:

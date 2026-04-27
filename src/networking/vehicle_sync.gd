@@ -36,6 +36,7 @@ var _last_was_driving: bool = false
 var _server_pos: Vector3 = Vector3.ZERO
 var _server_rot: Vector3 = Vector3.ZERO
 var _server_driver: int = -1
+var _server_alive: bool = true
 var _has_server_state: bool = false
 
 
@@ -71,6 +72,8 @@ func _has_network_manager() -> bool:
 func _is_driving_locally() -> bool:
 	if _controller == null:
 		return false
+	if _controller.has_method("is_locally_driven"):
+		return bool(_controller.call("is_locally_driven"))
 	if not _controller.has_method("is_physics_processing"):
 		return false
 	return bool(_controller.call("is_physics_processing"))
@@ -102,6 +105,8 @@ func _process(delta: float) -> void:
 
 	# Not driving — lerp toward the server snapshot if we have one.
 	if not _has_server_state:
+		return
+	if not _server_alive:
 		return
 	# If server says I'm the driver but our local controller is inactive (rare
 	# transient — e.g. just exited but server hasn't processed yet), still
@@ -172,6 +177,7 @@ func _on_snapshot(_tick: int, _server_t: int, _players: Array, vehicles: Array) 
 		_server_pos = Vector3(float(pos_arr[0]), float(pos_arr[1]), float(pos_arr[2]))
 		_server_rot = Vector3(float(rot_arr[0]), float(rot_arr[1]), float(rot_arr[2]))
 		_server_driver = int(v.get("driver_peer_id", -1))
+		_server_alive = bool(v.get("alive", true))
 		_has_server_state = true
 		# Tell the controller whether a non-local peer is currently driving so
 		# heli rotors / drone propellers keep spinning even though our local

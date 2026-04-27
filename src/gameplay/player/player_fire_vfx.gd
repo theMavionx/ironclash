@@ -110,6 +110,8 @@ static func _ensure_shader_pipeline() -> void:
 		return
 	if _tracer_shader_material != null or _tracer_quad_mesh != null:
 		return  # already attempted; don't retry every shot
+	if OS.has_feature("web"):
+		return
 	if not ResourceLoader.exists(_TRACER_SHADER_PATH):
 		push_warning("PlayerFireVFX: tracer shader missing at %s — using fallback material" % _TRACER_SHADER_PATH)
 		return

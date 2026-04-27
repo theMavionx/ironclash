@@ -21,17 +21,21 @@ export type C2SHandler<K extends string = string> = (
 	msg: C2SVariant<K>,
 ) => void;
 
-const _handlers: Map<string, C2SHandler> = new Map();
+type AnyC2SHandler = (player: Player, msg: C2S) => void;
+
+const _handlers: Map<C2STypeName, AnyC2SHandler> = new Map();
 
 export function register_handler<K extends C2STypeName>(t: K, handler: C2SHandler<K>): void {
 	if (_handlers.has(t)) {
 		log.warn(`overwriting handler for "${t}"`);
 	}
-	_handlers.set(t, handler as C2SHandler);
+	_handlers.set(t, (player: Player, msg: C2S): void => {
+		handler(player, msg as C2SVariant<K>);
+	});
 }
 
 export function dispatch(player: Player, msg: C2S): void {
-	const h: C2SHandler | undefined = _handlers.get(msg.t);
+	const h: AnyC2SHandler | undefined = _handlers.get(msg.t);
 	if (h === undefined) {
 		log.warn(`no handler for "${msg.t}" from peer=${player.peer_id}`);
 		return;

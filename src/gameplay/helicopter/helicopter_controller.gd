@@ -100,6 +100,10 @@ func set_remote_driver_active(active: bool) -> void:
 	_remote_driver_active = active
 
 
+func is_locally_driven() -> bool:
+	return _active and not _is_destroyed
+
+
 func _process(delta: float) -> void:
 	# When the local controller is active, _physics_process drives rotors.
 	if _active:
@@ -179,6 +183,8 @@ func _ready() -> void:
 
 
 func _on_destroyed(_by_source: int) -> void:
+	if _is_destroyed:
+		return
 	_is_destroyed = true
 	# Zero horizontal velocity — wreck drops straight down, doesn't keep cruising.
 	velocity.x = 0.0
@@ -246,6 +252,31 @@ func set_active(is_active: bool) -> void:
 		velocity = Vector3.ZERO
 	else:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func apply_network_destroyed() -> void:
+	if _is_destroyed:
+		return
+	_mark_health_destroyed_no_signal()
+	_on_destroyed(DamageTypes.Source.HELI_MISSILE)
+
+
+func apply_network_respawned() -> void:
+	_is_destroyed = false
+	_remote_driver_active = false
+	_current_rotor_speed = 0.0
+	velocity = Vector3.ZERO
+	if _health != null:
+		_health.reset()
+	_restore_debris_source_visibility()
+	DestructionVFX.clear_charred(self)
+	DestructionVFX.clear_vfx(self)
+	set_physics_process(_active)
+
+
+func _mark_health_destroyed_no_signal() -> void:
+	if _health != null and _health.has_method("force_destroyed"):
+		_health.call("force_destroyed", DamageTypes.Source.HELI_MISSILE, false)
 
 
 func _physics_process(delta: float) -> void:
@@ -447,6 +478,28 @@ func _find_descendant_by_name(root: Node, target_name: String) -> Node:
 		if found:
 			return found
 	return null
+
+
+func _restore_debris_source_visibility() -> void:
+	if not debris_main_rotor_subtree_name.is_empty():
+		_set_subtree_visible(_find_descendant_by_name(self, debris_main_rotor_subtree_name), true)
+	if not debris_tail_subtree_name.is_empty():
+		_set_subtree_visible(_find_descendant_by_name(self, debris_tail_subtree_name), true)
+	for blade_name: String in debris_blade_mesh_names:
+		var blade: Node = _find_descendant_by_name(self, blade_name)
+		if blade is MeshInstance3D:
+			(blade as MeshInstance3D).visible = true
+
+
+func _set_subtree_visible(root: Node, is_visible: bool) -> void:
+	if root == null:
+		return
+	if root is Node3D:
+		(root as Node3D).visible = is_visible
+	for child: Node in root.get_children():
+		if child is MeshInstance3D:
+			(child as MeshInstance3D).visible = is_visible
+		_set_subtree_visible(child, is_visible)
 
 
 ## Detach helicopter parts as flying RigidBody3D debris on destruction.

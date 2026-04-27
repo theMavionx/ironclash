@@ -1,4 +1,4 @@
-[gd_scene load_steps=15 format=3 uid="uid://xhenad1shki"]
+[gd_scene load_steps=17 format=3 uid="uid://xhenad1shki"]
 
 [ext_resource type="Script" path="res://src/gameplay/player/player_controller.gd" id="1_player_ctrl"]
 [ext_resource type="Script" path="res://src/gameplay/health/health_component.gd" id="2_health"]
@@ -13,6 +13,8 @@
 [ext_resource type="Script" path="res://src/gameplay/player/aim_look_modifier.gd" id="13_aim"]
 [ext_resource type="Script" path="res://src/gameplay/player/jump_pose_modifier.gd" id="14_jump"]
 [ext_resource type="Script" path="res://src/gameplay/player/reload_hand_offset_modifier.gd" id="15_reload"]
+[ext_resource type="Script" path="res://src/gameplay/player/tracer_pool.gd" id="16_tracer_pool"]
+[ext_resource type="Script" path="res://src/gameplay/player/muzzle_flash_pool.gd" id="17_flash_pool"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
 radius = 0.4
@@ -70,6 +72,9 @@ transform = Transform3D(-0.972094, 0.199689, 0.123141, 0.208698, 0.975816, 0.065
 
 [node name="Muzzle" type="Node3D" parent="Body/Visual/Player/Skeleton3D/ak47" index="1"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.5, 0.04, 0)
+
+[node name="MuzzleFlashPool" type="Node3D" parent="Body/Visual/Player/Skeleton3D/ak47/Muzzle"]
+script = ExtResource("17_flash_pool")
 
 [node name="akderriere_low" parent="Body/Visual/Player/Skeleton3D" index="8"]
 transform = Transform3D(-0.972094, 0.199689, 0.123141, 0.208698, 0.975816, 0.0650777, -0.107167, 0.0889606, -0.990259, -0.876046, 0.0413083, -1.41136)
@@ -168,6 +173,9 @@ script = ExtResource("5_xrjxn")
 
 [node name="WeaponController" type="Node" parent="."]
 script = ExtResource("8_weap")
+
+[node name="TracerPool" type="Node3D" parent="."]
+script = ExtResource("16_tracer_pool")
 
 [node name="CameraFeelController" type="Node" parent="."]
 script = ExtResource("12_feel")

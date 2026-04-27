@@ -213,11 +213,45 @@ func get_aim_yaw() -> float:
 ## Reactivating recaptures mouse input automatically.
 func set_active(is_active: bool) -> void:
 	_active = is_active
+	if _is_destroyed:
+		set_physics_process(false)
+		velocity = Vector3.ZERO
+		return
 	set_physics_process(is_active)
 	if not is_active:
 		velocity = Vector3.ZERO
 	else:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+func is_locally_driven() -> bool:
+	return _active and not _is_destroyed
+
+
+func apply_network_destroyed() -> void:
+	if _is_destroyed:
+		return
+	_mark_health_destroyed_no_signal()
+	_on_destroyed(DamageTypes.Source.TANK_SHELL)
+
+
+func apply_network_respawned() -> void:
+	_is_destroyed = false
+	velocity = Vector3.ZERO
+	if _health != null:
+		_health.reset()
+	if _turret is MeshInstance3D:
+		(_turret as MeshInstance3D).visible = true
+	if _barrel is MeshInstance3D:
+		(_barrel as MeshInstance3D).visible = true
+	DestructionVFX.clear_charred(self)
+	DestructionVFX.clear_vfx(self)
+	set_physics_process(_active)
+
+
+func _mark_health_destroyed_no_signal() -> void:
+	if _health != null and _health.has_method("force_destroyed"):
+		_health.call("force_destroyed", DamageTypes.Source.TANK_SHELL, false)
 
 # ---------------------------------------------------------------------------
 # Built-in virtual methods
@@ -245,6 +279,8 @@ func _ready() -> void:
 
 
 func _on_destroyed(_by_source: int) -> void:
+	if _is_destroyed:
+		return
 	_is_destroyed = true
 	set_physics_process(false)
 	velocity = Vector3.ZERO

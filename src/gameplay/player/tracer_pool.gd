@@ -67,10 +67,17 @@ var _oldest_index: int = 0
 
 ## How many entries are currently active. Drives set_process on/off.
 var _active_count: int = 0
+var _is_allocated: bool = false
 
 
 func _ready() -> void:
 	set_process(false)
+	_ensure_allocated()
+
+
+func _ensure_allocated() -> void:
+	if _is_allocated:
+		return
 	_active = PackedByteArray()
 	_active.resize(pool_size)
 	_start_pos = PackedVector3Array()
@@ -97,6 +104,7 @@ func _ready() -> void:
 		_elapsed[i] = 0.0
 		_travel_time[i] = 0.0
 		_use_shader[i] = 0
+	_is_allocated = true
 
 
 ## Call once from WeaponController._ready() after PlayerFireVFX.prewarm() has
@@ -115,6 +123,7 @@ func setup(
 	cyl_mat: StandardMaterial3D,
 	shader_ready: bool,
 ) -> void:
+	_ensure_allocated()
 	_quad_mesh = quad_mesh
 	_quad_mat = quad_mat
 	_cyl_mesh = cyl_mesh

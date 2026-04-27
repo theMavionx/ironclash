@@ -61,6 +61,19 @@ func take_damage(amount: int, source: int) -> void:
 		destroyed.emit(source)
 
 
+## Force this component into destroyed state from an authoritative snapshot.
+## Set [param emit_destroyed_signal] false when the caller will run the
+## controller's network-specific wreck logic itself.
+func force_destroyed(source: int = 0, emit_destroyed_signal: bool = true) -> void:
+	if _is_destroyed:
+		return
+	_is_destroyed = true
+	_current_hp = 0
+	health_changed.emit(_current_hp, max_hp)
+	if emit_destroyed_signal:
+		destroyed.emit(source)
+
+
 ## True once HP has reached 0 at least once. Used by VehicleSwitcher
 ## to skip destroyed vehicles when cycling with E.
 func is_destroyed() -> bool:

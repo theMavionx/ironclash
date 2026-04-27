@@ -56,11 +56,17 @@ var _is_setup: bool = false
 
 ## Number of currently active entries — drives set_process on/off.
 var _active_count: int = 0
+var _is_allocated: bool = false
 
 
 func _ready() -> void:
 	set_process(false)
+	_ensure_allocated()
 
+
+func _ensure_allocated() -> void:
+	if _is_allocated:
+		return
 	_active = PackedByteArray()
 	_active.resize(pool_size)
 	_elapsed = PackedFloat32Array()
@@ -78,6 +84,7 @@ func _ready() -> void:
 		_sprites[i] = sp
 		_active[i] = 0
 		_elapsed[i] = 0.0
+	_is_allocated = true
 
 
 ## Call once from WeaponController._ready() after PlayerFireVFX has loaded
@@ -88,6 +95,7 @@ func setup(texture: Texture2D) -> void:
 	if texture == null:
 		push_warning("MuzzleFlashPool.setup(): texture is null — flash pool will produce invisible sprites")
 		return
+	_ensure_allocated()
 	_texture = texture
 	for i: int in pool_size:
 		_sprites[i].texture = texture

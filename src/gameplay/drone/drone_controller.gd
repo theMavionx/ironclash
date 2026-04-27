@@ -321,6 +321,10 @@ func set_remote_driver_active(active: bool) -> void:
 	_remote_driver_active = active
 
 
+func is_locally_driven() -> bool:
+	return _active and not _is_destroyed
+
+
 func _process(delta: float) -> void:
 	# Local controller running its own physics? Skip — _physics_process spins.
 	if _active or _is_destroyed:
@@ -554,6 +558,8 @@ func _animate_propellers(is_armed: bool, delta: float) -> void:
 # ---------------------------------------------------------------------------
 
 func _on_self_destroyed(_by_source: int) -> void:
+	if _is_destroyed:
+		return
 	_is_destroyed = true
 	# Zero horizontal velocity so the wreck drops, doesn't keep cruising forward.
 	velocity.x = 0.0
@@ -568,6 +574,33 @@ func _on_self_destroyed(_by_source: int) -> void:
 	# Schedule respawn — player sees the wreck plummet for ~1.5s before teleport.
 	var timer: SceneTreeTimer = get_tree().create_timer(respawn_delay)
 	timer.timeout.connect(_respawn)
+
+
+func apply_network_destroyed() -> void:
+	if _is_destroyed:
+		return
+	_mark_health_destroyed_no_signal()
+	_is_destroyed = true
+	velocity.x = 0.0
+	velocity.z = 0.0
+	set_physics_process(true)
+	_apply_destroyed_visual()
+
+
+func apply_network_respawned() -> void:
+	_clear_destroyed_visual()
+	if _health != null:
+		_health.reset()
+	_is_destroyed = false
+	_remote_driver_active = false
+	velocity = Vector3.ZERO
+	set_physics_process(_active)
+	respawned.emit()
+
+
+func _mark_health_destroyed_no_signal() -> void:
+	if _health != null and _health.has_method("force_destroyed"):
+		_health.call("force_destroyed", DamageTypes.Source.DRONE_KAMIKAZE, false)
 
 
 ## Wreck mode: gravity-only fall + slide, no input, no rotation, no propellers.

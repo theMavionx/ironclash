@@ -103,5 +103,6 @@ export const LIMITS = {
 	cooldown_slack_ms: 5,
 	move_state_max_chars: 16,
 	dir_unit_tolerance: 1.5,
+	fire_origin_max_offset_m: 8,
 	rot_max_radians: 100,
 } as const;

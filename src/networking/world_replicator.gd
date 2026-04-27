@@ -348,6 +348,9 @@ func _sync_vehicle_vfx(vehicles: Array) -> void:
 
 		if alive:
 			if had_state and not was_alive:
+				var restored: Node3D = _vehicle_node_for_id(vehicle_id)
+				if restored != null:
+					_apply_network_vehicle_respawned(restored)
 				_clear_vehicle_destroyed_vfx(vehicle_id)
 			continue
 
@@ -371,6 +374,7 @@ func _start_vehicle_destroyed_vfx(vehicle_id: String, vehicle: Node3D) -> void:
 		return
 	_vehicle_vfx_started[vehicle_id] = true
 
+	_apply_network_vehicle_destroyed(vehicle)
 	var already_has_vfx: bool = vehicle.get_node_or_null("_DestructionVFX") != null
 	DestructionVFX.apply_charred(vehicle)
 	if not already_has_vfx:
@@ -385,6 +389,24 @@ func _clear_vehicle_destroyed_vfx(vehicle_id: String) -> void:
 		DestructionVFX.clear_vfx(vehicle)
 		DestructionVFX.clear_charred(vehicle)
 	_vehicle_vfx_started.erase(vehicle_id)
+
+
+func _apply_network_vehicle_destroyed(vehicle: Node3D) -> void:
+	if vehicle.has_method("apply_network_destroyed"):
+		vehicle.call("apply_network_destroyed")
+		return
+	var health: Node = vehicle.get_node_or_null("HealthComponent")
+	if health != null and health.has_method("force_destroyed"):
+		health.call("force_destroyed", 0, true)
+
+
+func _apply_network_vehicle_respawned(vehicle: Node3D) -> void:
+	if vehicle.has_method("apply_network_respawned"):
+		vehicle.call("apply_network_respawned")
+		return
+	var health: Node = vehicle.get_node_or_null("HealthComponent")
+	if health != null and health.has_method("reset"):
+		health.call("reset")
 
 
 func _on_anim_event(payload: Dictionary) -> void:

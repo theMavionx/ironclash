@@ -70,6 +70,7 @@ export interface MatchEndedPayload {
 
 export interface NetworkConnectedPayload {
 	peer_id: number;
+	team: string;
 }
 
 export interface NetworkConnectionFailedPayload {

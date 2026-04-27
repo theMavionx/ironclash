@@ -58,7 +58,7 @@ static var _shared_mask: Texture2D = null
 
 
 func _ready() -> void:
-	if _shared_shader == null:
+	if not OS.has_feature("web") and _shared_shader == null:
 		_shared_shader = load(_SHADER_PATH) as Shader
 		if _shared_shader == null:
 			push_warning("SmokeVolume: shader missing at %s" % _SHADER_PATH)
@@ -74,6 +74,11 @@ func _ready() -> void:
 		_shared_mask = load(_CIRCLE_MASK_PATH) as Texture2D
 		if _shared_mask == null:
 			push_warning("SmokeVolume: circle mask missing at %s" % _CIRCLE_MASK_PATH)
+
+	if OS.has_feature("web"):
+		emitting = false
+		_build_web_smoke_cards()
+		return
 
 	process_material = _build_process_material()
 	draw_pass_1 = _build_quad()
@@ -149,6 +154,9 @@ func _build_process_material() -> ParticleProcessMaterial:
 func _build_quad() -> QuadMesh:
 	var quad: QuadMesh = QuadMesh.new()
 	quad.size = Vector2(1.5, 1.5)
+	if OS.has_feature("web") or _shared_shader == null:
+		quad.material = _build_web_billboard_material()
+		return quad
 	var mat: ShaderMaterial = ShaderMaterial.new()
 	mat.shader = _shared_shader
 	mat.set_shader_parameter("smoke_texture", _shared_smoke_texture)
@@ -162,3 +170,45 @@ func _build_quad() -> QuadMesh:
 	mat.set_shader_parameter("dissolve_strength", 0.16)
 	quad.material = mat
 	return quad
+
+
+func _build_web_billboard_material() -> StandardMaterial3D:
+	var mat: StandardMaterial3D = StandardMaterial3D.new()
+	mat.render_priority = 10
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.no_depth_test = true
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	mat.billboard_keep_scale = true
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.albedo_color = smoke_color
+	if _shared_smoke_texture != null:
+		mat.albedo_texture = _shared_smoke_texture
+	return mat
+
+
+func _build_web_smoke_cards() -> void:
+	const CARD_COUNT: int = 9
+	for i: int in range(CARD_COUNT):
+		var quad: QuadMesh = QuadMesh.new()
+		quad.size = Vector2(randf_range(1.1, 1.9), randf_range(1.1, 2.0))
+		var mat: StandardMaterial3D = _build_web_billboard_material()
+		var tint: Color = smoke_color
+		tint.a = randf_range(0.22, 0.42)
+		mat.albedo_color = tint
+		mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+		quad.material = mat
+
+		var card: MeshInstance3D = MeshInstance3D.new()
+		card.name = "WebSmokeCard"
+		card.mesh = quad
+		card.position = Vector3(
+			randf_range(-emission_radius, emission_radius),
+			randf_range(0.15, 2.6),
+			randf_range(-emission_radius, emission_radius)
+		)
+		card.rotation.z = randf() * TAU
+		add_child(card)
+
+	var timer: SceneTreeTimer = get_tree().create_timer(spawn_time + sustain_time + fade_time + lifetime)
+	timer.timeout.connect(queue_free)

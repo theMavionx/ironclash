@@ -31,6 +31,7 @@ const _ACTION_RELOAD: int = 2
 const _ACTION_SELECT: int = 3
 
 var _send_accumulator: float = 0.0
+var _fire_seq: int = 0
 
 # Resolved at _ready via the parent. Kept as Variant so we don't need
 # class_name imports (which the global script class cache hates when the
@@ -92,16 +93,7 @@ func _process(delta: float) -> void:
 	if _send_accumulator < period:
 		return
 	_send_accumulator = 0.0
-	var yaw: float = _body.rotation.y
-	var pitch: float = 0.0
-	var move_state: String = ""
-	if _player.has_method("get_aim_yaw"):
-		yaw = _player.call("get_aim_yaw")
-	if _player.has_method("get_aim_pitch"):
-		pitch = _player.call("get_aim_pitch")
-	if _player.has_method("get_move_state_string"):
-		move_state = _player.call("get_move_state_string")
-	NetworkManager.send_transform(_body.global_position, yaw, pitch, _body.velocity, move_state)
+	_send_current_transform()
 
 
 ## Per-shot hook driven by WeaponController.fired. Carries the weapon enum
@@ -111,9 +103,12 @@ func _on_weapon_fired(_weapon_enum: int) -> void:
 		return
 	if _camera == null:
 		return
+	_send_current_transform()
 	var origin: Vector3 = _camera.global_position
 	var dir: Vector3 = -_camera.global_transform.basis.z
-	NetworkManager.send_fire(_current_weapon_string(), origin, dir)
+	var weapon_name: String = _weapon_string_from_enum(_weapon_enum)
+	_fire_seq += 1
+	NetworkManager.send_fire(weapon_name, origin, dir, _fire_seq)
 
 
 # ---------------------------------------------------------------------------
@@ -143,9 +138,28 @@ func _current_weapon_string() -> String:
 	if not _anim_controller.has_method("get_current_weapon"):
 		return weapon_id
 	var idx: int = int(_anim_controller.call("get_current_weapon"))
+	return _weapon_string_from_enum(idx)
+
+
+func _weapon_string_from_enum(idx: int) -> String:
 	if idx < 0 or idx >= _WEAPON_NAMES.size():
 		return weapon_id
 	return _WEAPON_NAMES[idx]
+
+
+func _send_current_transform() -> void:
+	if _body == null:
+		return
+	var yaw: float = _body.rotation.y
+	var pitch: float = 0.0
+	var move_state: String = ""
+	if _player.has_method("get_aim_yaw"):
+		yaw = _player.call("get_aim_yaw")
+	if _player.has_method("get_aim_pitch"):
+		pitch = _player.call("get_aim_pitch")
+	if _player.has_method("get_move_state_string"):
+		move_state = _player.call("get_move_state_string")
+	NetworkManager.send_transform(_body.global_position, yaw, pitch, _body.velocity, move_state)
 
 
 # ---------------------------------------------------------------------------

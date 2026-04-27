@@ -108,7 +108,7 @@ export interface C2SVehicleSelfDestruct {
 export interface C2SVehicleHitClaim {
 	t: "vehicle_hit_claim";
 	/** Projectile id from server-side PROJECTILE_REGISTRY. */
-	projectile: "tank_shell" | "heli_missile" | "drone_kamikaze";
+	projectile: "player_rpg" | "tank_shell" | "heli_missile" | "drone_kamikaze";
 	/** Source vehicle (must be driven by claimer). Omit for non-vehicle drones
 	 *  that ride directly on the player record (none yet). */
 	vehicle_id?: string;

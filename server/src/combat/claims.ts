@@ -15,7 +15,7 @@
 import type { Vec3 } from "../../../shared/protocol.ts";
 import type { Player } from "../state/players.ts";
 import { players } from "../state/players.ts";
-import { vehicles } from "../state/vehicles.ts";
+import { vehicles, type Vehicle } from "../state/vehicles.ts";
 import { vec_dist } from "../util/vec.ts";
 import { apply_player_damage, apply_vehicle_damage } from "./damage.ts";
 import { make_logger } from "../util/log.ts";
@@ -68,10 +68,13 @@ export function process_hit_claim(req: ClaimRequest): ClaimResult {
 
 	// Driver-only firing for vehicle weapons. Drones identify themselves the
 	// same way (vehicle_id="drone").
+	let source_pos: Vec3 = req.shooter.pos;
 	if (req.vehicle_id !== undefined) {
-		const v = vehicles.get(req.vehicle_id);
+		const v: Vehicle | undefined = vehicles.get(req.vehicle_id);
 		if (v === undefined) return { ok: false, reason: "unknown_vehicle" };
+		if (!v.alive) return { ok: false, reason: "source_vehicle_dead" };
 		if (v.driver_peer_id !== req.shooter.peer_id) return { ok: false, reason: "not_driver" };
+		source_pos = v.pos;
 	}
 
 	// Anti-spam: minimum interval between claims of the same projectile from
@@ -82,7 +85,6 @@ export function process_hit_claim(req: ClaimRequest): ClaimResult {
 	if (now - last < spec.min_interval_ms - 5) {
 		return { ok: false, reason: "cooldown" };
 	}
-	_last_claim_ms.set(key, now);
 
 	// Apply damage to whichever target was claimed (priority: explicit player
 	// claim, then vehicle). Range gated on shooter→target distance.
@@ -90,11 +92,13 @@ export function process_hit_claim(req: ClaimRequest): ClaimResult {
 		const victim: Player | undefined = players.get(req.target_peer_id);
 		if (victim === undefined) return { ok: false, reason: "unknown_player_target" };
 		if (!victim.alive) return { ok: false, reason: "victim_dead" };
-		const dist: number = vec_dist(req.shooter.pos, victim.pos);
+		if (victim.team === req.shooter.team) return { ok: false, reason: "same_team" };
+		const dist: number = vec_dist(source_pos, victim.pos);
 		if (dist > spec.range_meters) {
 			log.warn(`reject peer=${req.shooter.peer_id} ${req.projectile} → P${victim.peer_id} dist=${dist.toFixed(1)} > ${spec.range_meters}`);
 			return { ok: false, reason: "out_of_range" };
 		}
+		_last_claim_ms.set(key, now);
 		apply_player_damage(victim, req.shooter.peer_id, req.shooter.team, spec.damage_player, req.projectile);
 		return { ok: true, what: "player", victim_id: String(victim.peer_id) };
 	}
@@ -103,11 +107,12 @@ export function process_hit_claim(req: ClaimRequest): ClaimResult {
 		const v = vehicles.get(req.target_vehicle_id);
 		if (v === undefined) return { ok: false, reason: "unknown_vehicle_target" };
 		if (!v.alive) return { ok: false, reason: "vehicle_already_dead" };
-		const dist: number = vec_dist(req.shooter.pos, v.pos);
+		const dist: number = vec_dist(source_pos, v.pos);
 		if (dist > spec.range_meters) {
 			log.warn(`reject peer=${req.shooter.peer_id} ${req.projectile} → ${v.id} dist=${dist.toFixed(1)} > ${spec.range_meters}`);
 			return { ok: false, reason: "out_of_range" };
 		}
+		_last_claim_ms.set(key, now);
 		apply_vehicle_damage(v, req.shooter.peer_id, spec.damage_vehicle, req.projectile);
 		return { ok: true, what: "vehicle", victim_id: v.id };
 	}
