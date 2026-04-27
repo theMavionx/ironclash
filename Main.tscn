@@ -1,4 +1,4 @@
-[gd_scene load_steps=45 format=3 uid="uid://c8j7f5yqg2bbp"]
+[gd_scene load_steps=46 format=3 uid="uid://c8j7f5yqg2bbp"]
 
 [ext_resource type="PackedScene" uid="uid://ctank00000001" path="res://scenes/tank/tank.tscn" id="1_tank"]
 [ext_resource type="Script" path="res://src/gameplay/camera/chase_camera.gd" id="2_pkq0h"]
@@ -21,13 +21,13 @@
 [ext_resource type="Script" path="res://src/networking/world_replicator.gd" id="17_replicator"]
 [ext_resource type="Script" path="res://src/networking/vehicle_sync.gd" id="18_vehsync"]
 [ext_resource type="Script" path="res://src/networking/network_debug_overlay.gd" id="19_netdbg"]
+[ext_resource type="PackedScene" uid="uid://df4o0r1pth413" path="res://scenes/debug/red_sphere_marker.tscn" id="20_redsphere"]
 [ext_resource type="Texture2D" uid="uid://f31buqbfaysj" path="res://textures/graund_normal.png" id="normal_1"]
 [ext_resource type="Texture2D" uid="uid://cbmj63jdv741a" path="res://textures/maountines_normal.png" id="normal_2"]
 [ext_resource type="Texture2D" uid="uid://bqmaekjykccnx" path="res://textures/road_normal.png" id="normal_3"]
 [ext_resource type="Texture2D" uid="uid://cuqtkw1rpv4p6" path="res://textures/rockdown_normal.png" id="normal_4"]
 [ext_resource type="Texture2D" uid="uid://b8x5p6x0ucnd2" path="res://textures/rocksdown2_normal.png" id="normal_5"]
 [ext_resource type="Texture2D" uid="uid://ca2cmrkh2aytr" path="res://textures/snow_normal.png" id="normal_6"]
-[ext_resource type="PackedScene" uid="uid://dredsphmarker1" path="res://scenes/debug/red_sphere_marker.tscn" id="20_redsphere"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_day"]
 sky_top_color = Color(0.28, 0.52, 0.85, 1)

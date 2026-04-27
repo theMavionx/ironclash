@@ -65,9 +65,12 @@ class GodotBridgeImpl {
 		});
 	}
 
-	/** Internal — called from the godot_ready listener wired below. */
+	/** Internal — called from the godot_ready listener wired below.
+	 *  ALWAYS drains pending `_readyWaiters` regardless of `engineReady`,
+	 *  because Godot's WebBridge autoload sets `engineReady = true` directly
+	 *  BEFORE dispatching the ready event. An early return here would skip
+	 *  the resolver loop and waiters would hang forever. */
 	public _markReady(): void {
-		if (this.engineReady) return;
 		this.engineReady = true;
 		while (this._readyWaiters.length > 0) {
 			const fn = this._readyWaiters.shift();

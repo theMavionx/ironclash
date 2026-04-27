@@ -1,0 +1,13 @@
+extends Terrain3D
+
+@export var web_shader: Shader
+
+func _ready() -> void:
+	if not OS.has_feature("web"):
+		return
+	if web_shader == null or material == null:
+		return
+
+	material.set_shader_override(web_shader)
+	material.enable_shader_override(true)
+	material.update()

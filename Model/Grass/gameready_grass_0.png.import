@@ -3,11 +3,9 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://bb68d20f2qfwo"
-path.s3tc="res://.godot/imported/gameready_grass_0.png-0c27747a0bb5b1f19e73088646888a87.s3tc.ctex"
-path.etc2="res://.godot/imported/gameready_grass_0.png-0c27747a0bb5b1f19e73088646888a87.etc2.ctex"
+path="res://.godot/imported/gameready_grass_0.png-0c27747a0bb5b1f19e73088646888a87.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc", "etc2_astc"],
-"vram_texture": true
+"vram_texture": false
 }
 generator_parameters={
 "md5": "5171115578e073df66d01d3ca7bfbde7"
@@ -16,11 +14,11 @@ generator_parameters={
 [deps]
 
 source_file="res://Model/Grass/gameready_grass_0.png"
-dest_files=["res://.godot/imported/gameready_grass_0.png-0c27747a0bb5b1f19e73088646888a87.s3tc.ctex", "res://.godot/imported/gameready_grass_0.png-0c27747a0bb5b1f19e73088646888a87.etc2.ctex"]
+dest_files=["res://.godot/imported/gameready_grass_0.png-0c27747a0bb5b1f19e73088646888a87.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1

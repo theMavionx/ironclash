@@ -76,6 +76,8 @@ export default function GameCanvas() {
 
 		const boot = async (): Promise<void> => {
 			try {
+				await clearGodotWebExportCaches();
+				if (cancelled) return;
 				const manifest: GodotManifest = await fetchManifest();
 				if (cancelled) return;
 				if (manifest.base === null || manifest.base.length === 0) {
@@ -259,6 +261,33 @@ async function fetchManifest(): Promise<GodotManifest> {
 		throw new Error(`Manifest fetch failed (${res.status})`);
 	}
 	return (await res.json()) as GodotManifest;
+}
+
+async function clearGodotWebExportCaches(): Promise<void> {
+	if ("serviceWorker" in navigator) {
+		const registrations = await navigator.serviceWorker.getRegistrations();
+		await Promise.all(
+			registrations
+				.filter((registration) => {
+					const scriptURL =
+						registration.active?.scriptURL ??
+						registration.waiting?.scriptURL ??
+						registration.installing?.scriptURL ??
+						"";
+					return /Ironclash|\/godot\//i.test(scriptURL);
+				})
+				.map((registration) => registration.unregister()),
+		);
+	}
+
+	if ("caches" in window) {
+		const keys = await caches.keys();
+		await Promise.all(
+			keys
+				.filter((key) => /Ironclash|godot/i.test(key))
+				.map((key) => caches.delete(key)),
+		);
+	}
 }
 
 const _scriptCache: Map<string, Promise<HTMLScriptElement>> = new Map();

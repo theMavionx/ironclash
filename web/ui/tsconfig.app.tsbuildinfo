@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/bridge/eventtypes.ts","./src/bridge/godotbridge.ts","./src/components/button.tsx","./src/components/gamecanvas.tsx","./src/components/hud.tsx","./src/hooks/usegodotevent.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/bridge/eventtypes.ts","./src/bridge/godotbridge.ts","./src/components/button.tsx","./src/components/gamecanvas.tsx","./src/components/hud.tsx","./src/components/menuoverlay.tsx","./src/hooks/usegodotevent.ts"],"version":"5.9.3"}

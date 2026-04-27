@@ -21,6 +21,13 @@ func _ready() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_play_idle()
 	_register_play_handler()
+	# In a browser, React's MenuOverlay paints its own PLAY button + title
+	# on top of the canvas. Hide the in-scene Godot UI so the user doesn't
+	# see two overlapping PLAYs in the same corner.
+	if OS.has_feature("web"):
+		var ui_root: Node = get_node_or_null(^"UI")
+		if ui_root != null and ui_root is CanvasLayer:
+			(ui_root as CanvasLayer).visible = false
 
 
 func _play_idle() -> void:
@@ -59,6 +66,12 @@ func _input(event: InputEvent) -> void:
 
 
 func _on_ui_play(_payload: Dictionary) -> void:
+	_start_match()
+
+
+## Wired from the in-scene PLAY button (UI/PlayButton). Same effect as
+## React's overlay clicking PLAY — keeps the editor flow self-sufficient.
+func _on_play_button_pressed() -> void:
 	_start_match()
 
 

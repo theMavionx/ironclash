@@ -287,8 +287,13 @@ static func spawn_ar_shot(
 
 
 ## Visual-only AR shot — same flash + tracer as `spawn_ar_shot`, but skips
-## hitscan and damage. Used by remote player avatars to render a peer's shot
-## (server is authoritative for damage; we just paint pixels).
+## damage. Used by remote player avatars to render a peer's shot (server is
+## authoritative for damage; we just paint pixels).
+##
+## [param shooter_body] is excluded from the tracer-end raycast so the beam
+## doesn't immediately collide with the firing peer's own collision capsule
+## (the muzzle bone sits 0.5 m forward of the ak47 attachment, often well
+## inside the body's 0.45 m capsule radius).
 ##
 ## We deliberately bypass the muzzle-flash pool here: the pool is parented
 ## under the LOCAL player's muzzle, so reusing it for a remote shot would
@@ -304,7 +309,8 @@ static func spawn_ar_visuals(
 	muzzle_node: Node3D,
 	aim_origin: Vector3,
 	aim_dir: Vector3,
-	max_range: float = 100.0
+	max_range: float = 100.0,
+	shooter_body: CollisionObject3D = null
 ) -> void:
 	if muzzle_node == null or not is_instance_valid(muzzle_node):
 		return
@@ -312,11 +318,7 @@ static func spawn_ar_visuals(
 	_spawn_muzzle_flash_at_node(muzzle_node)
 	var muzzle_world: Vector3 = muzzle_node.global_transform.origin
 	var to_point: Vector3 = _remote_tracer_end(muzzle_world, aim_origin, aim_dir, max_range)
-	# Bypass `_spawn_tracer` — its pool path resolves the shared static
-	# `_tracer_pool` which is wired to the LOCAL player's TracerPool node.
-	# Spawning through that pool from a remote-shot context puts tracers under
-	# the wrong subtree. Allocate a dedicated mesh straight under world_root.
-	_spawn_remote_tracer_alloc(world_root, muzzle_world, to_point)
+	_spawn_remote_tracer_alloc(world_root, muzzle_world, to_point, shooter_body)
 
 
 ## Visual-only AR shot for cases where the remote avatar's muzzle node is not
@@ -326,12 +328,13 @@ static func spawn_ar_visuals_from_world(
 	muzzle_world: Vector3,
 	aim_origin: Vector3,
 	aim_dir: Vector3,
-	max_range: float = 100.0
+	max_range: float = 100.0,
+	shooter_body: CollisionObject3D = null
 ) -> void:
 	_ensure_textures_loaded()
 	_spawn_muzzle_flash_at_world(world_root, muzzle_world)
 	var to_point: Vector3 = _remote_tracer_end(muzzle_world, aim_origin, aim_dir, max_range)
-	_spawn_remote_tracer_alloc(world_root, muzzle_world, to_point)
+	_spawn_remote_tracer_alloc(world_root, muzzle_world, to_point, shooter_body)
 
 
 static func _remote_tracer_end(muzzle_world: Vector3, aim_origin: Vector3, aim_dir: Vector3, max_range: float) -> Vector3:
@@ -351,15 +354,20 @@ static func _remote_tracer_end(muzzle_world: Vector3, aim_origin: Vector3, aim_d
 ## The end point is clipped against world geometry via a raycast so an aim
 ## that points into the floor produces a 1m tracer instead of a 100m one
 ## that buries itself before anyone could see it.
-static func _spawn_remote_tracer_alloc(world_root: Node, from_pos: Vector3, to_pos: Vector3) -> void:
+static func _spawn_remote_tracer_alloc(world_root: Node, from_pos: Vector3, to_pos: Vector3, shooter_body: CollisionObject3D = null) -> void:
 	if world_root == null or not is_instance_valid(world_root):
 		return
 	# Clip the tracer end against world collision so floor-aimed shots stay
-	# visible above the ground.
-	var clipped_to: Vector3 = _raycast_tracer_end(world_root, from_pos, to_pos)
+	# visible above the ground. Exclude the shooter's own body so we don't
+	# clip immediately against the player's collision capsule.
+	var clipped_to: Vector3 = _raycast_tracer_end(world_root, from_pos, to_pos, shooter_body)
 	var distance: float = from_pos.distance_to(clipped_to)
-	if distance < 0.2:
-		return
+	if distance < 0.5:
+		# Too short to be readable — extend along the original aim so the
+		# cylinder still flies a visible arc instead of degenerating.
+		var dir: Vector3 = (to_pos - from_pos).normalized()
+		clipped_to = from_pos + dir * 5.0
+		distance = 5.0
 	var mesh: MeshInstance3D = MeshInstance3D.new()
 	mesh.mesh = _tracer_mesh
 	mesh.material_override = _tracer_material
@@ -374,7 +382,9 @@ static func _spawn_remote_tracer_alloc(world_root: Node, from_pos: Vector3, to_p
 	# cylinder runs along -Z (the look_at forward direction).
 	mesh.rotate_object_local(Vector3.RIGHT, -PI / 2.0)
 	const BULLET_SPEED: float = 80.0
-	var travel_time: float = clampf(distance / BULLET_SPEED, 0.02, 0.35)
+	# Floor at 0.15 s so the tracer is unmistakably moving — anything shorter
+	# reads as a static flash and got reported as "stuck in place" tracers.
+	var travel_time: float = clampf(distance / BULLET_SPEED, 0.15, 0.35)
 	var tween: Tween = mesh.create_tween()
 	tween.tween_property(mesh, "global_position", clipped_to, travel_time) \
 		.from(from_pos) \
@@ -383,9 +393,10 @@ static func _spawn_remote_tracer_alloc(world_root: Node, from_pos: Vector3, to_p
 
 
 ## Returns the first world-collision hit between `from_pos` and `to_pos`,
-## or `to_pos` (clamped to 30 m) if nothing was hit. Cheap raycast, identical
-## physics layer mask the local rifle uses for hitscan.
-static func _raycast_tracer_end(world_root: Node, from_pos: Vector3, to_pos: Vector3) -> Vector3:
+## or `to_pos` (clamped to 30 m) if nothing was hit. The shooter's body is
+## excluded so the muzzle bone (which sits inside the player capsule) can't
+## clip the ray to ~0 m and produce a stuck "frozen at muzzle" tracer.
+static func _raycast_tracer_end(world_root: Node, from_pos: Vector3, to_pos: Vector3, shooter_body: CollisionObject3D = null) -> Vector3:
 	var node3d: Node3D = world_root as Node3D
 	if node3d == null:
 		return _clamp_tracer_far(from_pos, to_pos)
@@ -396,6 +407,8 @@ static func _raycast_tracer_end(world_root: Node, from_pos: Vector3, to_pos: Vec
 	if space == null:
 		return _clamp_tracer_far(from_pos, to_pos)
 	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(from_pos, to_pos)
+	if shooter_body != null and is_instance_valid(shooter_body):
+		query.exclude = [shooter_body.get_rid()]
 	var hit: Dictionary = space.intersect_ray(query)
 	if not hit.is_empty():
 		return hit.get("position", to_pos)

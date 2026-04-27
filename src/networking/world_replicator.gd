@@ -350,12 +350,15 @@ func _stop_network_smoke_fire(payload: Dictionary) -> void:
 func _spawn_remote_ar_visuals(rp: Node3D, origin: Vector3, dir: Vector3) -> void:
 	var muzzle: Node3D = _get_or_create_remote_ak_muzzle(rp)
 	var aim_origin: Vector3 = _fallback_remote_fire_origin(rp, origin)
+	# Pass the remote shooter's Body so the tracer raycast doesn't clip
+	# against the firer's own capsule (muzzle bone sits inside it).
+	var body: CollisionObject3D = rp.get_node_or_null("Body") as CollisionObject3D
 	# Use the same VFX pipeline the local weapon uses — flash + tracer share
 	# the pre-warmed mesh/material statics in PlayerFireVFX.
 	if muzzle != null:
-		PlayerFireVFX.spawn_ar_visuals(_scene_root(), muzzle, aim_origin, dir, 100.0)
+		PlayerFireVFX.spawn_ar_visuals(_scene_root(), muzzle, aim_origin, dir, 100.0, body)
 		return
-	PlayerFireVFX.spawn_ar_visuals_from_world(_scene_root(), aim_origin, aim_origin, dir, 100.0)
+	PlayerFireVFX.spawn_ar_visuals_from_world(_scene_root(), aim_origin, aim_origin, dir, 100.0, body)
 
 
 func _get_or_create_remote_ak_muzzle(rp: Node3D) -> Node3D:

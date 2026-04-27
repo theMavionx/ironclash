@@ -87,6 +87,9 @@ export default defineConfig({
 						"Content-Type",
 						CONTENT_TYPES[ext] ?? "application/octet-stream",
 					);
+					res.setHeader("Cache-Control", "no-store, max-age=0");
+					res.setHeader("Pragma", "no-cache");
+					res.setHeader("Expires", "0");
 					for (const [k, v] of Object.entries(COOP_COEP_HEADERS)) {
 						res.setHeader(k, v);
 					}
