@@ -2,18 +2,21 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://hymx42p1rspv"
-path.s3tc="res://.godot/imported/snow.png-7cb34aeefc52ebe8fd74433831fe4133.s3tc.ctex"
-path.etc2="res://.godot/imported/snow.png-7cb34aeefc52ebe8fd74433831fe4133.etc2.ctex"
+uid="uid://bb68d20f2qfwo"
+path.s3tc="res://.godot/imported/gameready_grass_0.png-0c27747a0bb5b1f19e73088646888a87.s3tc.ctex"
+path.etc2="res://.godot/imported/gameready_grass_0.png-0c27747a0bb5b1f19e73088646888a87.etc2.ctex"
 metadata={
 "imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
+generator_parameters={
+"md5": "5171115578e073df66d01d3ca7bfbde7"
+}
 
 [deps]
 
-source_file="res://textures/snow.png"
-dest_files=["res://.godot/imported/snow.png-7cb34aeefc52ebe8fd74433831fe4133.s3tc.ctex", "res://.godot/imported/snow.png-7cb34aeefc52ebe8fd74433831fe4133.etc2.ctex"]
+source_file="res://Model/Grass/gameready_grass_0.png"
+dest_files=["res://.godot/imported/gameready_grass_0.png-0c27747a0bb5b1f19e73088646888a87.s3tc.ctex", "res://.godot/imported/gameready_grass_0.png-0c27747a0bb5b1f19e73088646888a87.etc2.ctex"]
 
 [params]
 
