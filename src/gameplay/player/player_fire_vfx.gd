@@ -182,13 +182,14 @@ static func prewarm(world_root: Node) -> void:
 		dummy_shader.get_tree().create_timer(0.1).timeout.connect(dummy_shader.queue_free)
 
 
-## Wire pool references. Call once from WeaponController._ready() AFTER
-## prewarm() so the shared mesh/material statics are populated, then call
+## Wire pool references. Call once from WeaponController._ready(). This loads
+## shared mesh/material statics if prewarm() did not already do it, then calls
 ## tracer_pool.setup() with those references here.
 ##
 ## [param tracer_pool]  TracerPool node living in the scene tree (child of Player).
 ## [param flash_pool]   MuzzleFlashPool node living under the muzzle node.
 static func set_pools(tracer_pool: TracerPool, flash_pool: MuzzleFlashPool) -> void:
+	_ensure_textures_loaded()
 	_tracer_pool = tracer_pool
 	_flash_pool = flash_pool
 
@@ -310,7 +311,7 @@ static func spawn_ar_visuals(
 	_ensure_textures_loaded()
 	_spawn_muzzle_flash_at_node(muzzle_node)
 	var muzzle_world: Vector3 = muzzle_node.global_transform.origin
-	var to_point: Vector3 = aim_origin + aim_dir.normalized() * max_range
+	var to_point: Vector3 = _remote_tracer_end(muzzle_world, aim_origin, aim_dir, max_range)
 	# Bypass `_spawn_tracer` — its pool path resolves the shared static
 	# `_tracer_pool` which is wired to the LOCAL player's TracerPool node.
 	# Spawning through that pool from a remote-shot context puts tracers under
@@ -318,37 +319,117 @@ static func spawn_ar_visuals(
 	_spawn_remote_tracer_alloc(world_root, muzzle_world, to_point)
 
 
+## Visual-only AR shot for cases where the remote avatar's muzzle node is not
+## available yet. Keeps the local shooting path untouched.
+static func spawn_ar_visuals_from_world(
+	world_root: Node,
+	muzzle_world: Vector3,
+	aim_origin: Vector3,
+	aim_dir: Vector3,
+	max_range: float = 100.0
+) -> void:
+	_ensure_textures_loaded()
+	_spawn_muzzle_flash_at_world(world_root, muzzle_world)
+	var to_point: Vector3 = _remote_tracer_end(muzzle_world, aim_origin, aim_dir, max_range)
+	_spawn_remote_tracer_alloc(world_root, muzzle_world, to_point)
+
+
+static func _remote_tracer_end(muzzle_world: Vector3, aim_origin: Vector3, aim_dir: Vector3, max_range: float) -> Vector3:
+	var dir: Vector3 = aim_dir
+	if dir.length_squared() < 0.0001:
+		dir = Vector3.FORWARD
+	dir = dir.normalized()
+	var to_point: Vector3 = aim_origin + dir * max_range
+	if muzzle_world.distance_squared_to(to_point) < 0.04:
+		to_point = muzzle_world + dir * max_range
+	return to_point
+
+
 ## Pool-bypassed tracer for remote-shot VFX. Always allocates a fresh mesh +
 ## Tween under [param world_root] so it's free of any local-side pool state.
+##
+## The end point is clipped against world geometry via a raycast so an aim
+## that points into the floor produces a 1m tracer instead of a 100m one
+## that buries itself before anyone could see it.
 static func _spawn_remote_tracer_alloc(world_root: Node, from_pos: Vector3, to_pos: Vector3) -> void:
 	if world_root == null or not is_instance_valid(world_root):
 		return
-	var distance: float = from_pos.distance_to(to_pos)
+	# Clip the tracer end against world collision so floor-aimed shots stay
+	# visible above the ground.
+	var clipped_to: Vector3 = _raycast_tracer_end(world_root, from_pos, to_pos)
+	var distance: float = from_pos.distance_to(clipped_to)
 	if distance < 0.2:
 		return
 	var mesh: MeshInstance3D = MeshInstance3D.new()
-	# Always use the simple cylinder + StandardMaterial pipeline here — it's
-	# guaranteed valid after _ensure_textures_loaded() and renders identically
-	# on Forward+ and gl_compatibility renderers.
 	mesh.mesh = _tracer_mesh
 	mesh.material_override = _tracer_material
 	world_root.add_child(mesh)
 	mesh.global_position = from_pos
 	var up_ref: Vector3 = Vector3.UP
-	var forward: Vector3 = (to_pos - from_pos).normalized()
+	var forward: Vector3 = (clipped_to - from_pos).normalized()
 	if absf(forward.dot(Vector3.UP)) > 0.99:
 		up_ref = Vector3.FORWARD
-	mesh.look_at(to_pos, up_ref)
+	mesh.look_at(clipped_to, up_ref)
 	# CylinderMesh's length is along local +Y; rotate -90° around X so the
 	# cylinder runs along -Z (the look_at forward direction).
 	mesh.rotate_object_local(Vector3.RIGHT, -PI / 2.0)
 	const BULLET_SPEED: float = 80.0
 	var travel_time: float = clampf(distance / BULLET_SPEED, 0.02, 0.35)
 	var tween: Tween = mesh.create_tween()
-	tween.tween_property(mesh, "global_position", to_pos, travel_time) \
+	tween.tween_property(mesh, "global_position", clipped_to, travel_time) \
 		.from(from_pos) \
 		.set_trans(Tween.TRANS_LINEAR)
 	tween.tween_callback(mesh.queue_free)
+
+
+## Returns the first world-collision hit between `from_pos` and `to_pos`,
+## or `to_pos` (clamped to 30 m) if nothing was hit. Cheap raycast, identical
+## physics layer mask the local rifle uses for hitscan.
+static func _raycast_tracer_end(world_root: Node, from_pos: Vector3, to_pos: Vector3) -> Vector3:
+	var node3d: Node3D = world_root as Node3D
+	if node3d == null:
+		return _clamp_tracer_far(from_pos, to_pos)
+	var world: World3D = node3d.get_world_3d()
+	if world == null:
+		return _clamp_tracer_far(from_pos, to_pos)
+	var space: PhysicsDirectSpaceState3D = world.direct_space_state
+	if space == null:
+		return _clamp_tracer_far(from_pos, to_pos)
+	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(from_pos, to_pos)
+	var hit: Dictionary = space.intersect_ray(query)
+	if not hit.is_empty():
+		return hit.get("position", to_pos)
+	return _clamp_tracer_far(from_pos, to_pos)
+
+
+## Cap the tracer at 30 m when no collision was hit — visually punchy and
+## avoids the sub-floor stub the original 100 m extrapolation produced.
+static func _clamp_tracer_far(from_pos: Vector3, to_pos: Vector3) -> Vector3:
+	const MAX_VISIBLE: float = 30.0
+	var dist: float = from_pos.distance_to(to_pos)
+	if dist <= MAX_VISIBLE:
+		return to_pos
+	var dir: Vector3 = (to_pos - from_pos).normalized()
+	return from_pos + dir * MAX_VISIBLE
+
+
+static func _spawn_muzzle_flash_at_world(world_root: Node, world_pos: Vector3) -> void:
+	var parent: Node3D = world_root as Node3D
+	if parent == null or not is_instance_valid(parent) or _flash_texture == null:
+		return
+	var sprite: Sprite3D = Sprite3D.new()
+	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	sprite.shaded = false
+	sprite.pixel_size = 0.00028
+	sprite.texture = _flash_texture
+	sprite.rotation.z = randf() * TAU
+	parent.add_child(sprite)
+	sprite.global_position = world_pos
+	var done_t: SceneTreeTimer = parent.get_tree().create_timer(0.05)
+	done_t.timeout.connect(func() -> void:
+		if is_instance_valid(sprite):
+			sprite.queue_free()
+	)
 
 
 ## Pool-bypassed muzzle flash spawn — always allocates a fresh Sprite3D as a

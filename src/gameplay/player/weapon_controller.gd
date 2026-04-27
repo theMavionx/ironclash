@@ -116,8 +116,20 @@ func _ready() -> void:
 	var tracer_pool: TracerPool = get_node_or_null(tracer_pool_path) as TracerPool
 	var flash_pool: MuzzleFlashPool = get_node_or_null(flash_pool_path) as MuzzleFlashPool
 	if tracer_pool == null:
-		push_warning("WeaponController: tracer_pool_path not found at '%s' — tracer pool disabled, using legacy allocation" % tracer_pool_path)
-	if flash_pool == null:
+		var pool_parent: Node = get_parent()
+		if pool_parent != null:
+			tracer_pool = TracerPool.new()
+			tracer_pool.name = "TracerPool"
+			pool_parent.add_child(tracer_pool)
+			push_warning("WeaponController: tracer_pool_path not found at '%s' — created runtime TracerPool" % tracer_pool_path)
+		else:
+			push_warning("WeaponController: tracer_pool_path not found at '%s' — tracer pool disabled, using legacy allocation" % tracer_pool_path)
+	if flash_pool == null and _muzzle != null:
+		flash_pool = MuzzleFlashPool.new()
+		flash_pool.name = "MuzzleFlashPool"
+		_muzzle.add_child(flash_pool)
+		push_warning("WeaponController: flash_pool_path not found at '%s' — created runtime MuzzleFlashPool" % flash_pool_path)
+	elif flash_pool == null:
 		push_warning("WeaponController: flash_pool_path not found at '%s' — flash pool disabled, using legacy allocation" % flash_pool_path)
 	PlayerFireVFX.set_pools(tracer_pool, flash_pool)
 
@@ -148,7 +160,7 @@ func get_current_mag_size() -> int:
 
 func _process(delta: float) -> void:
 	_time_since_last_fire += delta
-	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+	if not _accept_mouse_fire_input():
 		_ar_fire_held_time = -1.0
 		_ar_lmb_was_pressed = false
 		return
@@ -182,7 +194,7 @@ func _process(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+	if not _accept_mouse_fire_input():
 		return
 	if event is InputEventKey:
 		var key_ev := event as InputEventKey
@@ -344,3 +356,10 @@ func _spawn_ar_fire_vfx() -> void:
 		ar_damage,
 		ar_max_range,
 	)
+
+
+func _accept_mouse_fire_input() -> bool:
+	# Web builds can fail Pointer Lock depending on browser/embed state. Do not
+	# let that kill shooting; the React host already requires a user click and
+	# focuses the canvas before the engine starts.
+	return Input.mouse_mode == Input.MOUSE_MODE_CAPTURED or OS.has_feature("web")

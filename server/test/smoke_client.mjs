@@ -143,14 +143,14 @@ async function main() {
 		});
 		target.send({
 			t: "transform",
-			pos: [0, 3, 20],
+			pos: [0, 1, 20],
 			rot_y: Math.PI,
 			aim_pitch: 0,
 			vel: [0, 0, 0],
 			client_t: Date.now(),
 		});
 		await sleep(50);
-		shooter.send({ t: "fire", seq: 2, weapon: "ak", origin: [0, 3, 0], dir: [0, 0, 1], client_t: Date.now() });
+		shooter.send({ t: "fire", seq: 2, weapon: "ak", origin: [0, 2.25, 0], dir: [0, 0, 1], client_t: Date.now() });
 		await sleep(200);
 		const damage = target.damages.at(-1);
 		assert(target.damages.length > damageBefore, `${target.label} took AK damage`);
@@ -262,18 +262,28 @@ async function main() {
 		const red2Damage = red2.damages.slice(red2DmgBefore).find(d => d.victim === red2.welcome?.peer_id);
 		assert(red2Damage === undefined, `red2 (same team) NOT damaged by red`);
 
-		console.log("# Cooldown: rapid-fire over rate cap is dropped");
-		const blueDmgBefore = blue.damages.length;
-		// Wait until blue is alive again then spam 5 shots inside one cooldown.
-		await sleep(120);
+		red.close(); blue.close(); red2.close();
+		await sleep(200);
+	}
+
+	console.log("# Cooldown: rapid-fire over rate cap is dropped");
+	{
+		const coolRed = new TestClient("cool_red");
+		const coolBlue = new TestClient("cool_blue");
+		await Promise.all([coolRed.opened, coolBlue.opened]);
+		await sleep(300);
+		assert(coolRed.welcome?.team !== coolBlue.welcome?.team, "cooldown peers are on opposite teams");
+		coolRed.send({ t: "transform", pos: [-10, 1, 0], rot_y: 0, aim_pitch: 0, vel: [0,0,0], client_t: Date.now() });
+		coolBlue.send({ t: "transform", pos: [10, 1, 0], rot_y: Math.PI, aim_pitch: 0, vel: [0,0,0], client_t: Date.now() });
+		await sleep(150);
+		const dmgBefore = coolBlue.damages.length;
 		for (let i = 0; i < 5; i++) {
-			red.send({ t: "fire", seq: 1000 + i, weapon: "ak", origin: [-10,1,0], dir: [1,0,0], client_t: Date.now() });
+			coolRed.send({ t: "fire", seq: 1000 + i, weapon: "ak", origin: [-10,1,0], dir: [1,0,0], client_t: Date.now() });
 		}
 		await sleep(300);
-		const newDmgs = blue.damages.length - blueDmgBefore;
+		const newDmgs = coolBlue.damages.length - dmgBefore;
 		assert(newDmgs === 1, `cooldown dropped extras (got ${newDmgs} damages, expect 1)`);
-
-		red.close(); blue.close(); red2.close();
+		coolRed.close(); coolBlue.close();
 		await sleep(200);
 	}
 

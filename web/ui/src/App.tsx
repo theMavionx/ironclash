@@ -1,5 +1,6 @@
 import GameCanvas from "@/components/GameCanvas";
 import HUD from "@/components/HUD";
+import MenuOverlay from "@/components/MenuOverlay";
 
 export default function App() {
 	return (
@@ -9,6 +10,7 @@ export default function App() {
 			    the canvas; individual UI elements re-enable as needed. */}
 			<div className="pointer-events-none absolute inset-0">
 				<HUD />
+				<MenuOverlay />
 			</div>
 		</div>
 	);

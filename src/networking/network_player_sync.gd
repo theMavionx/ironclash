@@ -97,13 +97,15 @@ func _process(delta: float) -> void:
 
 
 ## Per-shot hook driven by WeaponController.fired. Carries the weapon enum
-## int (PlayerAnimController.Weapon: AR=0, RPG=1) as its single param.
+## int (PlayerAnimController.Weapon: AR=0, RPG=1) as its single param. The
+## 30 Hz transform stream already keeps server position fresh, so don't
+## piggy-back an extra transform here — it doubles the fire-burst packet
+## rate and fills the WebSocket buffer faster than the server drains it.
 func _on_weapon_fired(_weapon_enum: int) -> void:
 	if not _has_network_manager() or not NetworkManager.is_online():
 		return
 	if _camera == null:
 		return
-	_send_current_transform()
 	var origin: Vector3 = _camera.global_position
 	var dir: Vector3 = -_camera.global_transform.basis.z
 	var weapon_name: String = _weapon_string_from_enum(_weapon_enum)

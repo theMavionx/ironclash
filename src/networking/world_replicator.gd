@@ -14,6 +14,8 @@ const RPG_ROCKET_SCENE: PackedScene = preload("res://scenes/projectile/rpg_rocke
 # Bone paths inside the remote player's skeleton — match the local player.
 const _AK_MUZZLE_PATH: String = "Body/Visual/Player/Skeleton3D/ak47/Muzzle"
 const _RPG_MUZZLE_PATH: String = "Body/Visual/Player/Skeleton3D/rocketbullet"
+const _REMOTE_FIRE_QUEUE_TTL_MSEC: int = 500
+const _REMOTE_FIRE_QUEUE_MAX_PER_PEER: int = 8
 
 ## When true, also spawn a remote-player avatar for the local peer (debug
 ## third-person view of own snapshot fidelity). Off in normal play.
@@ -24,6 +26,7 @@ var _last_local_vehicle: String = ""  # tracks what we last reported to React
 var _vehicle_alive: Dictionary = {}  # vehicle_id (String) -> bool
 var _vehicle_vfx_started: Dictionary = {}  # vehicle_id (String) -> bool
 var _network_smoke_anchors: Dictionary = {}  # vfx key (String) -> Node3D
+var _pending_remote_fire_events: Dictionary = {}  # peer_id (int) -> Array[Dictionary]
 
 
 func _ready() -> void:
@@ -73,6 +76,8 @@ func _on_snapshot(_tick: int, _server_t: int, players: Array, vehicles: Array) -
 			rp = _spawn(pid, team, pos, rot_y)
 		if rp != null and rp.has_method("update_from_snapshot"):
 			rp.call("update_from_snapshot", pos, rot_y, hp, max_hp, alive, weapon, move_state)
+		if rp != null and is_instance_valid(rp):
+			_flush_pending_remote_fire_events(pid)
 
 	# Despawn anyone the server no longer reports.
 	for pid_old: int in _remote_players.keys():
@@ -154,6 +159,7 @@ func _clear_all() -> void:
 	_network_smoke_anchors.clear()
 	_vehicle_alive.clear()
 	_vehicle_vfx_started.clear()
+	_pending_remote_fire_events.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -251,11 +257,50 @@ func _handle_muzzle_flash(payload: Dictionary) -> void:
 	var weapon: String = String(payload.get("weapon", "ak"))
 	var rp: Node3D = _remote_players.get(pid)
 	if rp == null or not is_instance_valid(rp):
+		_queue_remote_fire_event(pid, payload)
 		return
 	if weapon == "rpg":
 		_spawn_remote_rpg_rocket(rp, dir)
 	else:
 		_spawn_remote_ar_visuals(rp, origin, dir)
+
+
+func _queue_remote_fire_event(peer_id: int, payload: Dictionary) -> void:
+	if peer_id < 0:
+		return
+	var queue: Array = _pending_remote_fire_events.get(peer_id, [])
+	var copy: Dictionary = payload.duplicate(true)
+	copy["_queued_msec"] = Time.get_ticks_msec()
+	queue.append(copy)
+	while queue.size() > _REMOTE_FIRE_QUEUE_MAX_PER_PEER:
+		queue.pop_front()
+	_pending_remote_fire_events[peer_id] = queue
+
+
+func _flush_pending_remote_fire_events(peer_id: int) -> void:
+	if not _pending_remote_fire_events.has(peer_id):
+		return
+	var rp: Node3D = _remote_players.get(peer_id)
+	if rp == null or not is_instance_valid(rp):
+		return
+	var queue: Array = _pending_remote_fire_events.get(peer_id, [])
+	_pending_remote_fire_events.erase(peer_id)
+	var now_msec: int = Time.get_ticks_msec()
+	for raw in queue:
+		if not (raw is Dictionary):
+			continue
+		var payload: Dictionary = raw
+		if now_msec - int(payload.get("_queued_msec", now_msec)) > _REMOTE_FIRE_QUEUE_TTL_MSEC:
+			continue
+		var dir: Vector3 = _vec3_from_array(payload.get("dir", null))
+		if dir.length_squared() < 0.0001:
+			continue
+		var weapon: String = String(payload.get("weapon", "ak"))
+		if weapon == "rpg":
+			_spawn_remote_rpg_rocket(rp, dir)
+		else:
+			var origin: Vector3 = _vec3_from_array(payload.get("pos", null))
+			_spawn_remote_ar_visuals(rp, origin, dir)
 
 
 func _spawn_network_explosion(payload: Dictionary) -> void:
@@ -303,14 +348,42 @@ func _stop_network_smoke_fire(payload: Dictionary) -> void:
 
 
 func _spawn_remote_ar_visuals(rp: Node3D, origin: Vector3, dir: Vector3) -> void:
-	var muzzle: Node3D = rp.get_node_or_null(_AK_MUZZLE_PATH) as Node3D
-	if muzzle == null:
-		# Late spawn timing: skeleton may not be wired yet on the very first
-		# fire after a peer joins. Drop silently instead of half-rendering.
-		return
+	var muzzle: Node3D = _get_or_create_remote_ak_muzzle(rp)
+	var aim_origin: Vector3 = _fallback_remote_fire_origin(rp, origin)
 	# Use the same VFX pipeline the local weapon uses — flash + tracer share
 	# the pre-warmed mesh/material statics in PlayerFireVFX.
-	PlayerFireVFX.spawn_ar_visuals(get_tree().current_scene, muzzle, origin, dir, 100.0)
+	if muzzle != null:
+		PlayerFireVFX.spawn_ar_visuals(_scene_root(), muzzle, aim_origin, dir, 100.0)
+		return
+	PlayerFireVFX.spawn_ar_visuals_from_world(_scene_root(), aim_origin, aim_origin, dir, 100.0)
+
+
+func _get_or_create_remote_ak_muzzle(rp: Node3D) -> Node3D:
+	var muzzle: Node3D = rp.get_node_or_null(_AK_MUZZLE_PATH) as Node3D
+	if muzzle != null:
+		return muzzle
+	if rp.has_method("_ensure_ak_muzzle"):
+		rp.call("_ensure_ak_muzzle")
+		muzzle = rp.get_node_or_null(_AK_MUZZLE_PATH) as Node3D
+		if muzzle != null:
+			return muzzle
+	var ak47: Node3D = rp.get_node_or_null("Body/Visual/Player/Skeleton3D/ak47") as Node3D
+	if ak47 == null:
+		return null
+	muzzle = Node3D.new()
+	muzzle.name = "Muzzle"
+	muzzle.transform = Transform3D(Basis.IDENTITY, Vector3(0.5, 0.04, 0.0))
+	ak47.add_child(muzzle)
+	return muzzle
+
+
+func _fallback_remote_fire_origin(rp: Node3D, packet_origin: Vector3) -> Vector3:
+	if packet_origin.length_squared() > 0.0001:
+		return packet_origin
+	var body: Node3D = rp.get_node_or_null("Body") as Node3D
+	if body != null:
+		return body.global_position + Vector3(0.0, 1.4, 0.0)
+	return rp.global_position + Vector3(0.0, 1.4, 0.0)
 
 
 func _spawn_remote_rpg_rocket(rp: Node3D, dir: Vector3) -> void:

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { godotBridge } from "@/bridge/godotBridge";
-import { UiEvent } from "@/bridge/eventTypes";
 
 // Folder mounted by vite.config.ts where Godot's web export lives. The actual
 // file basename (Godot uses config/name → "Ironclash4.3.*") is discovered at
@@ -65,13 +64,8 @@ export default function GameCanvas() {
 		total: 0,
 	});
 	const [error, setError] = useState<string | null>(null);
-	// Browsers refuse Pointer Lock + Fullscreen requests until the user has
-	// produced a real input gesture on the page. Until they click "Start", we
-	// don't even spin up the engine.
-	const [started, setStarted] = useState<boolean>(false);
 
 	useEffect(() => {
-		if (!started) return;
 		if (bootedRef.current) return;
 		bootedRef.current = true;
 		const canvas = canvasRef.current;
@@ -146,17 +140,18 @@ export default function GameCanvas() {
 				patchEngineLocateFile(engine);
 				engineRef.current = engine;
 				await engine.startGame();
-				// Hand off to Godot: once the GDScript autoload fires
-				// `godot_ready`, engineReady flips and the Play intent goes
-				// through. Bound the wait so a silent autoload failure
-				// surfaces an error instead of soft-locking on the loader.
+				// Wait for the GDScript autoload to install the bridge so the
+				// menu overlay can dispatch ui_play once the user clicks PLAY.
+				// Bounded so a silent autoload failure surfaces an error.
 				const ready: Promise<void> = godotBridge.waitForReady();
 				const timeout: Promise<never> = new Promise((_, reject) =>
 					setTimeout(() => reject(new Error("Godot autoload didn't signal ready in 15s")), 15000),
 				);
 				await Promise.race([ready, timeout]);
 				if (cancelled) return;
-				godotBridge.emit(UiEvent.Play, {});
+				// `ui_play` is emitted by MenuOverlay's PLAY button now —
+				// Godot's main_menu.tscn waits on it before swapping to the
+				// gameplay scene.
 			} catch (err: unknown) {
 				if (cancelled) return;
 				console.error("[GameCanvas] boot failed:", err);
@@ -177,7 +172,7 @@ export default function GameCanvas() {
 				// Intentional no-op; held only for the closure capture above.
 			}
 		};
-	}, [started]);
+	}, []);
 
 	const pct: number =
 		progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
@@ -190,49 +185,15 @@ export default function GameCanvas() {
 				// for some bookkeeping — without an id the selector becomes '#' and
 				// throws SyntaxError before the game even boots.
 				id="godot-canvas"
+				tabIndex={0}
 				className="block h-full w-full"
 				// Godot writes its own width/height every frame; defaults keep the
 				// initial paint sane before the engine takes over.
 				width={1280}
 				height={720}
 			/>
-			{!started && error === null && (
-				<div className="pointer-events-auto absolute inset-0 flex flex-col items-center justify-center bg-bg">
-					<div className="mb-8 font-sans text-display tracking-tight text-text">
-						IRONCLASH
-					</div>
-					<button
-						type="button"
-						onClick={() => {
-							// Burn the user gesture HERE — focus the canvas (so input
-							// events route into Godot) and pre-request pointer-lock
-							// from this click context. The browser then accepts later
-							// requestPointerLock calls from inside the engine's scene
-							// _ready, even though by then the gesture would otherwise
-							// have "expired".
-							const c = canvasRef.current;
-							if (c) {
-								c.focus();
-								try {
-									void c.requestPointerLock?.();
-								} catch {
-									// Some browsers throw if not user-initiated; we
-									// already are, but ignore to be defensive.
-								}
-							}
-							setStarted(true);
-						}}
-						className="border border-accent bg-transparent px-12 py-3 font-sans text-label uppercase tracking-label text-accent transition-colors duration-120 hover:bg-accent hover:text-bg"
-					>
-						Click to Play
-					</button>
-					<div className="mt-6 font-sans text-caption uppercase tracking-label text-text-muted">
-						Browser requires a click before pointer-lock + fullscreen
-					</div>
-				</div>
-			)}
-			{started && progress.total > 0 && progress.current < progress.total && (
-				<div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/70 font-mono text-sm text-white">
+			{progress.total > 0 && progress.current < progress.total && (
+				<div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-bg font-sans text-label uppercase tracking-label text-text-muted">
 					Loading {pct}%
 				</div>
 			)}

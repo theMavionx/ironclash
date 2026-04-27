@@ -101,6 +101,13 @@ func _on_ui_play(_payload: Dictionary) -> void:
 func connect_to_server(url_override: String = "") -> void:
 	var url: String = url_override if url_override != "" else config.client_url
 	_socket = WebSocketPeer.new()
+	# Default 64 KB is too small — when the menu→Main scene transition stalls
+	# `_process` for a few hundred ms, snapshot bursts pile up and `write_packet`
+	# in packet_buffer.h spams "Buffer payload full!". Bump to 1 MB on both
+	# sides to absorb spikes; max_queued_packets covers count pressure.
+	_socket.inbound_buffer_size = 1024 * 1024
+	_socket.outbound_buffer_size = 1024 * 1024
+	_socket.max_queued_packets = 4096
 	var err: int = _socket.connect_to_url(url)
 	if err != OK:
 		push_error("[net] connect_to_url(%s) failed: %d" % [url, err])
