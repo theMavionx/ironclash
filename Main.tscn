@@ -1,4 +1,4 @@
-[gd_scene load_steps=48 format=3 uid="uid://c8j7f5yqg2bbp"]
+[gd_scene load_steps=49 format=3 uid="uid://c8j7f5yqg2bbp"]
 
 [ext_resource type="PackedScene" uid="uid://ctank00000001" path="res://scenes/tank/tank.tscn" id="1_tank"]
 [ext_resource type="Script" path="res://src/gameplay/camera/chase_camera.gd" id="2_pkq0h"]
@@ -30,6 +30,7 @@
 [ext_resource type="Texture2D" uid="uid://ca2cmrkh2aytr" path="res://textures/snow_normal.png" id="normal_6"]
 [ext_resource type="Script" path="res://src/gameplay/world/terrain3d_web_override.gd" id="terrain_web_script"]
 [ext_resource type="Shader" path="res://assets/shaders/terrain3d_web_lightweight.gdshader" id="terrain_web_shader"]
+[ext_resource type="Script" path="res://src/gameplay/world/web_render_guard.gd" id="web_render_guard"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_day"]
 sky_top_color = Color(0.28, 0.52, 0.85, 1)
@@ -185,6 +186,7 @@ shadow_enabled = true
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment_w4xet")
+script = ExtResource("web_render_guard")
 
 [node name="Tank" parent="." instance=ExtResource("1_tank")]
 transform = Transform3D(-0.078807, 0, -0.99689, 0, 1, 0, 0.99689, 0, -0.078807, -20.0656, 10.3083, -0.120736)

@@ -3,7 +3,7 @@
 // and a warm colour tint to simulate an FPV drone camera feed.
 shader_type canvas_item;
 
-uniform sampler2D screen_tex : hint_screen_texture, filter_linear_mipmap;
+uniform sampler2D screen_tex : hint_screen_texture, filter_linear;
 
 // Pixel offset magnitude for RGB channel split (chromatic aberration).
 uniform float aberration_strength : hint_range(0.0, 0.05, 0.001) = 0.004;

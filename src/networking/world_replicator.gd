@@ -452,13 +452,15 @@ func _start_vehicle_destroyed_vfx(vehicle_id: String, vehicle: Node3D) -> void:
 
 	_apply_network_vehicle_destroyed(vehicle)
 	var already_has_vfx: bool = vehicle.get_node_or_null("_DestructionVFX") != null
-	DestructionVFX.apply_charred(vehicle)
+	var is_drone: bool = vehicle_id.to_lower() == "drone"
+	if not is_drone:
+		DestructionVFX.apply_charred(vehicle)
 	if not already_has_vfx:
 		var y_offset: float = _vehicle_vfx_offset(vehicle_id)
 		DestructionVFX.spawn_explosion(
 			_scene_root(),
 			vehicle.global_position + Vector3(0.0, y_offset, 0.0),
-			vehicle_id.to_lower() != "drone"
+			not is_drone
 		)
 		DestructionVFX.spawn_smoke_fire(vehicle, y_offset)
 

@@ -642,13 +642,26 @@ func _respawn() -> void:
 
 func _apply_destroyed_visual() -> void:
 	DestructionVFX.spawn_explosion(get_tree().current_scene, global_position + Vector3(0, 0.4, 0), false)
-	DestructionVFX.apply_charred(self)
+	_set_propellers_visible(false)
 	DestructionVFX.spawn_smoke_fire(self, 0.4, true, respawn_delay)
 
 
 func _clear_destroyed_visual() -> void:
+	_set_propellers_visible(true)
 	DestructionVFX.clear_charred(self)
 	DestructionVFX.clear_vfx(self)
+
+
+func _set_propellers_visible(is_visible: bool) -> void:
+	for group: Dictionary in _motor_groups:
+		var blades: Array = group.get("blades", [])
+		for raw_state in blades:
+			if not (raw_state is Dictionary):
+				continue
+			var state: Dictionary = raw_state
+			var blade: Node3D = state.get("node", null) as Node3D
+			if blade != null and is_instance_valid(blade):
+				blade.visible = is_visible
 
 
 # ---------------------------------------------------------------------------

@@ -89,14 +89,18 @@ extends CharacterBody3D
 ## Seconds the destroyed helicopter smokes before the wreck, smoke, and debris disappear.
 @export var wreck_burn_seconds: float = 20.0
 ## Initial downward speed applied on death so stale floor state/snapshots cannot leave it hovering.
-@export var wreck_initial_drop_speed: float = 10.0
+@export var wreck_initial_drop_speed: float = 2.2
 ## Clamp fall speed to avoid physics spikes in browser builds.
-@export var wreck_terminal_fall_speed: float = 45.0
+@export var wreck_terminal_fall_speed: float = 17.0
 ## Horizontal drift applied if the helicopter was hovering when destroyed.
-@export var wreck_crash_drift_speed: float = 5.0
+@export var wreck_crash_drift_speed: float = 8.0
 ## Random angular speed range used while the wreck falls before impact.
-@export var wreck_tumble_speed_min: float = 1.35
-@export var wreck_tumble_speed_max: float = 2.85
+@export var wreck_tumble_speed_min: float = 0.45
+@export var wreck_tumble_speed_max: float = 1.25
+## Air drag while the wreck autorotates down. Higher = less stone-like drop.
+@export var wreck_air_drag: float = 0.18
+## How much spinning rotors soften gravity during the first seconds of the crash.
+@export var wreck_rotor_lift_gravity_scale: float = 0.42
 
 var _active: bool = true
 var _current_rotor_speed: float = 0.0
@@ -219,7 +223,7 @@ func _on_destroyed(_by_source: int) -> void:
 		horizontal_velocity = horizontal_velocity.rotated(Vector3.UP, randf_range(-0.45, 0.45))
 	velocity.x = horizontal_velocity.x
 	velocity.z = horizontal_velocity.z
-	velocity.y = minf(velocity.y, -absf(wreck_initial_drop_speed))
+	velocity.y = -absf(wreck_initial_drop_speed)
 	_wreck_tumble_velocity = Vector3(
 		randf_range(wreck_tumble_speed_min, wreck_tumble_speed_max) * _random_sign(),
 		randf_range(0.8, 1.9) * _random_sign(),
@@ -240,7 +244,14 @@ func _wreck_fall(delta: float) -> void:
 		return
 	_apply_crash_tumble(delta)
 	_animate_crash_rotors(delta)
-	velocity.y = maxf(velocity.y - _gravity * delta, -absf(wreck_terminal_fall_speed))
+	var rotor_t: float = clampf(_current_rotor_speed / maxf(max_rotor_speed_rad_per_sec, 0.001), 0.0, 1.0)
+	var gravity_scale: float = lerpf(1.0, wreck_rotor_lift_gravity_scale, rotor_t)
+	velocity.y = maxf(velocity.y - _gravity * gravity_scale * delta, -absf(wreck_terminal_fall_speed))
+	var drag: float = exp(-wreck_air_drag * delta)
+	velocity.x *= drag
+	velocity.z *= drag
+	if velocity.y < 0.0:
+		velocity.y *= drag
 	var impact_speed: float = maxf(-velocity.y, 0.0)
 	move_and_slide()
 	if is_on_floor():
