@@ -4,7 +4,7 @@
 // procedural distortion/dissolve pass. The important part: the base mask is no
 // longer radial, so wreck smoke reads as wispy smoke instead of circular puffs.
 shader_type spatial;
-render_mode blend_mix, depth_draw_never, depth_test_disabled, cull_disabled, unshaded;
+render_mode blend_mix, depth_draw_never, cull_disabled, unshaded;
 
 uniform sampler2D smoke_texture : filter_linear;
 uniform sampler2D distortion_texture : filter_linear, repeat_enable;
@@ -16,6 +16,10 @@ uniform float min_particle_alpha : hint_range(0.0, 1.0, 0.01) = 0.0;
 uniform float edge_start : hint_range(0.0, 1.0, 0.01) = 0.35;
 uniform float texture_power : hint_range(0.2, 2.0, 0.05) = 0.72;
 uniform float dissolve_strength : hint_range(0.0, 0.7, 0.01) = 0.18;
+uniform float time_offset = 0.0;
+// Negative means "read lifetime from particle COLOR.r". Web CPU-particle
+// billboards can override it while reusing the same smoke shader.
+uniform float particle_life_override : hint_range(-1.0, 1.0, 0.01) = -1.0;
 
 varying float v_life;
 varying float v_seed;
@@ -71,7 +75,7 @@ void vertex() {
 	float sy = length(MODEL_MATRIX[1].xyz);
 
 	// Preserve whatever per-particle roll Godot baked into MODEL_MATRIX. This
-	// keeps smoke cards from all lining up identically.
+	// keeps smoke billboards from all lining up identically.
 	vec3 source_x = MODEL_MATRIX[0].xyz;
 	vec2 roll_vec = vec2(dot(source_x, right), dot(source_x, up));
 	if (dot(roll_vec, roll_vec) < 0.0001) {
@@ -81,7 +85,7 @@ void vertex() {
 	}
 	vec3 rolled_right = right * roll_vec.x + up * roll_vec.y;
 	vec3 rolled_up = up * roll_vec.x - right * roll_vec.y;
-	v_life = clamp(COLOR.r, 0.0, 1.0);
+	v_life = particle_life_override >= 0.0 ? clamp(particle_life_override, 0.0, 1.0) : clamp(COLOR.r, 0.0, 1.0);
 	v_seed = hash12(MODEL_MATRIX[3].xz + vec2(MODEL_MATRIX[3].y, sx + sy));
 
 	mat4 billboard = mat4(
@@ -90,14 +94,19 @@ void vertex() {
 		vec4(to_cam, 0.0),
 		MODEL_MATRIX[3]
 	);
-	MODELVIEW_MATRIX = VIEW_MATRIX * billboard;
-	MODELVIEW_NORMAL_MATRIX = mat3(MODELVIEW_MATRIX);
+	// Write POSITION (clip space) directly. Writing MODELVIEW_MATRIX is
+	// silently dropped on Godot 4.3 gl_compatibility / WebGL2, producing
+	// degenerate quads (the "compiles but renders blank" bug). Writing
+	// POSITION is the cross-renderer safe path and is honoured by both
+	// Forward+ and Compatibility.
+	POSITION = PROJECTION_MATRIX * VIEW_MATRIX * billboard * vec4(VERTEX, 1.0);
 }
 
 
 void fragment() {
+	float t = TIME + time_offset;
 	float seed = v_seed;
-	vec2 drift = vec2(TIME * 0.018 + seed * 3.1, -TIME * 0.026 + seed * 5.3);
+	vec2 drift = vec2(t * 0.018 + seed * 3.1, -t * 0.026 + seed * 5.3);
 	float large_noise = fbm(UV * 2.4 + drift);
 	float fine_noise = fbm(UV * 7.0 + vec2(seed * 11.0, seed * 17.0) - drift.yx);
 
@@ -109,7 +118,7 @@ void fragment() {
 	float texture_mask = pow(clamp(tex.a, 0.0, 1.0), texture_power);
 
 	// Tiny dissolve only at the edges. This keeps the texture's natural wisps
-	// but prevents the same card outline from being visible on every particle.
+	// but prevents the same outline from being visible on every particle.
 	float broken_edge = smoothstep(edge_start * 0.25, 1.0, texture_mask + (fine_noise - 0.5) * dissolve_strength);
 	float quad_edge = smoothstep(0.0, 0.055, smoke_uv.x)
 		* smoothstep(0.0, 0.055, smoke_uv.y)

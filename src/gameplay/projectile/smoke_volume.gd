@@ -22,6 +22,8 @@ extends GPUParticles3D
 ## Implements: design/gdd/projectile-system.md (smoke volume section)
 
 const _SHADER_PATH: String = "res://src/vfx/spatial_particles_smoke.gdshader"
+const _WEB_SHADER_PATH: String = "res://src/vfx/spatial_particles_smoke_web.gdshader"
+const _WEB_SHADER_BILLBOARD_VFX_SCRIPT: Script = preload("res://src/vfx/web_shader_billboard_vfx.gd")
 const _SMOKE_TEXTURE_PATH: String = "res://assets/textures/smoke_vfx/T_smoke_b7.png"
 const _NOISE_TEXTURE_PATH: String = "res://assets/textures/smoke_vfx/T_Noise_001R.png"
 const _CIRCLE_MASK_PATH: String = "res://assets/textures/smoke_vfx/T_VFX_circle_1.png"
@@ -58,7 +60,11 @@ static var _shared_mask: Texture2D = null
 
 
 func _ready() -> void:
-	if not OS.has_feature("web") and _shared_shader == null:
+	var web_build: bool = OS.has_feature("web")
+	# Web uses the same smoke shader on CPUParticles3D billboards. That keeps
+	# the authored look and particle motion while avoiding the unstable
+	# GPUParticles3D custom vertex path in WebGL2.
+	if _shared_shader == null:
 		_shared_shader = load(_SHADER_PATH) as Shader
 		if _shared_shader == null:
 			push_warning("SmokeVolume: shader missing at %s" % _SHADER_PATH)
@@ -75,9 +81,9 @@ func _ready() -> void:
 		if _shared_mask == null:
 			push_warning("SmokeVolume: circle mask missing at %s" % _CIRCLE_MASK_PATH)
 
-	if OS.has_feature("web"):
+	if web_build:
 		emitting = false
-		_build_web_smoke_cards()
+		_build_web_smoke_particles()
 		return
 
 	process_material = _build_process_material()
@@ -154,7 +160,7 @@ func _build_process_material() -> ParticleProcessMaterial:
 func _build_quad() -> QuadMesh:
 	var quad: QuadMesh = QuadMesh.new()
 	quad.size = Vector2(1.5, 1.5)
-	if OS.has_feature("web") or _shared_shader == null:
+	if _shared_shader == null:
 		quad.material = _build_web_billboard_material()
 		return quad
 	var mat: ShaderMaterial = ShaderMaterial.new()
@@ -181,34 +187,76 @@ func _build_web_billboard_material() -> StandardMaterial3D:
 	mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
 	mat.billboard_keep_scale = true
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.vertex_color_use_as_albedo = true
 	mat.albedo_color = smoke_color
 	if _shared_smoke_texture != null:
 		mat.albedo_texture = _shared_smoke_texture
 	return mat
 
 
-func _build_web_smoke_cards() -> void:
-	const CARD_COUNT: int = 9
-	for i: int in range(CARD_COUNT):
-		var quad: QuadMesh = QuadMesh.new()
-		quad.size = Vector2(randf_range(1.1, 1.9), randf_range(1.1, 2.0))
-		var mat: StandardMaterial3D = _build_web_billboard_material()
-		var tint: Color = smoke_color
-		tint.a = randf_range(0.22, 0.42)
-		mat.albedo_color = tint
-		mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-		quad.material = mat
+func _build_web_smoke_particles() -> void:
+	var tint: Color = smoke_color
+	tint.a = 0.82
+	var vfx = _WEB_SHADER_BILLBOARD_VFX_SCRIPT.new()
+	vfx.name = "WebSmokeParticles"
+	add_child(vfx)
 
-		var card: MeshInstance3D = MeshInstance3D.new()
-		card.name = "WebSmokeCard"
-		card.mesh = quad
-		card.position = Vector3(
-			randf_range(-emission_radius, emission_radius),
-			randf_range(0.15, 2.6),
-			randf_range(-emission_radius, emission_radius)
+	var smoke_count: int = mini(amount, 36)
+	for i: int in range(smoke_count):
+		vfx.add_card(
+			"Smoke%02d" % i,
+			_build_web_smoke_shader_material(tint, randf() * 20.0),
+			Vector2(1.5, 1.5),
+			Vector3.ZERO,
+			Vector3(emission_radius, emission_radius * 0.35, emission_radius),
+			Vector3(-0.10, 0.45, -0.10),
+			Vector3(0.10, 1.05, 0.10),
+			0.70,
+			1.30,
+			lifetime,
+			true,
+			0.82,
+			0.20,
+			0.30,
+			0.5,
+			randf() * lifetime
 		)
-		card.rotation.z = randf() * TAU
-		add_child(card)
 
-	var timer: SceneTreeTimer = get_tree().create_timer(spawn_time + sustain_time + fade_time + lifetime)
-	timer.timeout.connect(queue_free)
+	var stop_timer: SceneTreeTimer = get_tree().create_timer(spawn_time + sustain_time + fade_time)
+	stop_timer.timeout.connect(vfx.stop_looping)
+	var done_timer: SceneTreeTimer = get_tree().create_timer(spawn_time + sustain_time + fade_time + lifetime)
+	done_timer.timeout.connect(queue_free)
+
+
+func _build_smoke_lifetime_gradient() -> Gradient:
+	var grad: Gradient = Gradient.new()
+	grad.set_color(0, Color(0.0, 0.0, 0.0, 0.0))
+	grad.set_offset(0, 0.0)
+	grad.add_point(0.2, Color(0.15, 0.0, 0.0, 0.70))
+	grad.add_point(0.7, Color(0.6, 0.0, 0.0, 0.55))
+	grad.add_point(1.0, Color(1.0, 0.0, 0.0, 0.0))
+	return grad
+
+
+func _build_web_smoke_shader_material(tint: Color, time_offset: float, particle_life_override: float = -1.0) -> Material:
+	var web_shader: Shader = load(_WEB_SHADER_PATH) as Shader
+	if web_shader == null or _shared_smoke_texture == null:
+		var fallback: StandardMaterial3D = _build_web_billboard_material()
+		fallback.albedo_color = tint
+		fallback.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+		return fallback
+	var mat: ShaderMaterial = ShaderMaterial.new()
+	mat.shader = web_shader
+	mat.render_priority = 10
+	mat.set_shader_parameter("smoke_texture", _shared_smoke_texture)
+	mat.set_shader_parameter("distortion_texture", _shared_noise)
+	mat.set_shader_parameter("smoke_color", tint)
+	mat.set_shader_parameter("max_lod", max_lod)
+	mat.set_shader_parameter("fade_intensity", 1.0)
+	mat.set_shader_parameter("min_particle_alpha", 0.0)
+	mat.set_shader_parameter("edge_start", 0.22)
+	mat.set_shader_parameter("texture_power", 0.72)
+	mat.set_shader_parameter("dissolve_strength", 0.16)
+	mat.set_shader_parameter("time_offset", time_offset)
+	mat.set_shader_parameter("particle_life_override", particle_life_override)
+	return mat

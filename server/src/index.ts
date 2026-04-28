@@ -12,14 +12,11 @@
 // builder in snapshot.ts. No changes here unless you add a new module.
 
 import { WebSocketServer, WebSocket } from "ws";
-import {
-	PROTOCOL_VERSION,
-	type C2S,
-} from "../../shared/protocol.ts";
+import type { C2S } from "../../shared/protocol.ts";
 import { cfg, LIMITS } from "./config.ts";
 import { make_logger } from "./util/log.ts";
 import { players, make_player, next_peer_id, pick_team_for_new_peer, team_count } from "./state/players.ts";
-import { vacate_driver } from "./state/vehicles.ts";
+import { reset_all_vehicles, vacate_driver } from "./state/vehicles.ts";
 import { broadcast, kick, send } from "./net/socket.ts";
 import { dispatch } from "./net/dispatch.ts";
 import { register_all_handlers } from "./net/handlers.ts";
@@ -27,6 +24,7 @@ import { broadcast_match_state } from "./state/match.ts";
 import { start_snapshot_loop } from "./snapshot.ts";
 
 const log = make_logger("net");
+const PROTOCOL_VERSION = "0.1.0";
 
 // Wire every C2S type → handler exactly once.
 register_all_handlers();
@@ -77,6 +75,16 @@ wss.on("connection", (ws: WebSocket, req): void => {
 		vacate_driver(peer_id);
 		broadcast({ t: "player_left", peer_id });
 		log.info(`left peer=${peer_id}  red=${team_count("red")} blue=${team_count("blue")}`);
+		// Reset world state when the server empties out so the next solo
+		// session doesn't inherit destroyed vehicles / mid-match scores from
+		// the previous player. Match-state machine only resets vehicles at
+		// warmup→in_progress, which a solo tester never reaches; without this
+		// branch a self-disconnect/reconnect would land the player into a
+		// graveyard of wrecks from their last session.
+		if (players.size === 0) {
+			reset_all_vehicles();
+			log.info("server emptied — vehicles reset to full HP");
+		}
 		broadcast_match_state(Date.now());
 	});
 

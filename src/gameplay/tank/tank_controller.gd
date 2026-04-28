@@ -133,8 +133,12 @@ signal fired_with_aim(spawn_origin: Vector3, aim_dir: Vector3)
 @export var cook_off_horizontal_drift: float = 1.5
 ## Tumble angular velocity magnitude in rad/s (chaotic mid-air rotation).
 @export var cook_off_tumble_velocity: float = 6.0
-## Seconds before the turret wreck despawns. 0 = stays forever.
+## Seconds before the turret wreck despawns. 0 = match wreck_burn_seconds.
 @export var cook_off_lifetime: float = 0.0
+
+@export_group("Destroyed Wreck")
+## Seconds the destroyed tank smokes before the wreck, smoke, and debris disappear.
+@export var wreck_burn_seconds: float = 20.0
 
 # ---------------------------------------------------------------------------
 # Private variables
@@ -164,6 +168,8 @@ var _current_turn_rate: float = 0.0
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
 var _active: bool = true
 var _fire_timer: float = 0.0
+var _spawn_collision_layer: int = 0
+var _spawn_collision_mask: int = 0
 ## Flag set by _unhandled_input, consumed at end of _physics_process so the
 ## shot uses the bone pose written THIS frame (not the stale previous-frame pose).
 var _fire_requested: bool = false
@@ -208,10 +214,34 @@ func get_aim_yaw() -> float:
 	return _yaw_delta
 
 
+## Called by VehicleSync for remote drivers. The server sends absolute turret
+## yaw plus barrel pitch; this controller converts it back to local bone poses.
+func set_remote_aim(aim_yaw: float, aim_pitch: float) -> void:
+	if _active or _is_destroyed:
+		return
+	_yaw_delta = aim_yaw
+	_pitch_delta = clampf(aim_pitch, deg_to_rad(min_pitch_deg), deg_to_rad(max_pitch_deg))
+	_hull_yaw = rotation.y
+	_apply_aim_pose()
+
+
 ## Enable or disable this vehicle.
 ## Inactive vehicles halt physics processing and zero out velocity.
 ## Reactivating recaptures mouse input automatically.
+##
+## On the inactive→active edge we ALSO re-sync our cached yaw values to
+## whatever `rotation.y` currently is. While inactive, vehicle_sync.gd lerps
+## the tank's body toward the server snapshot — meaning `rotation.y` may have
+## drifted since [_ready] populated `_hull_yaw`. If we don't refresh, the
+## first physics frame applies a stale `turret_local_yaw = _yaw_delta -
+## _hull_yaw` delta against the WRONG hull base, the turret bone visually
+## skews, and ChaseCamera (which reads `_yaw_delta` via [get_aim_yaw])
+## positions itself rotated relative to the actual hull facing. That was the
+## intermittent "camera ends up to the side of the tank" bug.
 func set_active(is_active: bool) -> void:
+	if is_active and not _active and not _is_destroyed:
+		_hull_yaw = rotation.y
+		_yaw_delta = _hull_yaw
 	_active = is_active
 	if _is_destroyed:
 		set_physics_process(false)
@@ -221,7 +251,7 @@ func set_active(is_active: bool) -> void:
 	if not is_active:
 		velocity = Vector3.ZERO
 	else:
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		WebPointerLock.capture_for_activation()
 
 
 func is_locally_driven() -> bool:
@@ -236,6 +266,9 @@ func apply_network_destroyed() -> void:
 
 
 func apply_network_respawned() -> void:
+	visible = true
+	collision_layer = _spawn_collision_layer
+	collision_mask = _spawn_collision_mask
 	_is_destroyed = false
 	velocity = Vector3.ZERO
 	if _health != null:
@@ -258,6 +291,8 @@ func _mark_health_destroyed_no_signal() -> void:
 # ---------------------------------------------------------------------------
 
 func _ready() -> void:
+	_spawn_collision_layer = collision_layer
+	_spawn_collision_mask = collision_mask
 	_collect_wheels()
 	_setup_tread_materials()
 	_hull_yaw = rotation.y
@@ -266,7 +301,7 @@ func _ready() -> void:
 	# Defer by a frame so Skeleton3D has fully resolved bone transforms
 	# before we snapshot the meshes' world bases.
 	call_deferred("_capture_turret_and_barrel")
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	WebPointerLock.capture_for_activation()
 	if _health != null:
 		_health.destroyed.connect(_on_destroyed)
 	_last_tread_pos = global_position
@@ -286,8 +321,9 @@ func _on_destroyed(_by_source: int) -> void:
 	velocity = Vector3.ZERO
 	DestructionVFX.spawn_explosion(get_tree().current_scene, global_position + Vector3(0, 1.2, 0))
 	DestructionVFX.apply_charred(self)
-	DestructionVFX.spawn_smoke_fire(self, 1.2)
+	DestructionVFX.spawn_smoke_fire(self, 1.2, true, wreck_burn_seconds)
 	_spawn_cook_off_debris()
+	_schedule_wreck_hide()
 
 
 ## Detach turret+barrel as a free-flying RigidBody3D wreck — "cook-off"
@@ -299,6 +335,9 @@ func _spawn_cook_off_debris() -> void:
 	if _skeleton == null or _turret_bone == -1 or _barrel_bone == -1:
 		push_warning("TankController: skeleton/bones missing, skipping cook-off")
 		return
+	var debris_lifetime: float = cook_off_lifetime
+	if debris_lifetime <= 0.0:
+		debris_lifetime = wreck_burn_seconds
 	# Capture current bone rotations to freeze on the debris skeleton.
 	var turret_pose: Quaternion = _skeleton.get_bone_pose_rotation(_turret_bone)
 	var barrel_pose: Quaternion = _skeleton.get_bone_pose_rotation(_barrel_bone)
@@ -331,7 +370,7 @@ func _spawn_cook_off_debris() -> void:
 		cook_off_upward_velocity,
 		cook_off_horizontal_drift,
 		cook_off_tumble_velocity,
-		cook_off_lifetime
+		debris_lifetime
 	)
 	# Hide originals on the live hull so there's no "double turret".
 	if _turret is MeshInstance3D:
@@ -340,10 +379,30 @@ func _spawn_cook_off_debris() -> void:
 		(_barrel as MeshInstance3D).visible = false
 
 
+func _schedule_wreck_hide() -> void:
+	if wreck_burn_seconds <= 0.0:
+		return
+	get_tree().create_timer(wreck_burn_seconds).timeout.connect(_hide_destroyed_wreck)
+
+
+func _hide_destroyed_wreck() -> void:
+	if not _is_destroyed:
+		return
+	DestructionVFX.clear_vfx(self)
+	DestructionVFX.clear_charred(self)
+	velocity = Vector3.ZERO
+	collision_layer = 0
+	collision_mask = 0
+	visible = false
+	set_physics_process(false)
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if not _active:
 		return
 	if event is InputEventMouseMotion:
+		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+			return
 		var motion: InputEventMouseMotion = event
 		_yaw_delta -= motion.relative.x * mouse_sensitivity
 		var pitch_sign: float = -1.0 if invert_pitch else 1.0
@@ -355,13 +414,16 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseButton:
 		var mouse_btn: InputEventMouseButton = event
 		if mouse_btn.pressed and mouse_btn.button_index == MOUSE_BUTTON_LEFT:
+			if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+				WebPointerLock.capture_from_user_gesture()
+				return
 			_fire_requested = true
 	elif event is InputEventKey:
 		var key_event: InputEventKey = event
 		if key_event.pressed and key_event.keycode == KEY_ESCAPE:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		elif key_event.pressed and key_event.keycode == KEY_F1:
-			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+			WebPointerLock.capture_from_user_gesture()
 
 
 ## Always-on tick for visuals that should keep working when a remote peer is
@@ -418,18 +480,7 @@ func _physics_process(delta: float) -> void:
 	if _fire_timer > 0.0:
 		_fire_timer -= delta
 
-	# Bone-driven aim: rotate the turret bone by yaw and the barrel bone by
-	# pitch. Skeleton3D handles hierarchy (barrel is a child of turret) and
-	# pivots (bone origins) correctly.
-	if _skeleton:
-		# Compensate hull yaw so the turret stays at its absolute world aim.
-		# When the hull rotates via A/D, bone pose counters it so the turret
-		# visually "slips" against the hull and stays aimed where the mouse points.
-		var turret_local_yaw: float = _yaw_delta - _hull_yaw
-		if _turret_bone != -1:
-			_skeleton.set_bone_pose_rotation(_turret_bone, Quaternion(turret_bone_axis, turret_local_yaw))
-		if _barrel_bone != -1:
-			_skeleton.set_bone_pose_rotation(_barrel_bone, Quaternion(barrel_bone_axis, _pitch_delta))
+	_apply_aim_pose()
 
 	_animate_wheels(desired_speed, delta)
 	_animate_treads(desired_speed, delta)
@@ -456,6 +507,23 @@ func _capture_turret_and_barrel() -> void:
 			push_warning("TankController: barrel bone '%s' not found" % barrel_bone_name)
 	else:
 		push_warning("TankController: skeleton not found at %s" % skeleton_path)
+	_apply_aim_pose()
+
+
+func _apply_aim_pose() -> void:
+	# Bone-driven aim: rotate the turret bone by yaw and the barrel bone by
+	# pitch. Skeleton3D handles hierarchy (barrel is a child of turret) and
+	# pivots (bone origins) correctly.
+	if _skeleton == null:
+		return
+	# Compensate hull yaw so the turret stays at its absolute world aim.
+	# When the hull rotates via A/D, bone pose counters it so the turret
+	# visually "slips" against the hull and stays aimed where the mouse points.
+	var turret_local_yaw: float = _yaw_delta - _hull_yaw
+	if _turret_bone != -1:
+		_skeleton.set_bone_pose_rotation(_turret_bone, Quaternion(turret_bone_axis, turret_local_yaw))
+	if _barrel_bone != -1:
+		_skeleton.set_bone_pose_rotation(_barrel_bone, Quaternion(barrel_bone_axis, _pitch_delta))
 
 
 func _collect_wheels() -> void:

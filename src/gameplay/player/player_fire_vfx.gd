@@ -81,12 +81,13 @@ static func _ensure_textures_loaded() -> void:
 		_flash_texture = load(_FLASH_TEXTURE_PATH) as Texture2D
 	if _tracer_mesh == null:
 		var cyl: CylinderMesh = CylinderMesh.new()
-		# 1cm radius — CS:GO-style thin streak. Additive shader + emission
+		# 1.5cm radius — CS:GO-style thin streak, bumped 50% for readability.
+		# Additive shader + emission
 		# make it read brighter/thicker than the raw geometry, so the mesh
 		# itself stays small. Prior radius 0.025 looked fat once the fresnel
 		# rim and bloom kicked in.
-		cyl.top_radius = 0.010
-		cyl.bottom_radius = 0.010
+		cyl.top_radius = 0.015
+		cyl.bottom_radius = 0.015
 		cyl.height = 0.8
 		cyl.radial_segments = 8
 		cyl.rings = 1
@@ -104,14 +105,15 @@ static func _ensure_textures_loaded() -> void:
 
 ## Try once to build the shader material + QuadMesh pair. On any failure
 ## the fallback CylinderMesh + StandardMaterial3D path remains and tracers
-## still render.
+## still render. The CS:GO-style screen-aligned beam is written for
+## gl_compatibility (uses INV_VIEW_MATRIX, no Forward+ features), so the
+## previous web skip-gate is gone — if the shader ever does fail to load on a
+## particular renderer, the null-check below still kicks the fallback in.
 static func _ensure_shader_pipeline() -> void:
 	if _tracer_shader_ready:
 		return
 	if _tracer_shader_material != null or _tracer_quad_mesh != null:
 		return  # already attempted; don't retry every shot
-	if OS.has_feature("web"):
-		return
 	if not ResourceLoader.exists(_TRACER_SHADER_PATH):
 		push_warning("PlayerFireVFX: tracer shader missing at %s — using fallback material" % _TRACER_SHADER_PATH)
 		return
@@ -135,7 +137,7 @@ static func _ensure_shader_pipeline() -> void:
 	#                in isolation but yellow after the additive halo sum — fixed.
 	#   halo_color:  warm orange, only visible where the tight core gaussian has
 	#                decayed (cx > ~0.2). Replaces the old "glow_color" uniform.
-	#   beam_width:  8mm world-space. Bloom from HDR emission (~45x) creates the
+	#   beam_width:  12mm world-space. Bloom from HDR emission (~45x) creates the
 	#                perceived width; wide geometry reads as a flat orange band.
 	#   emission:    45.0 — pushes cx=0 RGB to ~170, far past glow_hdr_threshold
 	#                (0.9) so WorldEnvironment bloom fires on every frame.
@@ -146,7 +148,7 @@ static func _ensure_shader_pipeline() -> void:
 	shader_mat.set_shader_parameter("halo_color", Color(1.0, 0.55, 0.18, 1.0))
 	shader_mat.set_shader_parameter("emission_strength", 45.0)
 	shader_mat.set_shader_parameter("fade_edge", 0.18)
-	shader_mat.set_shader_parameter("beam_width", 0.008)
+	shader_mat.set_shader_parameter("beam_width", 0.012)
 	shader_mat.set_shader_parameter("core_tightness", 55.0)
 	shader_mat.set_shader_parameter("halo_tightness", 5.0)
 	shader_mat.set_shader_parameter("core_strength", 3.2)
@@ -169,17 +171,21 @@ static func prewarm(world_root: Node) -> void:
 		var dummy_fallback: MeshInstance3D = MeshInstance3D.new()
 		dummy_fallback.mesh = _tracer_mesh
 		dummy_fallback.material_override = _tracer_material
-		dummy_fallback.visible = false
+		dummy_fallback.position = Vector3(-0.08, 0.0, 0.0)
+		dummy_fallback.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		dummy_fallback.visible = true
 		world_root.add_child(dummy_fallback)
-		dummy_fallback.get_tree().create_timer(0.1).timeout.connect(dummy_fallback.queue_free)
+		dummy_fallback.get_tree().create_timer(0.25).timeout.connect(dummy_fallback.queue_free)
 	# Shader pipeline (only if it built successfully).
 	if _tracer_shader_ready and _tracer_shader_material != null and _tracer_quad_mesh != null:
 		var dummy_shader: MeshInstance3D = MeshInstance3D.new()
 		dummy_shader.mesh = _tracer_quad_mesh
 		dummy_shader.material_override = _tracer_shader_material
-		dummy_shader.visible = false
+		dummy_shader.position = Vector3(0.08, 0.0, 0.0)
+		dummy_shader.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		dummy_shader.visible = true
 		world_root.add_child(dummy_shader)
-		dummy_shader.get_tree().create_timer(0.1).timeout.connect(dummy_shader.queue_free)
+		dummy_shader.get_tree().create_timer(0.25).timeout.connect(dummy_shader.queue_free)
 
 
 ## Wire pool references. Call once from WeaponController._ready(). This loads
@@ -439,10 +445,7 @@ static func _spawn_muzzle_flash_at_world(world_root: Node, world_pos: Vector3) -
 	parent.add_child(sprite)
 	sprite.global_position = world_pos
 	var done_t: SceneTreeTimer = parent.get_tree().create_timer(0.05)
-	done_t.timeout.connect(func() -> void:
-		if is_instance_valid(sprite):
-			sprite.queue_free()
-	)
+	done_t.timeout.connect(sprite.queue_free)
 
 
 ## Pool-bypassed muzzle flash spawn — always allocates a fresh Sprite3D as a
@@ -460,10 +463,7 @@ static func _spawn_muzzle_flash_at_node(parent: Node3D) -> void:
 	parent.add_child(sprite)
 	sprite.position = Vector3.ZERO
 	var done_t: SceneTreeTimer = parent.get_tree().create_timer(0.05)
-	done_t.timeout.connect(func() -> void:
-		if is_instance_valid(sprite):
-			sprite.queue_free()
-	)
+	done_t.timeout.connect(sprite.queue_free)
 
 
 ## Spawn flash. Routes through pool if available; allocates otherwise.
@@ -495,10 +495,7 @@ static func _spawn_muzzle_flash(parent: Node3D) -> void:
 	parent.add_child(sprite)
 	sprite.position = Vector3.ZERO
 	var done_t: SceneTreeTimer = parent.get_tree().create_timer(0.05)
-	done_t.timeout.connect(func() -> void:
-		if is_instance_valid(sprite):
-			sprite.queue_free()
-	)
+	done_t.timeout.connect(sprite.queue_free)
 
 
 ## Spawn a thin round glowing tracer that travels from muzzle to hit point.

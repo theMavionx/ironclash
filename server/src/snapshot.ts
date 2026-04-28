@@ -33,6 +33,7 @@ function build_vehicle_snapshot(): SnapshotVehicle[] {
 	for (const v of vehicles.values()) {
 		out.push({
 			id: v.id, pos: v.pos, rot: v.rot,
+			aim_yaw: v.aim_yaw, aim_pitch: v.aim_pitch,
 			driver_peer_id: v.driver_peer_id,
 			hp: v.hp, max_hp: v.max_hp, alive: v.alive,
 		});

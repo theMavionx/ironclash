@@ -8,7 +8,7 @@
 // IMPORTANT: every change here is a breaking wire change. Bump
 // `PROTOCOL_VERSION` and update both server/ and src/networking/network_manager.gd.
 
-export const PROTOCOL_VERSION: string = "0.1.0";
+export const PROTOCOL_VERSION = "0.1.0";
 
 export type Team = "red" | "blue";
 
@@ -80,6 +80,11 @@ export interface C2SVehicleTransform {
 	vehicle_id: string;
 	pos: Vec3;
 	rot: Vec3;          // euler (x, y, z) radians
+	/** Optional absolute vehicle aim. For the tank this is turret world yaw
+	 *  and barrel pitch; older clients may omit it and the server falls back
+	 *  to body yaw / zero pitch. */
+	aim_yaw?: number;
+	aim_pitch?: number;
 	vel: Vec3;
 	client_t: number;
 }
@@ -178,6 +183,8 @@ export interface SnapshotVehicle {
 	id: string;
 	pos: Vec3;
 	rot: Vec3;          // euler (x, y, z) radians
+	aim_yaw: number;    // vehicle aim yaw (tank turret world yaw)
+	aim_pitch: number;  // vehicle aim pitch (tank barrel pitch)
 	driver_peer_id: number;  // -1 = no driver
 	hp: number;
 	max_hp: number;

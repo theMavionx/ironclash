@@ -313,7 +313,7 @@ func _spawn_network_explosion(payload: Dictionary) -> void:
 		pos = _vec3_from_array(payload.get("pos", null))
 	else:
 		return
-	DestructionVFX.spawn_explosion(_scene_root(), pos)
+	DestructionVFX.spawn_explosion(_scene_root(), pos, vehicle_id.to_lower() != "drone")
 
 
 func _start_network_smoke_fire(payload: Dictionary) -> void:
@@ -438,7 +438,7 @@ func _sync_vehicle_vfx(vehicles: Array) -> void:
 			_start_vehicle_destroyed_vfx(vehicle_id, target)
 		elif _payload_has_vec3(v, "pos"):
 			var pos: Vector3 = _vec3_from_array(v.get("pos", null))
-			DestructionVFX.spawn_explosion(_scene_root(), pos)
+			DestructionVFX.spawn_explosion(_scene_root(), pos, vehicle_id.to_lower() != "drone")
 			_start_network_smoke_fire({
 				"entity_id": vehicle_id,
 				"pos": [pos.x, pos.y, pos.z],
@@ -455,7 +455,11 @@ func _start_vehicle_destroyed_vfx(vehicle_id: String, vehicle: Node3D) -> void:
 	DestructionVFX.apply_charred(vehicle)
 	if not already_has_vfx:
 		var y_offset: float = _vehicle_vfx_offset(vehicle_id)
-		DestructionVFX.spawn_explosion(_scene_root(), vehicle.global_position + Vector3(0.0, y_offset, 0.0))
+		DestructionVFX.spawn_explosion(
+			_scene_root(),
+			vehicle.global_position + Vector3(0.0, y_offset, 0.0),
+			vehicle_id.to_lower() != "drone"
+		)
 		DestructionVFX.spawn_smoke_fire(vehicle, y_offset)
 
 

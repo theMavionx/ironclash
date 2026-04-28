@@ -51,7 +51,18 @@ declare global {
 	}
 }
 
-export default function GameCanvas() {
+interface GameCanvasProps {
+	/** Called for every Godot engine boot progress tick (current / total bytes
+	 *  of the .pck + side .wasm). Lifted to App so the loading overlay outside
+	 *  this component can render the bar without needing to peek into our state. */
+	onProgress?: (current: number, total: number) => void;
+	/** Fires once Godot's WebBridge autoload signals `godot_ready`. */
+	onReady?: () => void;
+	/** Fires if the boot pipeline throws (manifest 404, missing .pck, etc.). */
+	onError?: (message: string) => void;
+}
+
+export default function GameCanvas({ onProgress, onReady, onError }: GameCanvasProps) {
 	const canvasRef = useRef<HTMLCanvasElement | null>(null);
 	const engineRef = useRef<GodotEngine | null>(null);
 	// Hard guard: Godot's web engine cannot be torn down + re-instantiated in
@@ -59,10 +70,6 @@ export default function GameCanvas() {
 	// our effect we MUST refuse to boot a second time or the page enters a
 	// "RID allocations leaked at exit" loop.
 	const bootedRef = useRef<boolean>(false);
-	const [progress, setProgress] = useState<{ current: number; total: number }>({
-		current: 0,
-		total: 0,
-	});
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
@@ -130,7 +137,8 @@ export default function GameCanvas() {
 					ensureCrossOriginIsolationHeaders: false,
 					serviceWorker: undefined,
 					onProgress: (current, total) => {
-						if (!cancelled) setProgress({ current, total });
+						if (cancelled) return;
+						onProgress?.(current, total);
 					},
 					onPrintError: (...args) => console.error("[Godot]", ...args),
 				});
@@ -142,8 +150,8 @@ export default function GameCanvas() {
 				patchEngineLocateFile(engine);
 				engineRef.current = engine;
 				await engine.startGame();
-				// Wait for the GDScript autoload to install the bridge so the
-				// menu overlay can dispatch ui_play once the user clicks PLAY.
+				// Wait for the GDScript autoload to install the bridge so React
+				// can show PLAY and dispatch ui_play once the user clicks it.
 				// Bounded so a silent autoload failure surfaces an error.
 				const ready: Promise<void> = godotBridge.waitForReady();
 				const timeout: Promise<never> = new Promise((_, reject) =>
@@ -151,13 +159,15 @@ export default function GameCanvas() {
 				);
 				await Promise.race([ready, timeout]);
 				if (cancelled) return;
-				// `ui_play` is emitted by MenuOverlay's PLAY button now —
-				// Godot's main_menu.tscn waits on it before swapping to the
-				// gameplay scene.
+				onReady?.();
+				// Godot's main_scene is match_warmup.tscn, but it stays idle until
+				// React sends ui_play. This component's job is only engine boot.
 			} catch (err: unknown) {
 				if (cancelled) return;
 				console.error("[GameCanvas] boot failed:", err);
-				setError(err instanceof Error ? err.message : String(err));
+				const msg: string = err instanceof Error ? err.message : String(err);
+				setError(msg);
+				onError?.(msg);
 			}
 		};
 
@@ -176,9 +186,6 @@ export default function GameCanvas() {
 		};
 	}, []);
 
-	const pct: number =
-		progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
-
 	return (
 		<div className="absolute inset-0">
 			<canvas
@@ -194,11 +201,9 @@ export default function GameCanvas() {
 				width={1280}
 				height={720}
 			/>
-			{progress.total > 0 && progress.current < progress.total && (
-				<div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-bg font-sans text-label uppercase tracking-label text-text-muted">
-					Loading {pct}%
-				</div>
-			)}
+			{/* Engine-load progress is rendered by the parent's LoadingOverlay
+			    (it owns the unified loading UI across engine boot + warmup). We
+			    intentionally don't paint a redundant "Loading X%" badge here. */}
 			{error !== null && (
 				<div className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-red-950/80 p-8 text-center font-mono text-sm text-white">
 					<div>

@@ -1,7 +1,6 @@
 // Concrete dispatch table. Each `register_handler(...)` here adds one C2S
 // type. Handlers are short — heavy lifting lives in combat/state modules.
 
-import { PROTOCOL_VERSION } from "../../../shared/protocol.ts";
 import { LIMITS } from "../config.ts";
 import { cfg } from "../config.ts";
 import { is_finite_vec3, vec_dist } from "../util/vec.ts";
@@ -18,6 +17,7 @@ import { make_logger } from "../util/log.ts";
 
 const log_net = make_logger("net");
 const log_veh = make_logger("veh");
+const PROTOCOL_VERSION = "0.1.0";
 
 // ---------------------------------------------------------------------------
 // Speed clamp (anti-teleport). Lives here because it only fires inside the
@@ -142,8 +142,20 @@ export function register_all_handlers(): void {
 		if (!is_finite_vec3(msg.pos, LIMITS.max_pos_axis)) { kick(p, "bad_vehicle_pos"); return; }
 		if (!is_finite_vec3(msg.rot, LIMITS.rot_max_radians)) { kick(p, "bad_vehicle_rot"); return; }
 		if (!is_finite_vec3(msg.vel, LIMITS.max_vel_axis)) { kick(p, "bad_vehicle_vel"); return; }
+		if (msg.aim_yaw !== undefined
+			&& (typeof msg.aim_yaw !== "number" || !Number.isFinite(msg.aim_yaw) || Math.abs(msg.aim_yaw) > LIMITS.rot_max_radians)) {
+			kick(p, "bad_vehicle_aim_yaw");
+			return;
+		}
+		if (msg.aim_pitch !== undefined
+			&& (typeof msg.aim_pitch !== "number" || !Number.isFinite(msg.aim_pitch) || Math.abs(msg.aim_pitch) > LIMITS.rot_max_radians)) {
+			kick(p, "bad_vehicle_aim_pitch");
+			return;
+		}
 		v.pos = msg.pos;
 		v.rot = msg.rot;
+		v.aim_yaw = msg.aim_yaw ?? msg.rot[1];
+		v.aim_pitch = msg.aim_pitch ?? 0;
 		v.last_update_ms = Date.now();
 	});
 

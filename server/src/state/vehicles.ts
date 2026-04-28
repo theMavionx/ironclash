@@ -8,6 +8,8 @@ export interface Vehicle {
 	id: string;
 	pos: Vec3;
 	rot: Vec3;
+	aim_yaw: number;
+	aim_pitch: number;
 	driver_peer_id: number;   // -1 = no driver
 	hp: number;
 	max_hp: number;
@@ -47,6 +49,8 @@ for (const spec of VEHICLE_REGISTRY) {
 		id: spec.id,
 		pos: [...spec.spawn_pos],
 		rot: [0, 0, 0],
+		aim_yaw: 0,
+		aim_pitch: 0,
 		driver_peer_id: -1,
 		hp: spec.max_hp,
 		max_hp: spec.max_hp,
@@ -78,6 +82,8 @@ export function reset_all_vehicles(): void {
 		if (spec !== undefined) {
 			v.pos = [...spec.spawn_pos];
 			v.rot = [0, 0, 0];
+			v.aim_yaw = 0;
+			v.aim_pitch = 0;
 		}
 	}
 }

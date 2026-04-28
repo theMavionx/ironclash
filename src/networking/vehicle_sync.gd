@@ -35,6 +35,8 @@ var _last_was_driving: bool = false
 # Latest server snapshot for this vehicle (used when not driving).
 var _server_pos: Vector3 = Vector3.ZERO
 var _server_rot: Vector3 = Vector3.ZERO
+var _server_aim_yaw: float = 0.0
+var _server_aim_pitch: float = 0.0
 var _server_driver: int = -1
 var _server_alive: bool = true
 var _has_server_state: bool = false
@@ -79,8 +81,30 @@ func _is_driving_locally() -> bool:
 	return bool(_controller.call("is_physics_processing"))
 
 
+func _get_health_component() -> HealthComponent:
+	var owner: Node = _body
+	if owner == null:
+		owner = get_parent()
+	if owner == null:
+		return null
+	return owner.get_node_or_null("HealthComponent") as HealthComponent
+
+
+func _is_locally_destroyed() -> bool:
+	var health: HealthComponent = _get_health_component()
+	return health != null and health.is_destroyed()
+
+
 func _process(delta: float) -> void:
 	if not _has_network_manager() or not NetworkManager.is_online():
+		return
+	if _is_locally_destroyed():
+		if _last_was_driving:
+			_last_was_driving = false
+			NetworkManager.send_vehicle_exit()
+			print("[veh-sync %s] exit (local destroyed)" % vehicle_id)
+		if _controller != null and _controller.has_method("set_remote_driver_active"):
+			_controller.call("set_remote_driver_active", false)
 		return
 	var driving: bool = _is_driving_locally()
 	if driving != _last_was_driving:
@@ -120,6 +144,8 @@ func _process(delta: float) -> void:
 		lerp_angle(_body.rotation.y, _server_rot.y, t),
 		lerp_angle(_body.rotation.z, _server_rot.z, t),
 	)
+	if _controller != null and _controller.has_method("set_remote_aim"):
+		_controller.call("set_remote_aim", _server_aim_yaw, _server_aim_pitch)
 
 
 func _send_transform() -> void:
@@ -132,7 +158,14 @@ func _send_transform() -> void:
 		vel = (_body as CharacterBody3D).velocity
 	elif _body is RigidBody3D:
 		vel = (_body as RigidBody3D).linear_velocity
-	NetworkManager.send_vehicle_transform(vehicle_id, pos, rot, vel)
+	var aim_yaw: float = rot.y
+	var aim_pitch: float = 0.0
+	if _controller != null:
+		if _controller.has_method("get_aim_yaw"):
+			aim_yaw = float(_controller.call("get_aim_yaw"))
+		if _controller.has_method("get_aim_pitch"):
+			aim_pitch = float(_controller.call("get_aim_pitch"))
+	NetworkManager.send_vehicle_transform(vehicle_id, pos, rot, vel, aim_yaw, aim_pitch)
 
 
 func _on_local_self_destructed(_at: Vector3) -> void:
@@ -176,6 +209,8 @@ func _on_snapshot(_tick: int, _server_t: int, _players: Array, vehicles: Array) 
 			return
 		_server_pos = Vector3(float(pos_arr[0]), float(pos_arr[1]), float(pos_arr[2]))
 		_server_rot = Vector3(float(rot_arr[0]), float(rot_arr[1]), float(rot_arr[2]))
+		_server_aim_yaw = float(v.get("aim_yaw", _server_rot.y))
+		_server_aim_pitch = float(v.get("aim_pitch", 0.0))
 		_server_driver = int(v.get("driver_peer_id", -1))
 		_server_alive = bool(v.get("alive", true))
 		_has_server_state = true

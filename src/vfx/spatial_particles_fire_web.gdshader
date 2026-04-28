@@ -1,9 +1,12 @@
-// Stylized fire shader. Web-compatible (gl_compatibility).
-// One persistent billboard samples a soft flame mask, distorts it with
-// scrolling noise, then remaps the mask through a smooth orange/yellow palette.
-// This keeps the flame as one blob instead of several visible particle layers.
+// Web-safe fire shader for CPUParticles3D.
+//
+// Keeps the same fragment-side fire look as spatial_particles_fire.gdshader
+// (noise distortion + procedural flame shape + orange/yellow palette), but
+// deliberately does not write POSITION in vertex(). In Godot's WebGL2 path,
+// overriding POSITION on particle geometry can bypass the particle instance
+// transform and render the whole effect blank.
 shader_type spatial;
-render_mode blend_mix, depth_draw_never, cull_disabled, unshaded;
+render_mode blend_add, depth_draw_never, cull_disabled, unshaded, fog_disabled;
 
 uniform sampler2D fire_texture : filter_linear;
 uniform sampler2D distortion_texture : filter_linear, repeat_enable;
@@ -16,47 +19,19 @@ uniform float distortion_amount : hint_range(0.0, 0.5) = 0.25;
 uniform float anchor_power : hint_range(0.5, 4.0) = 1.5;
 uniform float edge_softness : hint_range(0.01, 0.4) = 0.16;
 uniform float base_glow : hint_range(0.0, 1.0) = 0.35;
-// Use 1.0 = procedural shape, 0.0 = sample fire_texture as-is. Was a `bool`
-// but some WebGL2 drivers mishandle dynamic-bool branches in fragment.
+uniform float flame_width_scale : hint_range(0.5, 3.0) = 1.0;
 uniform float procedural_flame : hint_range(0.0, 1.0) = 1.0;
 uniform float time_offset = 0.0;
-
-
-void vertex() {
-	vec3 cam_world = INV_VIEW_MATRIX[3].xyz;
-	vec3 to_cam = cam_world - MODEL_MATRIX[3].xyz;
-	to_cam.y = 0.0;
-	if (dot(to_cam, to_cam) < 0.0001) {
-		to_cam = vec3(0.0, 0.0, 1.0);
-	}
-	to_cam = normalize(to_cam);
-	vec3 up = vec3(0.0, 1.0, 0.0);
-	vec3 right = normalize(cross(up, to_cam));
-
-	float sx = length(MODEL_MATRIX[0].xyz);
-	float sy = length(MODEL_MATRIX[1].xyz);
-
-	mat4 billboard = mat4(
-		vec4(right * sx, 0.0),
-		vec4(up * sy, 0.0),
-		vec4(to_cam, 0.0),
-		MODEL_MATRIX[3]
-	);
-	// Write POSITION directly (clip space). Writing MODELVIEW_MATRIX is
-	// silently dropped on Godot 4.3 gl_compatibility / WebGL2 — particles
-	// rendered blank as a result. POSITION is honoured by both renderers.
-	POSITION = PROJECTION_MATRIX * VIEW_MATRIX * billboard * vec4(VERTEX, 1.0);
-}
+uniform float alpha_multiplier : hint_range(0.0, 1.0, 0.01) = 1.0;
+uniform float particle_life_override : hint_range(-1.0, 1.0, 0.01) = -1.0;
 
 
 void fragment() {
 	float t = TIME + time_offset;
-	// Two scrolling noise samples avoid the "one repeated wave" look.
 	float dist_a = texture(distortion_texture, UV * vec2(1.1, 1.35) + distortion_speed * t).r;
 	float dist_b = texture(distortion_texture, UV * vec2(2.3, 1.8) + vec2(0.7, -0.35) * t).r;
 	float dist = (dist_a - 0.5) + (dist_b - 0.5) * 0.45;
 
-	// Anchor: base stays chunky and stable, upper half dances.
 	float height_t = 1.0 - UV.y;
 	float anchor_mask = pow(height_t, anchor_power);
 
@@ -73,9 +48,9 @@ void fragment() {
 		float center_shift = (center_noise - 0.5) * 0.20 * pow(flame_height, 0.65);
 		float x = abs(fire_uv.x - 0.5 - center_shift);
 
-		float width = mix(0.32, 0.042, pow(flame_height, 1.2));
+		float width = mix(0.32, 0.042, pow(flame_height, 1.2)) * flame_width_scale;
 		width += (side_noise - 0.5) * 0.08 * smoothstep(0.16, 0.92, flame_height);
-		width = max(width, 0.035);
+		width = clamp(width, 0.035, 0.48);
 
 		float side = 1.0 - smoothstep(width, width + edge_softness, x);
 		float bottom = smoothstep(-0.06, 0.10, flame_height);
@@ -86,7 +61,8 @@ void fragment() {
 		mask = pow(mask, 0.68);
 	}
 
-	float alpha = smoothstep(0.03, edge_softness, mask) * fire_color.a * COLOR.a;
+	float particle_alpha = max(COLOR.a, 0.001);
+	float alpha = smoothstep(0.03, edge_softness, mask) * fire_color.a * particle_alpha * alpha_multiplier;
 	if (alpha < 0.01) {
 		discard;
 	}

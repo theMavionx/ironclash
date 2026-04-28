@@ -1,41 +1,28 @@
 import { useEffect, useState } from "react";
 import { godotBridge } from "@/bridge/godotBridge";
-import { GameEvent, UiEvent } from "@/bridge/eventTypes";
+import { GameEvent } from "@/bridge/eventTypes";
+
+interface Props {
+	/** Fires when the user clicks PLAY. Godot is already booted; this sends the
+	 *  warmup/start signal through App.tsx. */
+	onPlay: () => void;
+}
 
 /**
- * Pre-match menu — sits over the Godot 3D menu scene that idles the player
- * model. Clicking PLAY emits `ui_play` to Godot which swaps the scene to
- * the gameplay map and connects the network.
+ * Pure-React 2D title screen shown after the Godot export has loaded.
+ * PLAY does not boot the engine anymore; it starts match warmup.
  *
- * The PLAY button stays in a "loading" state until the Godot autoload signals
- * `godot_ready`. Without this gate, an early click drops `ui_play` inside
- * `godotBridge.emit` (engine not ready) AND hides the overlay — leaving the
- * user stuck on the menu scene with no way to retry. Hard-learned UX bug.
- *
- * The overlay returns to view if the server drops the client (so the user
- * can retry PLAY after a disconnect).
+ * Re-shows on `network_disconnected` so the user can retry — but only if the
+ * page never advanced past the menu (App.tsx owns the `started` state and is
+ * the source of truth for visibility).
  */
-export default function MenuOverlay() {
-	const [visible, setVisible] = useState<boolean>(true);
+export default function MenuOverlay({ onPlay }: Props) {
 	const [busy, setBusy] = useState<boolean>(false);
-	// Mirror godotBridge.engineReady into local state so the button can react.
-	// engineReady flips once Godot's WebBridge autoload fires `godot_ready`.
-	const [engineReady, setEngineReady] = useState<boolean>(godotBridge.engineReady);
 
 	useEffect(() => {
-		// If the engine raced ahead and is already ready when we mount, we
-		// catch it via the initial state above. Otherwise wait for the signal.
-		if (godotBridge.engineReady) {
-			setEngineReady(true);
-		} else {
-			void godotBridge.waitForReady().then(() => setEngineReady(true));
-		}
-	}, []);
-
-	useEffect(() => {
-		// Bring the menu back if the server drops us — user is "back at title".
+		// Belt-and-braces — if the parent re-mounts us after a disconnect, reset
+		// the busy flag so PLAY is clickable again.
 		const off = godotBridge.subscribe(GameEvent.NetworkDisconnected, () => {
-			setVisible(true);
 			setBusy(false);
 		});
 		return off;
@@ -43,30 +30,21 @@ export default function MenuOverlay() {
 
 	function handlePlay(): void {
 		if (busy) return;
-		if (!engineReady) return;            // hard gate — drop nothing.
 		setBusy(true);
-		// Focus the canvas so Godot's later `Input.mouse_mode = MOUSE_MODE_CAPTURED`
-		// (fired from PlayerController._ready) inherits the click's transient
-		// activation. We don't request pointer-lock from here — that path
-		// triggered WrongDocumentError when canvas ownerDocument differed.
-		const canvas: HTMLCanvasElement | null = document.getElementById("godot-canvas") as HTMLCanvasElement | null;
-		if (canvas !== null) {
-			canvas.focus();
-		}
-		godotBridge.emit(UiEvent.Play, {});
-		setTimeout(() => setVisible(false), 180);
+		// Focus the canvas eagerly — when Godot eventually mounts, its
+		// `Input.mouse_mode = MOUSE_MODE_CAPTURED` (fired from PlayerController)
+		// will inherit the click's transient activation. We don't request
+		// pointer-lock here — that path triggered WrongDocumentError when the
+		// canvas ownerDocument changed.
+		const canvas: HTMLCanvasElement | null = document.getElementById(
+			"godot-canvas",
+		) as HTMLCanvasElement | null;
+		if (canvas !== null) canvas.focus();
+		onPlay();
 	}
 
-	if (!visible) return null;
-
-	const buttonLabel: string = engineReady ? (busy ? "STARTING…" : "PLAY") : "LOADING…";
-	const hintLabel: string = engineReady
-		? (busy ? "Loading match…" : "Click PLAY to start")
-		: "Loading game engine…";
-	const buttonDisabled: boolean = busy || !engineReady;
-
 	return (
-		<div className="pointer-events-none absolute inset-0 flex flex-col">
+		<div className="pointer-events-none absolute inset-0 flex flex-col bg-bg">
 			{/* ── Title (top-left) ───────────────────────────────────────────── */}
 			<div className="pointer-events-none absolute left-10 top-10 select-none">
 				<div className="font-sans text-display tracking-tight text-text leading-none">
@@ -77,39 +55,32 @@ export default function MenuOverlay() {
 				</div>
 			</div>
 
-			{/* ── Subtle vignette so the character reads against any background  */}
-			<div
-				className="pointer-events-none absolute inset-0"
-				style={{
-					background:
-						"radial-gradient(ellipse at center, rgba(0,0,0,0) 45%, rgba(0,0,0,0.35) 75%, rgba(0,0,0,0.55) 100%)",
-				}}
-			/>
-
-			{/* ── PLAY button (bottom-right) ─────────────────────────────────── */}
-			<div className="pointer-events-auto absolute bottom-12 right-12">
+			{/* ── Centered PLAY button ───────────────────────────────────────── */}
+			<div className="pointer-events-auto absolute inset-0 flex items-center justify-center">
 				<button
 					type="button"
 					onClick={handlePlay}
-					disabled={buttonDisabled}
+					disabled={busy}
 					className={
 						"group relative flex items-center justify-center " +
-						"px-20 py-5 font-sans text-display uppercase tracking-label " +
+						"px-24 py-6 font-sans text-display uppercase tracking-label " +
 						"border-2 border-accent bg-accent text-bg " +
 						"transition-all duration-150 " +
 						"hover:bg-bg hover:text-accent active:scale-[0.97] " +
 						"disabled:opacity-40 disabled:cursor-wait disabled:hover:bg-accent disabled:hover:text-bg"
 					}
 				>
-					<span className="relative z-10">{buttonLabel}</span>
+					<span className="relative z-10">{busy ? "STARTING…" : "PLAY"}</span>
 					<span
 						aria-hidden
 						className="absolute -bottom-2 left-3 right-3 h-[3px] bg-accent opacity-50 group-hover:opacity-100 transition-opacity"
 					/>
 				</button>
-				<div className="mt-3 text-right font-sans text-caption uppercase tracking-label text-text-muted">
-					{hintLabel}
-				</div>
+			</div>
+
+			{/* ── Hint just below the button ─────────────────────────────────── */}
+			<div className="pointer-events-none absolute bottom-1/3 left-0 right-0 mt-6 text-center font-sans text-caption uppercase tracking-label text-text-muted">
+				{busy ? "Starting warmup..." : "Game loaded. Click PLAY to deploy"}
 			</div>
 
 			{/* ── Tiny build tag (bottom-left) ───────────────────────────────── */}

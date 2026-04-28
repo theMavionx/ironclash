@@ -116,8 +116,8 @@ signal self_destructed(at_position: Vector3)
 @export var kamikaze_speed_threshold: float = 6.0
 ## Damage dealt to a HealthComponent on kamikaze impact (high to one-shot anything).
 @export var kamikaze_damage: int = 999
-## Seconds the drone is "OFFLINE" after a kamikaze detonation before respawning.
-@export var respawn_delay: float = 1.5
+## Seconds the drone wreck burns after a kamikaze detonation before respawning.
+@export var respawn_delay: float = 10.0
 
 @export_group("Rotor Animation")
 ## Maximum rotor angular speed at full throttle (radians/s).
@@ -198,7 +198,7 @@ func set_active(is_active: bool) -> void:
 		if _fpv_camera != null:
 			_fpv_camera.current = false
 	else:
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		WebPointerLock.capture_for_activation()
 		_yaw_target = global_rotation.y
 		_yaw_current = _yaw_target
 		if _fpv_camera != null:
@@ -302,7 +302,13 @@ func _setup_propellers() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if not _active or _is_destroyed:
 		return
+	if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
+		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+			WebPointerLock.capture_from_user_gesture()
+			return
 	if event is InputEventMouseMotion:
+		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+			return
 		var motion: InputEventMouseMotion = event
 		# Mouse X → yaw target. Negative because mouse-right should yaw clockwise
 		# from above (right-handed Y-up: clockwise = negative rotation).
@@ -571,7 +577,7 @@ func _on_self_destroyed(_by_source: int) -> void:
 	set_physics_process(true)
 	_apply_destroyed_visual()
 	self_destructed.emit(global_position)
-	# Schedule respawn — player sees the wreck plummet for ~1.5s before teleport.
+	# Schedule respawn after the wreck burn window.
 	var timer: SceneTreeTimer = get_tree().create_timer(respawn_delay)
 	timer.timeout.connect(_respawn)
 
@@ -635,9 +641,9 @@ func _respawn() -> void:
 
 
 func _apply_destroyed_visual() -> void:
-	DestructionVFX.spawn_explosion(get_tree().current_scene, global_position + Vector3(0, 0.4, 0))
+	DestructionVFX.spawn_explosion(get_tree().current_scene, global_position + Vector3(0, 0.4, 0), false)
 	DestructionVFX.apply_charred(self)
-	DestructionVFX.spawn_smoke_fire(self, 0.4)
+	DestructionVFX.spawn_smoke_fire(self, 0.4, true, respawn_delay)
 
 
 func _clear_destroyed_visual() -> void:

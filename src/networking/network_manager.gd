@@ -246,15 +246,27 @@ func send_vehicle_exit() -> void:
 	send_message({"t": "vehicle_exit"})
 
 
-func send_vehicle_transform(vehicle_id: String, pos: Vector3, rot: Vector3, vel: Vector3) -> void:
-	send_message({
+func send_vehicle_transform(
+	vehicle_id: String,
+	pos: Vector3,
+	rot: Vector3,
+	vel: Vector3,
+	aim_yaw: float = NAN,
+	aim_pitch: float = NAN
+) -> void:
+	var msg: Dictionary = {
 		"t": "vehicle_transform",
 		"vehicle_id": vehicle_id,
 		"pos": [pos.x, pos.y, pos.z],
 		"rot": [rot.x, rot.y, rot.z],
 		"vel": [vel.x, vel.y, vel.z],
 		"client_t": Time.get_ticks_msec(),
-	})
+	}
+	if not is_nan(aim_yaw):
+		msg["aim_yaw"] = aim_yaw
+	if not is_nan(aim_pitch):
+		msg["aim_pitch"] = aim_pitch
+	send_message(msg)
 
 
 # ---------------------------------------------------------------------------

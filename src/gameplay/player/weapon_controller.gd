@@ -334,12 +334,140 @@ func _spawn_rpg_projectile() -> void:
 	else:
 		spawn_origin = _camera.global_position
 
-	# Aim along camera forward for crosshair accuracy (standard FPS pattern).
-	var aim_dir: Vector3 = -_camera.global_transform.basis.z
+	# Aim FROM the RPG muzzle TO the camera ray target. Plain camera-forward
+	# makes an over-shoulder projectile fly parallel to the crosshair from the
+	# side of the player, which reads like the rocket launching sideways.
+	var aim_dir: Vector3 = _resolve_rpg_aim_dir(spawn_origin)
+
+	# Replace the placeholder grey CapsuleMesh with the actual rocketbullet
+	# mesh from the launcher — the user mounts a visible rocket on the RPG
+	# model and expects THAT mesh to fly out, not a generic capsule. Falls
+	# back silently to the default capsule if the bone/mesh lookup fails so
+	# we never spawn an invisible rocket.
+	_apply_visual_rocket_mesh(rocket, aim_dir)
 
 	_world_root.add_child(rocket)
 	rocket.global_position = spawn_origin
-	rocket.look_at(spawn_origin + aim_dir, Vector3.UP)
+	var up_ref: Vector3 = Vector3.UP
+	if absf(aim_dir.dot(Vector3.UP)) > 0.95:
+		up_ref = Vector3.FORWARD
+	rocket.look_at(spawn_origin + aim_dir, up_ref)
+
+
+func _resolve_rpg_aim_dir(spawn_origin: Vector3) -> Vector3:
+	var cam_forward: Vector3 = -_camera.global_transform.basis.z
+	var cam_pos: Vector3 = _camera.global_position
+	var target_point: Vector3 = cam_pos + cam_forward * rpg_max_range
+	var space: PhysicsDirectSpaceState3D = _camera.get_world_3d().direct_space_state
+	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(cam_pos, target_point)
+	if _shooter != null and is_instance_valid(_shooter):
+		query.exclude = [_shooter.get_rid()]
+	var hit: Dictionary = space.intersect_ray(query)
+	if not hit.is_empty():
+		target_point = hit.get("position", target_point)
+	var dir: Vector3 = target_point - spawn_origin
+	if dir.length_squared() < 0.0001:
+		return cam_forward
+	return dir.normalized()
+
+
+## Copy mesh + material + scale from the rocket the player saw mounted on
+## the launcher onto the projectile's CoreMesh. The base RPG state shows
+## [code]rocketbullet_low[/code] (low-poly, the always-visible variant in
+## [weapon_anim_visibility._set_rpg_base]); [code]rocketbullet[/code] is the
+## high-poly variant only on screen during the 17–61 frame window of the
+## reload animation. Prefer the low-poly one, fall back to high-poly, fall
+## back further to a sibling MeshInstance3D under whatever
+## [member rpg_muzzle_path] resolves to. Any failure leaves the placeholder
+## CapsuleMesh in place so we never spawn an invisible rocket.
+func _apply_visual_rocket_mesh(rocket: Node, aim_dir: Vector3) -> void:
+	if _rpg_muzzle == null:
+		return
+	var src_mi: MeshInstance3D = _resolve_visual_rocket_source()
+	if src_mi == null or src_mi.mesh == null:
+		return
+	var core_mesh: MeshInstance3D = rocket.get_node_or_null("CoreMesh") as MeshInstance3D
+	if core_mesh == null:
+		return
+	# Share the Mesh resource by reference — Godot's renderer is happy with
+	# multiple MeshInstance3Ds pointing at one Mesh; the surface materials
+	# embedded in the GLB carry over automatically.
+	core_mesh.mesh = src_mi.mesh
+	var mesh_forward_local: Vector3 = _signed_visual_rocket_forward_axis(src_mi, aim_dir)
+	core_mesh.transform = Transform3D(
+		Basis(Quaternion(mesh_forward_local, Vector3.FORWARD)),
+		Vector3.ZERO
+	)
+	# material_override beats per-surface materials when present; copy it too
+	# so any per-instance recolor on the launcher stays on the projectile.
+	if src_mi.material_override != null:
+		core_mesh.material_override = src_mi.material_override
+	# Match the source rocket's effective world-space scale. The bone hierarchy
+	# above it can apply non-trivial scale (skeleton bind-pose, model_node
+	# scale, etc.), and an unscaled CoreMesh would render the rocket many
+	# times larger or smaller than what the player saw on the launcher.
+	var scale_v: Vector3 = src_mi.global_transform.basis.get_scale()
+	scale_v = Vector3(absf(scale_v.x), absf(scale_v.y), absf(scale_v.z))
+	if scale_v.x > 0.0 and scale_v.y > 0.0 and scale_v.z > 0.0:
+		core_mesh.scale = scale_v
+
+
+func _signed_visual_rocket_forward_axis(src_mi: MeshInstance3D, aim_dir: Vector3) -> Vector3:
+	var axis: Vector3 = _dominant_mesh_axis(src_mi.mesh)
+	var world_axis: Vector3 = src_mi.global_transform.basis * axis
+	if world_axis.length_squared() > 0.0001 and world_axis.normalized().dot(aim_dir) < 0.0:
+		axis = -axis
+	return axis
+
+
+func _dominant_mesh_axis(mesh: Mesh) -> Vector3:
+	var size: Vector3 = mesh.get_aabb().size
+	var sx: float = absf(size.x)
+	var sy: float = absf(size.y)
+	var sz: float = absf(size.z)
+	if sx >= sy and sx >= sz:
+		return Vector3.RIGHT
+	if sy >= sx and sy >= sz:
+		return Vector3.UP
+	return Vector3.BACK
+
+
+## Resolve which MeshInstance3D under the player skeleton represents the
+## rocket the user currently sees mounted. The skeleton has two variants:
+##
+##   rocketbullet_low — visible in base RPG idle (default state)
+##   rocketbullet     — visible only during reload frames 17–61
+##
+## The first to resolve to a MeshInstance3D wins. Both bones live as
+## siblings under the skeleton, derivable from [member rpg_muzzle_path]'s
+## parent — that lookup means the resolution still works if the user
+## customises the muzzle path in the Inspector.
+func _resolve_visual_rocket_source() -> MeshInstance3D:
+	if _rpg_muzzle == null:
+		return null
+	var parent_skel: Node = _rpg_muzzle.get_parent()
+	if parent_skel != null:
+		var low: Node = parent_skel.get_node_or_null(^"rocketbullet_low")
+		if low != null:
+			var low_mi: MeshInstance3D = _resolve_first_mesh_instance(low)
+			if low_mi != null and low_mi.mesh != null:
+				return low_mi
+	# Fall back to the muzzle node itself (rocketbullet by default).
+	return _resolve_first_mesh_instance(_rpg_muzzle)
+
+
+## Walk [param root] depth-first for the first MeshInstance3D descendant.
+## Used by [_apply_visual_rocket_mesh] because the GLB import sometimes
+## wraps the rocketbullet mesh inside a Node3D rather than exposing it as
+## the bone-attached node directly.
+func _resolve_first_mesh_instance(root: Node) -> MeshInstance3D:
+	if root is MeshInstance3D:
+		return root as MeshInstance3D
+	for child: Node in root.get_children():
+		var found: MeshInstance3D = _resolve_first_mesh_instance(child)
+		if found != null:
+			return found
+	return null
 
 
 func _spawn_ar_fire_vfx() -> void:

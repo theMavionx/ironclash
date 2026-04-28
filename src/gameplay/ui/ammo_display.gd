@@ -9,11 +9,18 @@ extends CanvasLayer
 
 @export_node_path("Node") var weapon_controller_path: NodePath = ^"../WeaponController"
 
+const _WEB_BRIDGE_PATH: NodePath = ^"/root/WebBridge"
+
 var _weapon_ctrl: WeaponController
 @onready var _label: Label = $Root/AmmoLabel
+@onready var _root: Control = $Root
 
 
 func _ready() -> void:
+	# Browser builds use the React HUD. Keep this node alive as the bridge
+	# adapter, but hide its CanvasLayer label so ammo is not drawn twice.
+	if OS.has_feature("web"):
+		_root.visible = false
 	_weapon_ctrl = get_node_or_null(weapon_controller_path) as WeaponController
 	if _weapon_ctrl == null:
 		push_warning("AmmoDisplay: WeaponController not found at %s" % weapon_controller_path)
@@ -36,7 +43,18 @@ func _refresh() -> void:
 func _on_ammo_changed(weapon: int, current: int, maximum: int) -> void:
 	var weapon_name: String = "AR" if weapon == PlayerAnimController.Weapon.AR else "RPG"
 	_label.text = "%s  %d / %d" % [weapon_name, current, maximum]
+	_send_react_ammo(weapon_name, current, maximum)
 
 
 func _on_weapon_switched(_weapon: int) -> void:
 	_refresh()
+
+
+func _send_react_ammo(weapon_name: String, current: int, maximum: int) -> void:
+	var bridge: Node = get_node_or_null(_WEB_BRIDGE_PATH)
+	if bridge != null and bridge.has_method("send_event"):
+		bridge.send_event("ammo_changed", {
+			"weapon": weapon_name,
+			"current": current,
+			"reserve": maximum,
+		})

@@ -18,7 +18,7 @@ import {
  */
 export default function HUD() {
 	const [hp, setHp] = useState<HealthChangedPayload>({ hp: 100, max: 100 });
-	const [ammo] = useState<AmmoChangedPayload>({ current: 30, reserve: 90, weapon: "AK-74" });
+	const [ammo, setAmmo] = useState<AmmoChangedPayload>({ current: 30, reserve: 30, weapon: "AR" });
 	const [match, setMatch] = useState<MatchStatePayload | null>(null);
 	const [kills, setKills] = useState<KillFeedRow[]>([]);
 	const [localPeer, setLocalPeer] = useState<NetworkConnectedPayload | null>(null);
@@ -34,6 +34,7 @@ export default function HUD() {
 	const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
 	useGodotEvent<HealthChangedPayload>(GameEvent.HealthChanged, (p) => setHp(p));
+	useGodotEvent<AmmoChangedPayload>(GameEvent.AmmoChanged, (p) => setAmmo(p));
 	useGodotEvent<NetworkConnectedPayload>(GameEvent.NetworkConnected, (p) => {
 		setLocalPeer(p);
 		setHp({ hp: 100, max: 100 });

@@ -34,12 +34,19 @@ void vertex() {
 		// Preserve per-axis scale so QuadMesh.size still drives length/width.
 		float scale_x = length(MODEL_MATRIX[0].xyz);
 		float scale_y = length(MODEL_MATRIX[1].xyz);
-		MODELVIEW_MATRIX = VIEW_MATRIX * mat4(
+		mat4 billboard = mat4(
 			vec4(right_world * scale_x, 0.0),
 			vec4(streak_y_world * scale_y, 0.0),
 			vec4(forward_world, 0.0),
 			vec4(origin_world, 1.0)
 		);
+		// Write POSITION (clip space) directly — MODELVIEW_MATRIX writes are
+		// silently dropped on Godot 4.3 gl_compatibility / WebGL2.
+		POSITION = PROJECTION_MATRIX * VIEW_MATRIX * billboard * vec4(VERTEX, 1.0);
+	} else {
+		// Degenerate (camera looking along streak axis) — keep original
+		// MODEL_MATRIX-driven projection so the quad still draws.
+		POSITION = PROJECTION_MATRIX * MODELVIEW_MATRIX * vec4(VERTEX, 1.0);
 	}
 }
 

@@ -1,4 +1,4 @@
-[gd_scene load_steps=46 format=3 uid="uid://c8j7f5yqg2bbp"]
+[gd_scene load_steps=48 format=3 uid="uid://c8j7f5yqg2bbp"]
 
 [ext_resource type="PackedScene" uid="uid://ctank00000001" path="res://scenes/tank/tank.tscn" id="1_tank"]
 [ext_resource type="Script" path="res://src/gameplay/camera/chase_camera.gd" id="2_pkq0h"]
@@ -28,6 +28,8 @@
 [ext_resource type="Texture2D" uid="uid://cuqtkw1rpv4p6" path="res://textures/rockdown_normal.png" id="normal_4"]
 [ext_resource type="Texture2D" uid="uid://b8x5p6x0ucnd2" path="res://textures/rocksdown2_normal.png" id="normal_5"]
 [ext_resource type="Texture2D" uid="uid://ca2cmrkh2aytr" path="res://textures/snow_normal.png" id="normal_6"]
+[ext_resource type="Script" path="res://src/gameplay/world/terrain3d_web_override.gd" id="terrain_web_script"]
+[ext_resource type="Shader" path="res://assets/shaders/terrain3d_web_lightweight.gdshader" id="terrain_web_shader"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_day"]
 sky_top_color = Color(0.28, 0.52, 0.85, 1)
@@ -262,6 +264,8 @@ drone_path = NodePath("../Drone")
 
 [node name="Terrain3D" type="Terrain3D" parent="."]
 data_directory = "res://MapData"
+script = ExtResource("terrain_web_script")
+web_shader = ExtResource("terrain_web_shader")
 material = SubResource("Terrain3DMaterial_3ae8t")
 assets = SubResource("Terrain3DAssets_sfo7h")
 top_level = true

@@ -168,7 +168,7 @@ func set_active(is_active: bool) -> void:
 	if _camera != null:
 		_camera.current = is_active
 	if is_active:
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		WebPointerLock.capture_for_activation()
 		_state = State.IDLE
 	else:
 		if _body != null:
@@ -205,7 +205,7 @@ func _ready() -> void:
 	# The root Node3D's rotation is not used for gameplay — only _yaw drives
 	# the body. Zero root rotation so the scene transform stays neutral.
 	rotation = Vector3.ZERO
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	WebPointerLock.capture_for_activation()
 	if _health != null:
 		_health.destroyed.connect(_on_self_destroyed)
 	if _body != null:
@@ -226,14 +226,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 			_mouse_delta = Vector2.ZERO
 		else:
-			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+			WebPointerLock.capture_from_user_gesture()
 		return
 
 	# While the cursor is free, the first click back into the window recaptures
 	# it instead of firing (prevents accidental shots on focus-regain).
 	if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
 		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
-			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+			WebPointerLock.capture_from_user_gesture()
 			return
 
 	if event is InputEventMouseMotion:

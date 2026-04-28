@@ -82,8 +82,21 @@ extends CharacterBody3D
 @export var debris_h_drift_max: float = 4.0
 ## Maximum random tumble angular velocity (rad/s) for crash debris.
 @export var debris_tumble_max: float = 8.0
-## Seconds before debris bodies are freed. 0 = never.
-@export var debris_lifetime: float = 20.0
+## Seconds before debris bodies are freed. 0 = match wreck_burn_seconds.
+@export var debris_lifetime: float = 0.0
+
+@export_group("Destroyed Wreck")
+## Seconds the destroyed helicopter smokes before the wreck, smoke, and debris disappear.
+@export var wreck_burn_seconds: float = 20.0
+## Initial downward speed applied on death so stale floor state/snapshots cannot leave it hovering.
+@export var wreck_initial_drop_speed: float = 10.0
+## Clamp fall speed to avoid physics spikes in browser builds.
+@export var wreck_terminal_fall_speed: float = 45.0
+## Horizontal drift applied if the helicopter was hovering when destroyed.
+@export var wreck_crash_drift_speed: float = 5.0
+## Random angular speed range used while the wreck falls before impact.
+@export var wreck_tumble_speed_min: float = 1.35
+@export var wreck_tumble_speed_max: float = 2.85
 
 var _active: bool = true
 var _current_rotor_speed: float = 0.0
@@ -105,6 +118,8 @@ func is_locally_driven() -> bool:
 
 
 func _process(delta: float) -> void:
+	if _is_destroyed:
+		return
 	# When the local controller is active, _physics_process drives rotors.
 	if _active:
 		return
@@ -125,6 +140,10 @@ var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 
 
 @onready var _health: HealthComponent = $HealthComponent
 var _is_destroyed: bool = false
+var _spawn_collision_layer: int = 0
+var _spawn_collision_mask: int = 0
+var _wreck_burning: bool = false
+var _wreck_tumble_velocity: Vector3 = Vector3.ZERO
 
 ## Missile meshes collected from the model at _ready (in order).
 var _missiles: Array[MeshInstance3D] = []
@@ -142,6 +161,8 @@ signal reload_finished
 
 
 func _ready() -> void:
+	_spawn_collision_layer = collision_layer
+	_spawn_collision_mask = collision_mask
 	# Prefer explicit NodePath, fall back to name-based search.
 	if main_rotor_path and not main_rotor_path.is_empty():
 		_main_rotor = get_node_or_null(main_rotor_path) as Node3D
@@ -186,32 +207,84 @@ func _on_destroyed(_by_source: int) -> void:
 	if _is_destroyed:
 		return
 	_is_destroyed = true
-	# Zero horizontal velocity — wreck drops straight down, doesn't keep cruising.
-	velocity.x = 0.0
-	velocity.z = 0.0
-	# FORCE physics on. The heli may have been INACTIVE (set_active(false) by
-	# VehicleSwitcher) when the player shot it from the tank — without this,
-	# _physics_process would never run and the wreck would freeze mid-air.
+	_wreck_burning = false
+	_remote_driver_active = false
+	var horizontal_velocity: Vector3 = Vector3(velocity.x, 0.0, velocity.z)
+	if horizontal_velocity.length() < 1.0:
+		var forward: Vector3 = -global_transform.basis.z
+		forward.y = 0.0
+		if forward.length_squared() < 0.001:
+			forward = Vector3.FORWARD
+		horizontal_velocity = forward.normalized() * wreck_crash_drift_speed
+		horizontal_velocity = horizontal_velocity.rotated(Vector3.UP, randf_range(-0.45, 0.45))
+	velocity.x = horizontal_velocity.x
+	velocity.z = horizontal_velocity.z
+	velocity.y = minf(velocity.y, -absf(wreck_initial_drop_speed))
+	_wreck_tumble_velocity = Vector3(
+		randf_range(wreck_tumble_speed_min, wreck_tumble_speed_max) * _random_sign(),
+		randf_range(0.8, 1.9) * _random_sign(),
+		randf_range(wreck_tumble_speed_min, wreck_tumble_speed_max) * _random_sign()
+	)
+	# FORCE physics on. The heli may have been inactive when shot from another
+	# vehicle; the wreck must keep falling even if no one is piloting it.
 	set_physics_process(true)
-	DestructionVFX.spawn_explosion(get_tree().current_scene, global_position + Vector3(0, 1.5, 0))
-	DestructionVFX.apply_charred(self)
-	DestructionVFX.spawn_smoke_fire(self, 1.5)
-	_spawn_crash_debris()
 
 
-## Wreck mode: gravity-only fall + slide, no input, no rotor animation.
+func _random_sign() -> float:
+	return -1.0 if randf() < 0.5 else 1.0
+
+
+## Wreck mode: fall first, then burn only after real ground impact.
 func _wreck_fall(delta: float) -> void:
-	if is_on_floor():
-		velocity = Vector3.ZERO
-	else:
-		velocity.y -= _gravity * delta
+	if _wreck_burning:
+		return
+	_apply_crash_tumble(delta)
+	_animate_crash_rotors(delta)
+	velocity.y = maxf(velocity.y - _gravity * delta, -absf(wreck_terminal_fall_speed))
+	var impact_speed: float = maxf(-velocity.y, 0.0)
 	move_and_slide()
+	if is_on_floor():
+		_start_crash_burn(impact_speed)
+
+
+func _apply_crash_tumble(delta: float) -> void:
+	rotation.x += _wreck_tumble_velocity.x * delta
+	rotation.y += _wreck_tumble_velocity.y * delta
+	rotation.z += _wreck_tumble_velocity.z * delta
+	_wreck_tumble_velocity = _wreck_tumble_velocity.lerp(Vector3.ZERO, clampf(delta * 0.08, 0.0, 0.25))
+
+
+func _animate_crash_rotors(delta: float) -> void:
+	_current_rotor_speed = lerpf(_current_rotor_speed, 0.0, clampf(delta * 0.9, 0.0, 1.0))
+	if _main_rotor:
+		_main_rotor.rotate_object_local(main_rotor_axis, _current_rotor_speed * delta)
+	if _tail_rotor:
+		_tail_rotor.rotate_object_local(tail_rotor_axis, _current_rotor_speed * delta)
+
+
+func _start_crash_burn(_impact_speed: float) -> void:
+	if _wreck_burning:
+		return
+	_wreck_burning = true
+	velocity = Vector3.ZERO
+	_wreck_tumble_velocity = Vector3.ZERO
+	DestructionVFX.spawn_explosion(get_tree().current_scene, global_position + Vector3(0.0, 1.0, 0.0))
+	# Spawn/hide detachable parts before applying the charred overlay. The
+	# Apache rotor uses broad transparent planes; copying it after charred would
+	# turn those planes into giant black cards.
+	_spawn_crash_debris()
+	DestructionVFX.apply_charred(self)
+	DestructionVFX.spawn_smoke_fire(self, 1.1, false, wreck_burn_seconds)
+	_schedule_wreck_hide()
+	set_physics_process(false)
 
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not _active:
 		return
 	if event is InputEventMouseMotion:
+		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+			return
 		var motion: InputEventMouseMotion = event
 		_yaw_target -= motion.relative.x * mouse_sensitivity
 		# Mouse Y tilts the CAMERA only — helicopter body stays level.
@@ -224,13 +297,16 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseButton:
 		var mb: InputEventMouseButton = event
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+			if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+				WebPointerLock.capture_from_user_gesture()
+				return
 			_try_fire_missile()
 	elif event is InputEventKey:
 		var key_event: InputEventKey = event
 		if key_event.pressed and key_event.keycode == KEY_ESCAPE:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		elif key_event.pressed and key_event.keycode == KEY_F1:
-			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+			WebPointerLock.capture_from_user_gesture()
 
 
 ## Returns the camera pitch angle in radians — read by ChaseCamera to tilt
@@ -243,15 +319,24 @@ func get_aim_pitch() -> float:
 ## Once destroyed, physics stays ON so the wreck keeps falling regardless of
 ## whether the player is currently piloting another vehicle.
 func set_active(is_active: bool) -> void:
+	# On the inactive→active edge, re-sync our cached body yaw to whatever
+	# rotation.y currently is. While inactive, vehicle_sync.gd lerps the body
+	# toward the server snapshot — `rotation.y` may have drifted since
+	# [_ready] populated `_yaw_target` / `_yaw_current`. Without this the heli
+	# snaps mid-air to its old yaw (and ChaseCamera, which uses heli body as
+	# yaw_source, ends up offset to the side).
+	if is_active and not _active and not _is_destroyed:
+		_yaw_target = rotation.y
+		_yaw_current = rotation.y
 	_active = is_active
 	if _is_destroyed:
-		set_physics_process(true)
+		set_physics_process(not _wreck_burning)
 		return
 	set_physics_process(is_active)
 	if not is_active:
 		velocity = Vector3.ZERO
 	else:
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		WebPointerLock.capture_for_activation()
 
 
 func apply_network_destroyed() -> void:
@@ -262,10 +347,19 @@ func apply_network_destroyed() -> void:
 
 
 func apply_network_respawned() -> void:
+	visible = true
+	collision_layer = _spawn_collision_layer
+	collision_mask = _spawn_collision_mask
 	_is_destroyed = false
+	_wreck_burning = false
+	_wreck_tumble_velocity = Vector3.ZERO
 	_remote_driver_active = false
 	_current_rotor_speed = 0.0
 	velocity = Vector3.ZERO
+	rotation.x = 0.0
+	rotation.z = 0.0
+	_pitch_tilt_current = 0.0
+	_roll_tilt_current = 0.0
 	if _health != null:
 		_health.reset()
 	_restore_debris_source_visibility()
@@ -502,6 +596,24 @@ func _set_subtree_visible(root: Node, is_visible: bool) -> void:
 		_set_subtree_visible(child, is_visible)
 
 
+func _schedule_wreck_hide() -> void:
+	if wreck_burn_seconds <= 0.0:
+		return
+	get_tree().create_timer(wreck_burn_seconds).timeout.connect(_hide_destroyed_wreck)
+
+
+func _hide_destroyed_wreck() -> void:
+	if not _is_destroyed:
+		return
+	DestructionVFX.clear_vfx(self)
+	DestructionVFX.clear_charred(self)
+	velocity = Vector3.ZERO
+	collision_layer = 0
+	collision_mask = 0
+	visible = false
+	set_physics_process(false)
+
+
 ## Detach helicopter parts as flying RigidBody3D debris on destruction.
 ## Three potential pieces:
 ##   1. Rotor disc — entire main-rotor subtree cloned via spawn_subtree_debris.
@@ -514,22 +626,27 @@ func _set_subtree_visible(root: Node, is_visible: bool) -> void:
 ## Original mesh nodes are hidden so the live helicopter looks like it shed them.
 func _spawn_crash_debris() -> void:
 	var scene_root: Node = get_tree().current_scene
+	var debris_lifetime_to_use: float = debris_lifetime
+	if debris_lifetime_to_use <= 0.0:
+		debris_lifetime_to_use = wreck_burn_seconds
+	var spawn_large_subtrees: bool = not OS.has_feature("web")
 
 	# --- Rotor disc subtree ---
 	if not debris_main_rotor_subtree_name.is_empty():
 		var rotor_node: Node3D = _find_descendant_by_name(self, debris_main_rotor_subtree_name) as Node3D
 		if rotor_node != null:
-			DestructionVFX.spawn_subtree_debris(
-				scene_root,
-				rotor_node,
-				rotor_node.global_transform,
-				self,
-				debris_rotor_mass,
-				debris_upward_vel,
-				debris_h_drift_max,
-				debris_tumble_max,
-				debris_lifetime
-			)
+			if spawn_large_subtrees:
+				DestructionVFX.spawn_subtree_debris(
+					scene_root,
+					rotor_node,
+					rotor_node.global_transform,
+					self,
+					debris_rotor_mass,
+					debris_upward_vel,
+					debris_h_drift_max,
+					debris_tumble_max,
+					debris_lifetime_to_use
+				)
 			# Belt-and-braces: walk the subtree and hide every MeshInstance3D
 			# directly. `rotor_node.visible = false` SHOULD cascade via
 			# is_visible_in_tree(), but GLB imports occasionally put mesh
@@ -561,7 +678,7 @@ func _spawn_crash_debris() -> void:
 			debris_upward_vel,
 			debris_h_drift_max,
 			debris_tumble_max,
-			debris_lifetime
+			debris_lifetime_to_use
 		)
 		blade.visible = false
 
@@ -569,17 +686,18 @@ func _spawn_crash_debris() -> void:
 	if not debris_tail_subtree_name.is_empty():
 		var tail_node: Node3D = _find_descendant_by_name(self, debris_tail_subtree_name) as Node3D
 		if tail_node != null:
-			DestructionVFX.spawn_subtree_debris(
-				scene_root,
-				tail_node,
-				tail_node.global_transform,
-				self,
-				debris_tail_mass,
-				debris_upward_vel,
-				debris_h_drift_max,
-				debris_tumble_max,
-				debris_lifetime
-			)
+			if spawn_large_subtrees:
+				DestructionVFX.spawn_subtree_debris(
+					scene_root,
+					tail_node,
+					tail_node.global_transform,
+					self,
+					debris_tail_mass,
+					debris_upward_vel,
+					debris_h_drift_max,
+					debris_tumble_max,
+					debris_lifetime_to_use
+				)
 			tail_node.visible = false
 			DestructionVFX.hide_visible_meshes(tail_node)
 		else:

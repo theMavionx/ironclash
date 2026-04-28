@@ -22,6 +22,7 @@ class TestClient {
 		this.welcome = null;
 		this.peers_seen = new Set();
 		this.last_peer_pos = new Map();
+		this.last_vehicle_state = new Map();
 		this.snapshots = 0;
 		this.match_states = [];
 		this.vfx_events = [];
@@ -50,6 +51,9 @@ class TestClient {
 				for (const p of msg.players) {
 					this.peers_seen.add(p.id);
 					this.last_peer_pos.set(p.id, p.pos);
+				}
+				for (const v of msg.vehicles ?? []) {
+					this.last_vehicle_state.set(v.id, v);
 				}
 			}
 			else if (msg.t === "match_state") this.match_states.push(msg);
@@ -300,6 +304,21 @@ async function main() {
 		// Red claims the tank.
 		red.send({ t: "vehicle_enter", vehicle_id: "tank" });
 		await sleep(200);
+		console.log("# Vehicle snapshot: tank aim yaw/pitch is replicated");
+		red.send({
+			t: "vehicle_transform",
+			vehicle_id: "tank",
+			pos: [1, 2, 3],
+			rot: [0, 0.4, 0],
+			aim_yaw: 1.25,
+			aim_pitch: -0.33,
+			vel: [0, 0, 0],
+			client_t: Date.now(),
+		});
+		await sleep(150);
+		const tankSnap = blue.last_vehicle_state.get("tank");
+		assert(Math.abs((tankSnap?.aim_yaw ?? 0) - 1.25) < 0.001, `tank aim_yaw replicated (${tankSnap?.aim_yaw})`);
+		assert(Math.abs((tankSnap?.aim_pitch ?? 0) + 0.33) < 0.001, `tank aim_pitch replicated (${tankSnap?.aim_pitch})`);
 		// Now claim a tank-shell hit on blue.
 		const blueDmgBefore = blue.damages.length;
 		red.send({

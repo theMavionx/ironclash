@@ -24,6 +24,10 @@ export const GameEvent = {
 	DroneDestroyed: "drone_destroyed",
 	DroneRespawned: "drone_respawned",
 	MatchEnded: "match_ended",
+	/** Emitted by [match_warmup.gd] every ~16 ms while the warmup scene threads
+	 *  Main.tscn in and prewarms shader pipelines. Drives MatchLoadingOverlay. */
+	MatchLoadingProgress: "match_loading_progress",
+	WarmupReadyForPlay: "warmup_ready_for_play",
 } as const;
 
 export type GameEventName = (typeof GameEvent)[keyof typeof GameEvent];
@@ -109,4 +113,11 @@ export interface VehicleHpPayload {
 	hp: number;
 	max_hp: number;
 	alive: boolean;
+}
+
+export interface MatchLoadingProgressPayload {
+	/** 0..1, monotonically increasing until 1.0 right before scene swap. */
+	progress: number;
+	/** Stage label for the human-readable hint under the progress bar. */
+	stage: "loading_assets" | "compiling_shaders" | "ready";
 }
