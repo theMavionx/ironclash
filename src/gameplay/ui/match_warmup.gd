@@ -32,11 +32,11 @@ extends Node3D
 ## from cache. The Compatibility renderer needs at least one full frame per
 ## prefab to compile pipelines, and repeated shot probes need a little extra
 ## time so two visible frames land before the scene swap.
-@export var min_hold_seconds: float = 11.2
+@export var min_hold_seconds: float = 22.4
 ## Hard ceiling — if Main.tscn doesn't finish loading after this, swap anyway
 ## and let the gameplay scene finish loading on its own. Prevents a soft hang
 ## if threaded loading deadlocks.
-@export var max_hold_seconds: float = 36.0
+@export var max_hold_seconds: float = 72.0
 
 ## How far ahead of the camera the warmup root sits. Far enough that the
 ## whole probe spread remains in-frustum even on narrow browser canvases.
@@ -47,11 +47,13 @@ const _STAGE_COMPILING: String = "compiling_shaders"
 const _STAGE_READY: String = "ready"
 
 const _BLACKOUT_CANVAS_LAYER: int = 128
-const _WARMUP_PROBE_LIFETIME: float = 5.6
-const _WARMUP_SHOT_REPETITIONS: int = 16
-const _WARMUP_PROJECTILE_REPETITIONS: int = 6
-const _WARMUP_DESTRUCTION_REPETITIONS: int = 2
-const _WARMUP_VEHICLE_FIRE_REPETITIONS: int = 4
+const _WARMUP_PROBE_LIFETIME: float = 11.2
+const _WARMUP_SHOT_REPETITIONS: int = 32
+const _WARMUP_PROJECTILE_REPETITIONS: int = 12
+const _WARMUP_DESTRUCTION_REPETITIONS: int = 4
+const _WARMUP_VEHICLE_FIRE_REPETITIONS: int = 8
+const _WARMUP_DELAYED_SHOT_BURSTS: int = 6
+const _WARMUP_SHOTS_PER_DELAYED_BURST: int = 4
 
 @onready var _camera: Camera3D = $Camera3D
 @onready var _warmup_root: Node3D = $WarmupRoot
@@ -369,12 +371,16 @@ func _spawn_actual_vehicle_destruction_probes() -> void:
 			_warmup_root.add_child(inst)
 			if inst is Node3D:
 				var n: Node3D = inst as Node3D
-				var repeat_offset: Vector3 = Vector3(0.18 * float(repeat_index), 0.0, -0.12 * float(repeat_index))
+				var repeat_offset: Vector3 = Vector3(
+					0.22 * float(repeat_index),
+					0.04 * float(repeat_index % 2),
+					-0.18 * float(repeat_index)
+				)
 				var base_pos: Vector3 = data["pos"]
 				n.position = base_pos + repeat_offset
 				var s: float = float(data["scale"])
 				n.scale = Vector3(s, s, s)
-			var run_timer: SceneTreeTimer = get_tree().create_timer(0.14 + 0.24 * float(repeat_index))
+			var run_timer: SceneTreeTimer = get_tree().create_timer(0.35 + 1.15 * float(repeat_index))
 			run_timer.timeout.connect(_run_actual_vehicle_destruction_probe.bind(
 				inst,
 				"%s #%d" % [String(data["label"]), repeat_index + 1]
@@ -490,9 +496,33 @@ func _spawn_player_shot_probe() -> void:
 			null
 		)
 
+	for burst_index: int in range(_WARMUP_DELAYED_SHOT_BURSTS):
+		var timer: SceneTreeTimer = get_tree().create_timer(0.28 + 0.42 * float(burst_index))
+		timer.timeout.connect(_run_player_shot_probe_burst.bind(muzzle, origin, base_aim, burst_index))
+
 	_schedule_free(muzzle, _WARMUP_PROBE_LIFETIME)
 	_schedule_free(tracer_pool, _WARMUP_PROBE_LIFETIME)
 	_record_probe_time("AR shots x%d (pooled + remote fallback)" % _WARMUP_SHOT_REPETITIONS, Time.get_ticks_msec() - t)
+
+
+func _run_player_shot_probe_burst(muzzle: Node3D, origin: Vector3, base_aim: Vector3, burst_index: int) -> void:
+	if muzzle == null or not is_instance_valid(muzzle) or not is_instance_valid(_warmup_root):
+		return
+	for shot_index: int in range(_WARMUP_SHOTS_PER_DELAYED_BURST):
+		var i: int = burst_index * _WARMUP_SHOTS_PER_DELAYED_BURST + shot_index
+		var phase: float = float(i) / float(maxi(_WARMUP_DELAYED_SHOT_BURSTS * _WARMUP_SHOTS_PER_DELAYED_BURST - 1, 1))
+		var side: float = lerpf(-0.42, 0.42, phase)
+		var aim: Vector3 = (base_aim + Vector3(side * 0.18, 0.05 * sin(float(i) * 0.73), 0.0)).normalized()
+		muzzle.global_position = origin + Vector3(-0.28 + side * 0.38, 0.06, -0.02 * float(shot_index))
+		PlayerFireVFX.spawn_ar_shot(_warmup_root, muzzle, origin, aim, null, 0, 12.0)
+		PlayerFireVFX.spawn_ar_visuals_from_world(
+			_warmup_root,
+			origin + Vector3(0.24 + side, -0.04, 0.02 * float(shot_index)),
+			origin,
+			aim,
+			12.0,
+			null
+		)
 
 
 func _spawn_vehicle_fire_probes() -> void:
@@ -525,7 +555,7 @@ func _spawn_tank_fire_probe() -> void:
 	if tank.has_method("set_active"):
 		tank.call("set_active", false)
 	for i: int in range(_WARMUP_VEHICLE_FIRE_REPETITIONS):
-		var timer: SceneTreeTimer = get_tree().create_timer(0.35 + 0.34 * float(i))
+		var timer: SceneTreeTimer = get_tree().create_timer(0.45 + 0.42 * float(i))
 		timer.timeout.connect(_run_tank_fire_probe.bind(tank))
 	_schedule_free(tank, _WARMUP_PROBE_LIFETIME * 2.0)
 
@@ -556,7 +586,7 @@ func _spawn_helicopter_fire_probe() -> void:
 	if heli.has_method("set_active"):
 		heli.call("set_active", false)
 	for i: int in range(_WARMUP_VEHICLE_FIRE_REPETITIONS):
-		var timer: SceneTreeTimer = get_tree().create_timer(0.30 + 0.28 * float(i))
+		var timer: SceneTreeTimer = get_tree().create_timer(0.40 + 0.38 * float(i))
 		timer.timeout.connect(_run_helicopter_fire_probe.bind(heli))
 	_schedule_free(heli, _WARMUP_PROBE_LIFETIME * 2.0)
 
@@ -761,13 +791,21 @@ func _spawn_projectile_scene_probes() -> void:
 			push_warning("[warmup] failed to load projectile scene: %s" % p)
 			continue
 		for i: int in range(_WARMUP_PROJECTILE_REPETITIONS):
-			var inst: Node = packed.instantiate()
-			_warmup_root.add_child(inst)
-			if inst is Node3D:
-				(inst as Node3D).position = Vector3(x + 0.12 * float(i), -0.2, -0.08 * float(i))
-			_schedule_free(inst, _WARMUP_PROBE_LIFETIME)
+			_stage_projectile_probe(packed, x, i, 0.0)
+			var timer: SceneTreeTimer = get_tree().create_timer(0.18 + 0.16 * float(i))
+			timer.timeout.connect(_stage_projectile_probe.bind(packed, x + 0.04, i, -0.24))
 		x += 0.3
 		_record_probe_time("%s x%d" % [p.get_file(), _WARMUP_PROJECTILE_REPETITIONS], Time.get_ticks_msec() - t)
+
+
+func _stage_projectile_probe(packed: PackedScene, x: float, index: int, y: float) -> void:
+	if packed == null or not is_instance_valid(_warmup_root):
+		return
+	var inst: Node = packed.instantiate()
+	_warmup_root.add_child(inst)
+	if inst is Node3D:
+		(inst as Node3D).position = Vector3(x + 0.12 * float(index), -0.2 + y, -0.08 * float(index))
+	_schedule_free(inst, _WARMUP_PROBE_LIFETIME)
 
 
 ## Briefly instance a vehicle scene so its static materials (tread shader,
