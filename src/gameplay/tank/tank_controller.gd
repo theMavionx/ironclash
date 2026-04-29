@@ -65,6 +65,15 @@ signal fired_with_aim(spawn_origin: Vector3, aim_dir: Vector3)
 @export var tank_floor_snap_length: float = 0.55
 @export_range(0.0, 89.0, 1.0, "degrees") var tank_floor_max_angle_deg: float = 62.0
 @export var tank_safe_margin: float = 0.025
+@export_group("Slope Alignment")
+@export var align_hull_to_ground: bool = true
+@export var slope_probe_forward_extent: float = 1.08
+@export var slope_probe_side_extent: float = 0.58
+@export var slope_probe_up: float = 1.4
+@export var slope_probe_down: float = 5.0
+@export_flags_3d_physics var slope_probe_collision_mask: int = 1
+@export_range(0.0, 89.0, 1.0, "degrees") var slope_max_visual_tilt_deg: float = 58.0
+@export var slope_alignment_speed: float = 12.0
 
 @export_group("Aiming")
 ## Turret mesh — visual reference only (used for camera yaw_source).
@@ -186,6 +195,7 @@ var _yaw_delta: float = 0.0
 var _pitch_delta: float = 0.0
 var _hull_yaw: float = 0.0
 var _current_turn_rate: float = 0.0
+var _ground_up: Vector3 = Vector3.UP
 
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
 var _active: bool = true
@@ -512,9 +522,13 @@ func _physics_process(delta: float) -> void:
 		_current_turn_rate = move_toward(_current_turn_rate, target_turn_rate, turn_acceleration * delta)
 		if absf(_current_turn_rate) > 0.0001:
 			_hull_yaw -= _current_turn_rate * delta
-			rotation.y = _hull_yaw
 
 		var forward: Vector3 = _get_forward_vector()
+		forward.y = 0.0
+		if forward.length_squared() < 0.0001:
+			forward = _get_flat_forward_from_yaw()
+		else:
+			forward = forward.normalized()
 		var body_speed: float = desired_speed * body_speed_scale
 		velocity.x = forward.x * body_speed
 		velocity.z = forward.z * body_speed
@@ -525,6 +539,7 @@ func _physics_process(delta: float) -> void:
 		velocity.y = 0.0
 
 	move_and_slide()
+	_update_slope_alignment(delta)
 
 	_update_tread_marks()
 
@@ -714,6 +729,14 @@ func _get_tank_forward_local() -> Vector3:
 	return Vector3(0, 0, -1)
 
 
+func _get_flat_forward_from_yaw() -> Vector3:
+	var forward: Vector3 = Basis(Vector3.UP, _hull_yaw) * _get_tank_forward_local()
+	forward.y = 0.0
+	if forward.length_squared() < 0.0001:
+		return Vector3.FORWARD
+	return forward.normalized()
+
+
 ## Returns the world-space forward vector for the currently selected ForwardAxis.
 func _get_forward_vector() -> Vector3:
 	match forward_axis:
@@ -726,6 +749,153 @@ func _get_forward_vector() -> Vector3:
 		ForwardAxis.POS_X:
 			return global_transform.basis.x
 	return -global_transform.basis.z
+
+
+func _update_slope_alignment(delta: float) -> void:
+	if not align_hull_to_ground:
+		_apply_hull_basis(Vector3.UP)
+		return
+
+	var target_up: Vector3 = _sample_tread_ground_up()
+	var blend: float = clampf(slope_alignment_speed * delta, 0.0, 1.0)
+	_ground_up = _ground_up.lerp(target_up, blend).normalized()
+	_apply_hull_basis(_ground_up)
+
+
+func _sample_tread_ground_up() -> Vector3:
+	var world: World3D = get_world_3d()
+	if world == null:
+		return Vector3.UP
+	var space: PhysicsDirectSpaceState3D = world.direct_space_state
+	if space == null:
+		return Vector3.UP
+
+	var forward: Vector3 = _get_flat_forward_from_yaw()
+	var right: Vector3 = forward.cross(Vector3.UP)
+	if right.length_squared() < 0.0001:
+		right = Vector3.RIGHT
+	else:
+		right = right.normalized()
+
+	var base: Vector3 = global_position
+	var offsets: Array[Vector3] = [
+		forward * slope_probe_forward_extent - right * slope_probe_side_extent,
+		forward * slope_probe_forward_extent + right * slope_probe_side_extent,
+		-forward * slope_probe_forward_extent - right * slope_probe_side_extent,
+		-forward * slope_probe_forward_extent + right * slope_probe_side_extent,
+	]
+	var hits: Array[Dictionary] = []
+	var hit_positions: Array[Vector3] = []
+	var normal_sum: Vector3 = Vector3.ZERO
+	for offset: Vector3 in offsets:
+		var from_pos: Vector3 = base + offset + Vector3.UP * slope_probe_up
+		var to_pos: Vector3 = base + offset - Vector3.UP * slope_probe_down
+		var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+			from_pos,
+			to_pos,
+			slope_probe_collision_mask
+		)
+		query.collide_with_areas = false
+		query.exclude = [get_rid()]
+		var hit: Dictionary = space.intersect_ray(query)
+		if hit.is_empty():
+			continue
+		hits.append(hit)
+		hit_positions.append(hit.get("position", base))
+		normal_sum += (hit.get("normal", Vector3.UP) as Vector3)
+
+	if hits.is_empty():
+		return Vector3.UP
+
+	var plane_up: Vector3 = Vector3.ZERO
+	if hits.size() >= 4:
+		var front_left: Vector3 = hit_positions[0]
+		var front_right: Vector3 = hit_positions[1]
+		var rear_left: Vector3 = hit_positions[2]
+		var rear_right: Vector3 = hit_positions[3]
+		var across: Vector3 = ((front_right + rear_right) * 0.5) - ((front_left + rear_left) * 0.5)
+		var along: Vector3 = ((front_left + front_right) * 0.5) - ((rear_left + rear_right) * 0.5)
+		if across.length_squared() > 0.0001 and along.length_squared() > 0.0001:
+			plane_up = across.cross(along).normalized()
+			if plane_up.dot(Vector3.UP) < 0.0:
+				plane_up = -plane_up
+	elif hit_positions.size() >= 3:
+		plane_up = _plane_up_from_points(hit_positions)
+
+	var normal_up: Vector3 = normal_sum.normalized()
+	var target_up: Vector3 = normal_up
+	if plane_up.length_squared() > 0.0001:
+		target_up = (plane_up * 0.7 + normal_up * 0.3).normalized()
+	return _clamp_ground_up(target_up)
+
+
+func _plane_up_from_points(points: Array[Vector3]) -> Vector3:
+	var best: Vector3 = Vector3.ZERO
+	var best_len: float = 0.0
+	for i: int in points.size():
+		for j: int in range(i + 1, points.size()):
+			for k: int in range(j + 1, points.size()):
+				var a: Vector3 = points[i]
+				var b: Vector3 = points[j]
+				var c: Vector3 = points[k]
+				var normal: Vector3 = (b - a).cross(c - a)
+				var len_sq: float = normal.length_squared()
+				if len_sq > best_len:
+					best = normal
+					best_len = len_sq
+	if best_len <= 0.0001:
+		return Vector3.ZERO
+	best = best.normalized()
+	if best.dot(Vector3.UP) < 0.0:
+		best = -best
+	return best
+
+
+func _clamp_ground_up(up: Vector3) -> Vector3:
+	if up.length_squared() < 0.0001:
+		return Vector3.UP
+	up = up.normalized()
+	var max_angle: float = deg_to_rad(slope_max_visual_tilt_deg)
+	var angle: float = Vector3.UP.angle_to(up)
+	if angle <= max_angle:
+		return up
+	var axis: Vector3 = Vector3.UP.cross(up)
+	if axis.length_squared() < 0.0001:
+		return Vector3.UP
+	return Vector3.UP.rotated(axis.normalized(), max_angle).normalized()
+
+
+func _apply_hull_basis(up: Vector3) -> void:
+	var forward: Vector3 = _get_flat_forward_from_yaw()
+	forward = (forward - up * forward.dot(up))
+	if forward.length_squared() < 0.0001:
+		forward = _get_flat_forward_from_yaw()
+	else:
+		forward = forward.normalized()
+
+	var basis: Basis
+	match forward_axis:
+		ForwardAxis.NEG_Z:
+			var z_axis: Vector3 = -forward
+			var x_axis: Vector3 = up.cross(z_axis).normalized()
+			basis = Basis(x_axis, up, z_axis)
+		ForwardAxis.POS_Z:
+			var z_axis: Vector3 = forward
+			var x_axis: Vector3 = up.cross(z_axis).normalized()
+			basis = Basis(x_axis, up, z_axis)
+		ForwardAxis.NEG_X:
+			var x_axis: Vector3 = -forward
+			var z_axis: Vector3 = x_axis.cross(up).normalized()
+			basis = Basis(x_axis, up, z_axis)
+		ForwardAxis.POS_X:
+			var x_axis: Vector3 = forward
+			var z_axis: Vector3 = x_axis.cross(up).normalized()
+			basis = Basis(x_axis, up, z_axis)
+		_:
+			var z_axis: Vector3 = -forward
+			var x_axis: Vector3 = up.cross(z_axis).normalized()
+			basis = Basis(x_axis, up, z_axis)
+	global_basis = basis.orthonormalized()
 
 
 func _animate_wheels(linear_speed: float, delta: float) -> void:
