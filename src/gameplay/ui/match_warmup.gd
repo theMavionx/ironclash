@@ -32,11 +32,11 @@ extends Node3D
 ## from cache. The Compatibility renderer needs at least one full frame per
 ## prefab to compile pipelines, and repeated shot probes need a little extra
 ## time so two visible frames land before the scene swap.
-@export var min_hold_seconds: float = 44.8
+@export var min_hold_seconds: float = 15.0
 ## Hard ceiling — if Main.tscn doesn't finish loading after this, swap anyway
 ## and let the gameplay scene finish loading on its own. Prevents a soft hang
 ## if threaded loading deadlocks.
-@export var max_hold_seconds: float = 144.0
+@export var max_hold_seconds: float = 15.0
 
 ## How far ahead of the camera the warmup root sits. Far enough that the
 ## whole probe spread remains in-frustum even on narrow browser canvases.
@@ -47,7 +47,7 @@ const _STAGE_COMPILING: String = "compiling_shaders"
 const _STAGE_READY: String = "ready"
 
 const _BLACKOUT_CANVAS_LAYER: int = 128
-const _WARMUP_PROBE_LIFETIME: float = 22.4
+const _WARMUP_PROBE_LIFETIME: float = 15.0
 const _WARMUP_SHOT_REPETITIONS: int = 32
 const _WARMUP_PROJECTILE_REPETITIONS: int = 12
 const _WARMUP_DESTRUCTION_REPETITIONS: int = 4
