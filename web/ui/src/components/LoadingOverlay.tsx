@@ -18,7 +18,7 @@ interface Props {
 type Phase = "engine" | "warmup" | "done";
 
 const ENGINE_FAKE_CRAWL_MS: number = 9000;
-const WARMUP_FAKE_CRAWL_MS: number = 15000;
+const WARMUP_FAKE_CRAWL_MS: number = 8000;
 const ENGINE_CAP_BEFORE_READY: number = 0.985;
 const WARMUP_CAP_BEFORE_READY: number = 0.985;
 
