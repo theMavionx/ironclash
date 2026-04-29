@@ -450,9 +450,18 @@ func _start_vehicle_destroyed_vfx(vehicle_id: String, vehicle: Node3D) -> void:
 		return
 	_vehicle_vfx_started[vehicle_id] = true
 
+	var vehicle_key: String = vehicle_id.to_lower()
+	var controller_handles_destroyed: bool = vehicle.has_method("apply_network_destroyed")
 	_apply_network_vehicle_destroyed(vehicle)
 	var already_has_vfx: bool = vehicle.get_node_or_null("_DestructionVFX") != null
-	var is_drone: bool = vehicle_id.to_lower() == "drone"
+	var is_drone: bool = vehicle_key == "drone"
+	var is_helicopter: bool = vehicle_key == "helicopter" or vehicle_key == "heli"
+	# Controller-owned destruction may already have spawned attached VFX.
+	# A second generic charred pass would also hit those smoke MeshInstances,
+	# turning their transparent cards into black quads. Drone/heli also have
+	# transparent rotor cards that their controllers hide at the right moment.
+	if controller_handles_destroyed and (already_has_vfx or is_drone or is_helicopter):
+		return
 	if not is_drone:
 		DestructionVFX.apply_charred(vehicle)
 	if not already_has_vfx:

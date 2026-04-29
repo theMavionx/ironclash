@@ -69,6 +69,18 @@ static func _should_use_authored_shaders() -> bool:
 	return true
 
 
+static func _queue_free_instance(instance_id: int) -> void:
+	var obj: Object = instance_from_id(instance_id)
+	if obj is Node:
+		(obj as Node).queue_free()
+
+
+static func _set_instance_property(instance_id: int, property_name: StringName, value: Variant) -> void:
+	var obj: Object = instance_from_id(instance_id)
+	if obj != null:
+		obj.set(property_name, value)
+
+
 ## Apply the charred overlay to every MeshInstance3D under [param vehicle].
 ## Idempotent — re-applying replaces the previous overlay with a fresh instance.
 static func apply_charred(vehicle: Node, skip_alpha_cutouts: bool = true) -> void:
@@ -85,7 +97,7 @@ static func apply_charred(vehicle: Node, skip_alpha_cutouts: bool = true) -> voi
 		if skip_alpha_cutouts and _mesh_uses_alpha_cutout(m):
 			return
 		m.material_overlay = mat
-	)
+	, true)
 
 
 ## Remove the charred overlay from all meshes under [param vehicle].
@@ -141,7 +153,9 @@ static func spawn_smoke_fire(
 		root.add_child(smoke)
 
 	if auto_free_after > 0.0 and root.is_inside_tree():
-		root.get_tree().create_timer(auto_free_after).timeout.connect(root.queue_free)
+		root.get_tree().create_timer(auto_free_after).timeout.connect(
+			_queue_free_instance.bind(root.get_instance_id())
+		)
 	return root
 
 
@@ -292,13 +306,15 @@ static func spawn_turret_debris(
 
 	# Enable ground collision after 0.3s — debris is well clear of hull by then.
 	var enable_col_timer: SceneTreeTimer = world_root.get_tree().create_timer(0.3)
-	enable_col_timer.timeout.connect(debris.set.bind("collision_mask", 0b001))
+	enable_col_timer.timeout.connect(
+		_set_instance_property.bind(debris.get_instance_id(), &"collision_mask", 0b001)
+	)
 
 	# self_destruct_after <= 0 → debris stays forever (wreck persists).
 	# Positive value schedules a queue_free after that many seconds.
 	if self_destruct_after > 0.0:
 		var timer: SceneTreeTimer = world_root.get_tree().create_timer(self_destruct_after)
-		timer.timeout.connect(debris.queue_free)
+		timer.timeout.connect(_queue_free_instance.bind(debris.get_instance_id()))
 
 	return debris
 
@@ -1346,7 +1362,7 @@ static func spawn_explosion(world_root: Node, position_world: Vector3, include_f
 	# returns null and the light would stay at energy=18 forever.
 	var tween: Tween = flash_root.create_tween()
 	tween.tween_property(light, "light_energy", 0.0, 0.25).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
-	tween.tween_callback(flash_root.queue_free)
+	tween.tween_callback(_queue_free_instance.bind(flash_root.get_instance_id()))
 
 	if include_fireball:
 		_spawn_explosion_fireball(world_root, position_world)
@@ -1367,7 +1383,9 @@ static func _spawn_explosion_fireball(world_root: Node, position_world: Vector3)
 	var burst: Node3D = _build_explosion_fireball()
 	world_root.add_child(burst)
 	burst.global_position = position_world
-	world_root.get_tree().create_timer(0.9).timeout.connect(burst.queue_free)
+	world_root.get_tree().create_timer(0.9).timeout.connect(
+		_queue_free_instance.bind(burst.get_instance_id())
+	)
 
 
 static func _build_explosion_fireball() -> Node3D:
@@ -1567,22 +1585,30 @@ static func _build_web_shader_spark_burst() -> Node3D:
 # Mesh walker
 # ---------------------------------------------------------------------------
 
-static func _walk_meshes(root: Node, fn: Callable) -> void:
+static func _walk_meshes(root: Node, fn: Callable, skip_vfx_nodes: bool = false) -> void:
+	if skip_vfx_nodes and root.name == _VFX_NODE_NAME:
+		return
 	if root is MeshInstance3D:
 		fn.call(root as MeshInstance3D)
 	for child: Node in root.get_children():
-		_walk_meshes(child, fn)
+		_walk_meshes(child, fn, skip_vfx_nodes)
 
 
 static func _mesh_uses_alpha_cutout(mesh_instance: MeshInstance3D) -> bool:
-	if mesh_instance == null or mesh_instance.mesh == null:
+	if mesh_instance == null:
+		return false
+	var mesh: Mesh = mesh_instance.mesh
+	if mesh == null:
 		return false
 	if mesh_instance.transparency > 0.001:
 		return true
 	if _material_uses_alpha_cutout(mesh_instance.material_override):
 		return true
-	for surface: int in range(mesh_instance.mesh.get_surface_count()):
-		if _material_uses_alpha_cutout(mesh_instance.get_active_material(surface)):
+	var surface_count: int = mesh.get_surface_count()
+	for surface: int in range(surface_count):
+		if _material_uses_alpha_cutout(mesh_instance.get_surface_override_material(surface)):
+			return true
+		if _material_uses_alpha_cutout(mesh.surface_get_material(surface)):
 			return true
 	return false
 
@@ -1656,7 +1682,9 @@ static func spawn_static_mesh_debris(
 		mesh_copy.global_transform = source_mesh.global_transform
 	_launch_debris(body, upward_vel, h_drift_max, tumble_max)
 	if lifetime > 0.0:
-		world_root.get_tree().create_timer(lifetime).timeout.connect(body.queue_free)
+		world_root.get_tree().create_timer(lifetime).timeout.connect(
+			_queue_free_instance.bind(body.get_instance_id())
+		)
 	return body
 
 
@@ -1712,7 +1740,9 @@ static func spawn_subtree_debris(
 		body.add_collision_exception_with(collision_exception)
 	_launch_debris(body, upward_vel, h_drift_max, tumble_max)
 	if lifetime > 0.0:
-		world_root.get_tree().create_timer(lifetime).timeout.connect(body.queue_free)
+		world_root.get_tree().create_timer(lifetime).timeout.connect(
+			_queue_free_instance.bind(body.get_instance_id())
+		)
 	return body
 
 
@@ -1812,4 +1842,6 @@ static func _launch_debris(
 	# is_instance_valid guard: body may already be freed if the scene is torn
 	# down during the 0.3 s window (e.g. scene reload mid-game).
 	var tree: SceneTree = body.get_tree()
-	tree.create_timer(0.3).timeout.connect(body.set.bind("collision_mask", 0b001))
+	tree.create_timer(0.3).timeout.connect(
+		_set_instance_property.bind(body.get_instance_id(), &"collision_mask", 0b001)
+	)

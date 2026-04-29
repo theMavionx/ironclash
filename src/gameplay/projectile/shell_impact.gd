@@ -15,6 +15,12 @@ extends Node3D
 var _timer: float = 0.0
 
 
+func _queue_free_instance(instance_id: int) -> void:
+	var obj: Object = instance_from_id(instance_id)
+	if obj is Node:
+		(obj as Node).queue_free()
+
+
 func _ready() -> void:
 	if OS.has_feature("web"):
 		_flash.emitting = false
@@ -52,4 +58,6 @@ func _spawn_web_flash() -> void:
 	flash.name = "WebImpactFlash"
 	flash.mesh = sphere
 	add_child(flash)
-	get_tree().create_timer(0.12).timeout.connect(flash.queue_free)
+	get_tree().create_timer(0.12).timeout.connect(
+		_queue_free_instance.bind(flash.get_instance_id())
+	)

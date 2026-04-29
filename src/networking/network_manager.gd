@@ -91,14 +91,16 @@ func _load_config() -> NetworkConfig:
 # ---------------------------------------------------------------------------
 
 func _on_ui_play(_payload: Dictionary) -> void:
-	if _socket != null:
-		var s: int = _socket.get_ready_state()
-		if s == WebSocketPeer.STATE_OPEN or s == WebSocketPeer.STATE_CONNECTING:
-			return
 	connect_to_server()
 
 
 func connect_to_server(url_override: String = "") -> void:
+	if _socket != null:
+		var existing_state: int = _socket.get_ready_state()
+		if existing_state == WebSocketPeer.STATE_OPEN or existing_state == WebSocketPeer.STATE_CONNECTING:
+			return
+		_socket.close()
+		_socket = null
 	var url: String = url_override if url_override != "" else config.client_url
 	_socket = WebSocketPeer.new()
 	# Default 64 KB is too small — when the menu→Main scene transition stalls

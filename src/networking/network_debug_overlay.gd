@@ -25,6 +25,9 @@ var _connection_state: String = "init"
 
 func _ready() -> void:
 	layer = 100  # above HUD
+	if OS.has_feature("web"):
+		visible = false
+		return
 	_build_ui()
 	if not _has_network_manager():
 		_label.text = "[no NetworkManager autoload]"
@@ -35,7 +38,7 @@ func _ready() -> void:
 	NetworkManager.snapshot_received.connect(_on_snapshot)
 	NetworkManager.latency_updated.connect(_on_latency)
 	NetworkManager.snapshot_rate_updated.connect(_on_snap_rate)
-	visible = true
+	visible = false
 
 
 func _has_network_manager() -> bool:
@@ -63,6 +66,8 @@ func _build_ui() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if OS.has_feature("web"):
+		return
 	if event is InputEventKey:
 		var k: InputEventKey = event
 		if k.pressed and not k.echo and k.keycode == _TOGGLE_ACTION_KEY:

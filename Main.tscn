@@ -1,4 +1,4 @@
-[gd_scene load_steps=49 format=3 uid="uid://c8j7f5yqg2bbp"]
+[gd_scene load_steps=48 format=3 uid="uid://c8j7f5yqg2bbp"]
 
 [ext_resource type="PackedScene" uid="uid://ctank00000001" path="res://scenes/tank/tank.tscn" id="1_tank"]
 [ext_resource type="Script" path="res://src/gameplay/camera/chase_camera.gd" id="2_pkq0h"]
@@ -21,7 +21,6 @@
 [ext_resource type="Script" path="res://src/networking/world_replicator.gd" id="17_replicator"]
 [ext_resource type="Script" path="res://src/networking/vehicle_sync.gd" id="18_vehsync"]
 [ext_resource type="Script" path="res://src/networking/network_debug_overlay.gd" id="19_netdbg"]
-[ext_resource type="PackedScene" uid="uid://df4o0r1pth413" path="res://scenes/debug/red_sphere_marker.tscn" id="20_redsphere"]
 [ext_resource type="Texture2D" uid="uid://f31buqbfaysj" path="res://textures/graund_normal.png" id="normal_1"]
 [ext_resource type="Texture2D" uid="uid://cbmj63jdv741a" path="res://textures/maountines_normal.png" id="normal_2"]
 [ext_resource type="Texture2D" uid="uid://bqmaekjykccnx" path="res://textures/road_normal.png" id="normal_3"]
@@ -272,6 +271,3 @@ material = SubResource("Terrain3DMaterial_3ae8t")
 assets = SubResource("Terrain3DAssets_sfo7h")
 top_level = true
 metadata/_edit_lock_ = true
-
-[node name="RedSphereMarker" parent="." instance=ExtResource("20_redsphere")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 5, 0)

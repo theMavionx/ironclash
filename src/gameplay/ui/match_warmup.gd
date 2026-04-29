@@ -32,11 +32,11 @@ extends Node3D
 ## from cache. The Compatibility renderer needs at least one full frame per
 ## prefab to compile pipelines, and repeated shot probes need a little extra
 ## time so two visible frames land before the scene swap.
-@export var min_hold_seconds: float = 5.6
+@export var min_hold_seconds: float = 11.2
 ## Hard ceiling — if Main.tscn doesn't finish loading after this, swap anyway
 ## and let the gameplay scene finish loading on its own. Prevents a soft hang
 ## if threaded loading deadlocks.
-@export var max_hold_seconds: float = 28.0
+@export var max_hold_seconds: float = 36.0
 
 ## How far ahead of the camera the warmup root sits. Far enough that the
 ## whole probe spread remains in-frustum even on narrow browser canvases.
@@ -47,7 +47,7 @@ const _STAGE_COMPILING: String = "compiling_shaders"
 const _STAGE_READY: String = "ready"
 
 const _BLACKOUT_CANVAS_LAYER: int = 128
-const _WARMUP_PROBE_LIFETIME: float = 3.2
+const _WARMUP_PROBE_LIFETIME: float = 5.6
 const _WARMUP_SHOT_REPETITIONS: int = 16
 const _WARMUP_PROJECTILE_REPETITIONS: int = 6
 const _WARMUP_DESTRUCTION_REPETITIONS: int = 2
@@ -395,6 +395,7 @@ func _run_actual_vehicle_destruction_probe(inst: Node, label: String) -> void:
 		DestructionVFX.spawn_explosion(get_tree().current_scene, n.global_position + Vector3(0.0, 0.4, 0.0))
 		DestructionVFX.apply_charred(n)
 		DestructionVFX.spawn_smoke_fire(n, 0.5, true, _WARMUP_PROBE_LIFETIME)
+	_hide_null_mesh_instances(inst)
 	print("[warmup]   actual destruction probe ran: %s" % label)
 
 
@@ -985,11 +986,25 @@ func _spawn_grass_probe() -> void:
 
 
 func _schedule_free(node: Node, after_seconds: float) -> void:
-	# Connect directly to the node method instead of a GDScript lambda. On web,
-	# lambdas that outlive the warmup scene can report "Lambda capture at index
-	# 0 was freed" during the swap to Main.tscn.
+	# Bind by instance id instead of a node Callable. Warmup probes can be freed
+	# as a subtree before their individual timers fire during scene transition.
 	var t: SceneTreeTimer = get_tree().create_timer(after_seconds)
-	t.timeout.connect(node.queue_free)
+	t.timeout.connect(_queue_free_instance.bind(node.get_instance_id()))
+
+
+func _queue_free_instance(instance_id: int) -> void:
+	var obj: Object = instance_from_id(instance_id)
+	if obj is Node:
+		(obj as Node).queue_free()
+
+
+func _hide_null_mesh_instances(root: Node) -> void:
+	if root is MeshInstance3D:
+		var mi: MeshInstance3D = root as MeshInstance3D
+		if mi.mesh == null:
+			mi.visible = false
+	for child: Node in root.get_children():
+		_hide_null_mesh_instances(child)
 
 
 func _switch_to_main() -> void:

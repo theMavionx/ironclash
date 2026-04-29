@@ -158,6 +158,28 @@ func get_stamina() -> float:
 func is_sprint_locked_out() -> bool:
 	return _sprint_locked_out
 
+
+func get_interaction_position() -> Vector3:
+	return _body.global_position if _body != null else global_position
+
+
+## Move the infantry body without resetting health/stamina. Used when leaving
+## vehicles so the player exits near the vehicle instead of snapping back to
+## the old entry point.
+func place_at(world_position: Vector3, facing_yaw: float = 0.0) -> void:
+	if _body != null:
+		_body.global_position = world_position
+		_body.velocity = Vector3.ZERO
+	_yaw = facing_yaw
+	_pitch = 0.0
+	_mouse_delta = Vector2.ZERO
+	_mouse_delta_smoothed = Vector2.ZERO
+	_wants_jump = false
+	if _body != null:
+		_body.rotation = Vector3(0.0, _yaw, 0.0)
+	_sync_camera_pivot()
+
+
 ## Enable/disable controller. Disabled = in vehicle / dead / match not ACTIVE.
 func set_active(is_active: bool) -> void:
 	if _active == is_active:

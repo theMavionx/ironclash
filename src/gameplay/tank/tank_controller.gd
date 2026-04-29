@@ -1,6 +1,8 @@
 class_name TankController
 extends CharacterBody3D
 
+const _VISUAL_AABB_COLLIDERS := preload("res://src/gameplay/vehicle/visual_aabb_colliders.gd")
+
 ## Basic tank drive controller.
 ## Reads forward/turn input, moves the body, rotates wheels, scrolls tread UVs,
 ## aims turret and barrel with the mouse, and fires shells on left-click.
@@ -140,6 +142,15 @@ signal fired_with_aim(spawn_origin: Vector3, aim_dir: Vector3)
 ## Seconds the destroyed tank smokes before the wreck, smoke, and debris disappear.
 @export var wreck_burn_seconds: float = 20.0
 
+@export_group("Collision AABB")
+## Build runtime BoxShape3D colliders from the visual mesh AABBs instead of
+## using the old single broad fallback shape authored in the scene.
+@export var rebuild_collision_from_visual_aabb: bool = true
+@export var collision_aabb_padding: Vector3 = Vector3(0.12, 0.08, 0.12)
+@export var collision_aabb_min_size: Vector3 = Vector3(0.22, 0.18, 0.22)
+@export var collision_aabb_max_shapes: int = 18
+@export var collision_aabb_ignore_names: PackedStringArray = []
+
 # ---------------------------------------------------------------------------
 # Private variables
 # ---------------------------------------------------------------------------
@@ -178,6 +189,9 @@ var _fire_requested: bool = false
 var _tread_distance_acc: float = 0.0
 ## Tank's horizontal position last physics tick — diff drives the accumulator.
 var _last_tread_pos: Vector3 = Vector3.ZERO
+## Incremented on destroy/respawn so stale wreck timers from the previous life
+## cannot hide a freshly respawned tank.
+var _destruction_generation: int = 0
 ## FIFO of currently-alive tread mark nodes (oldest first). Holds Decal on
 ## desktop / Forward+ / Mobile and MeshInstance3D quads on web (Compatibility
 ## renderer doesn't support Decals — they silently render nothing).
@@ -266,6 +280,7 @@ func apply_network_destroyed() -> void:
 
 
 func apply_network_respawned() -> void:
+	_destruction_generation += 1
 	visible = true
 	collision_layer = _spawn_collision_layer
 	collision_mask = _spawn_collision_mask
@@ -293,6 +308,7 @@ func _mark_health_destroyed_no_signal() -> void:
 func _ready() -> void:
 	_spawn_collision_layer = collision_layer
 	_spawn_collision_mask = collision_mask
+	_rebuild_visual_aabb_collision()
 	_collect_wheels()
 	_setup_tread_materials()
 	_hull_yaw = rotation.y
@@ -313,9 +329,25 @@ func _ready() -> void:
 	call_deferred("_resolve_tread_gauge")
 
 
+func _rebuild_visual_aabb_collision() -> void:
+	if not rebuild_collision_from_visual_aabb:
+		return
+	var built: int = _VISUAL_AABB_COLLIDERS.rebuild(
+		self,
+		_model,
+		collision_aabb_padding,
+		collision_aabb_min_size,
+		collision_aabb_ignore_names,
+		collision_aabb_max_shapes
+	)
+	if built == 0:
+		push_warning("TankController: visual AABB collision build failed; keeping scene fallback shape")
+
+
 func _on_destroyed(_by_source: int) -> void:
 	if _is_destroyed:
 		return
+	_destruction_generation += 1
 	_is_destroyed = true
 	set_physics_process(false)
 	velocity = Vector3.ZERO
@@ -382,11 +414,13 @@ func _spawn_cook_off_debris() -> void:
 func _schedule_wreck_hide() -> void:
 	if wreck_burn_seconds <= 0.0:
 		return
-	get_tree().create_timer(wreck_burn_seconds).timeout.connect(_hide_destroyed_wreck)
+	get_tree().create_timer(wreck_burn_seconds).timeout.connect(
+		_hide_destroyed_wreck.bind(_destruction_generation)
+	)
 
 
-func _hide_destroyed_wreck() -> void:
-	if not _is_destroyed:
+func _hide_destroyed_wreck(generation: int) -> void:
+	if generation != _destruction_generation or not _is_destroyed:
 		return
 	DestructionVFX.clear_vfx(self)
 	DestructionVFX.clear_charred(self)
@@ -811,11 +845,15 @@ func _create_tread_decal(world_pos: Vector3, yaw_basis: Basis) -> void:
 		var mat: StandardMaterial3D = mi.get_surface_override_material(0) as StandardMaterial3D
 		if mat != null:
 			tween.tween_property(mat, "albedo_color:a", 0.0, tread_mark_lifetime)
-	tween.tween_callback(func() -> void:
-		if is_instance_valid(node):
-			_tread_decals.erase(node)
-			node.queue_free()
-	)
+	tween.tween_callback(_finish_tread_decal.bind(node.get_instance_id()))
+
+
+func _finish_tread_decal(node_id: int) -> void:
+	var obj: Object = instance_from_id(node_id)
+	if obj is Node3D:
+		var node: Node3D = obj as Node3D
+		_tread_decals.erase(node)
+		node.queue_free()
 
 
 ## Build a flat horizontal PlaneMesh for the web tread-mark fallback. Uses

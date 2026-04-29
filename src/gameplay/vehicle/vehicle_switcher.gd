@@ -1,10 +1,8 @@
 class_name VehicleSwitcher
 extends Node
 
-## Vehicle activation state manager. E-key cycles through all wired vehicles
-## (player → tank → helicopter → drone), skipping any that are null (not
-## configured) or destroyed. If no player_path is set, starts on the first
-## available vehicle instead of crashing.
+## Current behavior: E/interact enters only the nearest live vehicle within its
+## interaction radius, and exits back to infantry when already driving/flying.
 ##
 ## Updates ChaseCamera target_path, yaw_source_path, offset, and look_offset
 ## when a vehicle is activated programmatically. When the player is active,
@@ -36,6 +34,15 @@ extends Node
 @export_group("Camera Offsets — Drone")
 @export var drone_camera_offset: Vector3 = Vector3(0.0, 0.75, 1.5)
 @export var drone_camera_look_offset: Vector3 = Vector3(0.0, 0.0, 0.0)
+
+@export_group("Interaction")
+@export var tank_enter_radius: float = 5.5
+@export var helicopter_enter_radius: float = 6.5
+@export var drone_enter_radius: float = 3.5
+@export var exit_side_distance: float = 2.2
+@export var exit_ground_probe_up: float = 4.0
+@export var exit_ground_probe_down: float = 60.0
+@export var exit_ground_collision_mask: int = 1
 
 ## 0 = player, 1 = tank, 2 = helicopter, 3 = drone.
 var _active_index: int = 0
@@ -93,19 +100,18 @@ func _ready() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventKey:
-		var key_event: InputEventKey = event
-		if key_event.pressed and not key_event.echo and key_event.keycode == KEY_E:
-			_toggle_vehicle()
+	if event.is_action_pressed("interact"):
+		_handle_interact_pressed()
+		get_viewport().set_input_as_handled()
 
 
-func _toggle_vehicle() -> void:
-	# Cycle through indices 0..3, skipping null-wired or destroyed vehicles.
-	for _attempt: int in range(4):
-		_active_index = (_active_index + 1) % 4
-		if _get_vehicle_at(_active_index) != null and not _is_index_destroyed(_active_index):
-			break
-	_activate_by_index(_active_index)
+func _handle_interact_pressed() -> void:
+	if _active_index == 0:
+		var vehicle_index: int = _nearest_enterable_vehicle_index()
+		if vehicle_index != 0:
+			_activate_by_index(vehicle_index)
+	else:
+		_exit_vehicle_to_player()
 
 
 func _get_vehicle_at(index: int) -> Node:
@@ -118,18 +124,99 @@ func _get_vehicle_at(index: int) -> Node:
 
 
 func _first_available_index() -> int:
-	for i: int in range(4):
+	if _player != null:
+		return 0
+	for i: int in range(1, 4):
 		if _get_vehicle_at(i) != null and not _is_index_destroyed(i):
 			return i
 	return 0
 
 
 func _activate_by_index(index: int) -> void:
+	_active_index = index
 	match index:
 		0: _activate_player()
 		1: _activate_tank()
 		2: _activate_helicopter()
 		3: _activate_drone()
+
+
+func _nearest_enterable_vehicle_index() -> int:
+	if _player == null:
+		return 0
+	var player_pos: Vector3 = _player.get_interaction_position()
+	var best_index: int = 0
+	var best_dist: float = INF
+	for index: int in range(1, 4):
+		var vehicle: Node3D = _get_vehicle_at(index) as Node3D
+		if vehicle == null or _is_index_destroyed(index):
+			continue
+		var dist: float = _planar_distance(player_pos, vehicle.global_position)
+		if dist <= _enter_radius_for_index(index) and dist < best_dist:
+			best_dist = dist
+			best_index = index
+	return best_index
+
+
+func _enter_radius_for_index(index: int) -> float:
+	match index:
+		1: return tank_enter_radius
+		2: return helicopter_enter_radius
+		3: return drone_enter_radius
+	return 0.0
+
+
+func _planar_distance(a: Vector3, b: Vector3) -> float:
+	var delta: Vector3 = a - b
+	delta.y = 0.0
+	return delta.length()
+
+
+func _exit_vehicle_to_player() -> void:
+	if _player == null:
+		return
+	var vehicle: Node3D = _get_vehicle_at(_active_index) as Node3D
+	if vehicle != null:
+		var exit_pos: Vector3 = _find_exit_position(vehicle)
+		var facing_yaw: float = _yaw_to_face(exit_pos - vehicle.global_position)
+		_player.place_at(exit_pos, facing_yaw)
+	_activate_by_index(0)
+
+
+func _find_exit_position(vehicle: Node3D) -> Vector3:
+	var side: Vector3 = vehicle.global_transform.basis.x
+	side.y = 0.0
+	if side.length_squared() < 0.001:
+		side = Vector3.RIGHT
+	side = side.normalized()
+	var candidate: Vector3 = vehicle.global_position + side * exit_side_distance
+	candidate.y += 0.25
+	return _snap_exit_position_to_ground(vehicle, candidate)
+
+
+func _snap_exit_position_to_ground(vehicle: Node3D, candidate: Vector3) -> Vector3:
+	var space: PhysicsDirectSpaceState3D = vehicle.get_world_3d().direct_space_state
+	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+		candidate + Vector3.UP * exit_ground_probe_up,
+		candidate - Vector3.UP * exit_ground_probe_down,
+		exit_ground_collision_mask
+	)
+	query.collide_with_areas = false
+	if vehicle is CollisionObject3D:
+		query.exclude = [(vehicle as CollisionObject3D).get_rid()]
+	var hit: Dictionary = space.intersect_ray(query)
+	if hit.is_empty():
+		return candidate
+	var hit_pos: Vector3 = hit.get("position", candidate)
+	return hit_pos + Vector3.UP * 0.08
+
+
+func _yaw_to_face(direction: Vector3) -> float:
+	direction.y = 0.0
+	if direction.length_squared() < 0.001:
+		return 0.0
+	direction = direction.normalized()
+	return atan2(-direction.x, -direction.z)
 
 
 func _is_index_destroyed(index: int) -> bool:

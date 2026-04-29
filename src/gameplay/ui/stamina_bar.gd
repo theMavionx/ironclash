@@ -18,6 +18,9 @@ var _player: PlayerController
 
 
 func _ready() -> void:
+	if OS.has_feature("web"):
+		visible = false
+		return
 	_player = get_node_or_null(player_controller_path) as PlayerController
 	if _player == null:
 		push_warning("StaminaBar: PlayerController not found at %s" % player_controller_path)
