@@ -32,11 +32,11 @@ extends Node3D
 ## from cache. The Compatibility renderer needs at least one full frame per
 ## prefab to compile pipelines, and repeated shot probes need a little extra
 ## time so two visible frames land before the scene swap.
-@export var min_hold_seconds: float = 22.4
+@export var min_hold_seconds: float = 44.8
 ## Hard ceiling — if Main.tscn doesn't finish loading after this, swap anyway
 ## and let the gameplay scene finish loading on its own. Prevents a soft hang
 ## if threaded loading deadlocks.
-@export var max_hold_seconds: float = 72.0
+@export var max_hold_seconds: float = 144.0
 
 ## How far ahead of the camera the warmup root sits. Far enough that the
 ## whole probe spread remains in-frustum even on narrow browser canvases.
@@ -47,7 +47,7 @@ const _STAGE_COMPILING: String = "compiling_shaders"
 const _STAGE_READY: String = "ready"
 
 const _BLACKOUT_CANVAS_LAYER: int = 128
-const _WARMUP_PROBE_LIFETIME: float = 11.2
+const _WARMUP_PROBE_LIFETIME: float = 22.4
 const _WARMUP_SHOT_REPETITIONS: int = 32
 const _WARMUP_PROJECTILE_REPETITIONS: int = 12
 const _WARMUP_DESTRUCTION_REPETITIONS: int = 4
@@ -380,7 +380,7 @@ func _spawn_actual_vehicle_destruction_probes() -> void:
 				n.position = base_pos + repeat_offset
 				var s: float = float(data["scale"])
 				n.scale = Vector3(s, s, s)
-			var run_timer: SceneTreeTimer = get_tree().create_timer(0.35 + 1.15 * float(repeat_index))
+			var run_timer: SceneTreeTimer = get_tree().create_timer(0.75 + 3.2 * float(repeat_index))
 			run_timer.timeout.connect(_run_actual_vehicle_destruction_probe.bind(
 				inst,
 				"%s #%d" % [String(data["label"]), repeat_index + 1]
@@ -497,7 +497,7 @@ func _spawn_player_shot_probe() -> void:
 		)
 
 	for burst_index: int in range(_WARMUP_DELAYED_SHOT_BURSTS):
-		var timer: SceneTreeTimer = get_tree().create_timer(0.28 + 0.42 * float(burst_index))
+		var timer: SceneTreeTimer = get_tree().create_timer(0.60 + 1.10 * float(burst_index))
 		timer.timeout.connect(_run_player_shot_probe_burst.bind(muzzle, origin, base_aim, burst_index))
 
 	_schedule_free(muzzle, _WARMUP_PROBE_LIFETIME)
@@ -555,7 +555,7 @@ func _spawn_tank_fire_probe() -> void:
 	if tank.has_method("set_active"):
 		tank.call("set_active", false)
 	for i: int in range(_WARMUP_VEHICLE_FIRE_REPETITIONS):
-		var timer: SceneTreeTimer = get_tree().create_timer(0.45 + 0.42 * float(i))
+		var timer: SceneTreeTimer = get_tree().create_timer(0.80 + 1.15 * float(i))
 		timer.timeout.connect(_run_tank_fire_probe.bind(tank))
 	_schedule_free(tank, _WARMUP_PROBE_LIFETIME * 2.0)
 
@@ -586,7 +586,7 @@ func _spawn_helicopter_fire_probe() -> void:
 	if heli.has_method("set_active"):
 		heli.call("set_active", false)
 	for i: int in range(_WARMUP_VEHICLE_FIRE_REPETITIONS):
-		var timer: SceneTreeTimer = get_tree().create_timer(0.40 + 0.38 * float(i))
+		var timer: SceneTreeTimer = get_tree().create_timer(0.75 + 1.05 * float(i))
 		timer.timeout.connect(_run_helicopter_fire_probe.bind(heli))
 	_schedule_free(heli, _WARMUP_PROBE_LIFETIME * 2.0)
 
@@ -792,7 +792,7 @@ func _spawn_projectile_scene_probes() -> void:
 			continue
 		for i: int in range(_WARMUP_PROJECTILE_REPETITIONS):
 			_stage_projectile_probe(packed, x, i, 0.0)
-			var timer: SceneTreeTimer = get_tree().create_timer(0.18 + 0.16 * float(i))
+			var timer: SceneTreeTimer = get_tree().create_timer(0.45 + 0.55 * float(i))
 			timer.timeout.connect(_stage_projectile_probe.bind(packed, x + 0.04, i, -0.24))
 		x += 0.3
 		_record_probe_time("%s x%d" % [p.get_file(), _WARMUP_PROJECTILE_REPETITIONS], Time.get_ticks_msec() - t)
