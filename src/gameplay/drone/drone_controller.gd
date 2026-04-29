@@ -119,6 +119,21 @@ signal self_destructed(at_position: Vector3)
 ## Seconds the drone wreck burns after a kamikaze detonation before respawning.
 @export var respawn_delay: float = 10.0
 
+@export_group("Destroyed Wreck")
+## Initial downward speed applied on non-kamikaze death so the wreck cannot hover.
+@export var wreck_initial_drop_speed: float = 2.2
+## Clamp fall speed to avoid physics spikes in browser builds.
+@export var wreck_terminal_fall_speed: float = 17.0
+## Horizontal drift applied if the drone was hovering when destroyed.
+@export var wreck_crash_drift_speed: float = 8.0
+## Random angular speed range used while the wreck falls before impact.
+@export var wreck_tumble_speed_min: float = 0.45
+@export var wreck_tumble_speed_max: float = 1.25
+## Air drag while the wreck tumbles down. Higher = less stone-like drop.
+@export var wreck_air_drag: float = 0.18
+## How much spinning propellers soften gravity during the first crash seconds.
+@export var wreck_rotor_lift_gravity_scale: float = 0.42
+
 @export_group("Rotor Animation")
 ## Maximum rotor angular speed at full throttle (radians/s).
 @export var max_rotor_speed_rad_per_sec: float = 60.0
@@ -169,6 +184,9 @@ var _pre_slide_velocity: Vector3 = Vector3.ZERO
 var _spawn_transform: Transform3D
 @onready var _health: HealthComponent = $HealthComponent
 var _is_destroyed: bool = false
+var _wreck_burning: bool = false
+var _wreck_tumble_velocity: Vector3 = Vector3.ZERO
+var _auto_respawn_after_burn: bool = false
 ## Each entry: {"centroid": Vector3, "blades": Array[Dictionary]} where each
 ## blade dict holds {"node": Node3D, "offset": Vector3, "initial_basis": Basis}
 ## of its initial state in the drone's local frame.
@@ -188,7 +206,7 @@ func set_active(is_active: bool) -> void:
 	# Destroyed wrecks keep physics running so they fall under gravity until
 	# the respawn timer fires.
 	if _is_destroyed:
-		set_physics_process(true)
+		set_physics_process(not _wreck_burning)
 		if _fpv_camera != null:
 			_fpv_camera.current = is_active
 		return
@@ -547,6 +565,10 @@ func _animate_propellers(is_armed: bool, delta: float) -> void:
 	_current_rotor_speed = lerpf(_current_rotor_speed, target_speed, rotor_spool_speed * delta)
 
 	var angle_step: float = _current_rotor_speed * delta
+	_spin_propellers(angle_step)
+
+
+func _spin_propellers(angle_step: float) -> void:
 	for i: int in range(_motor_groups.size()):
 		_motor_angles[i] += angle_step
 		var centroid_local: Vector3 = _motor_groups[i]["centroid"]
@@ -566,40 +588,33 @@ func _animate_propellers(is_armed: bool, delta: float) -> void:
 func _on_self_destroyed(_by_source: int) -> void:
 	if _is_destroyed:
 		return
-	_is_destroyed = true
-	# Zero horizontal velocity so the wreck drops, doesn't keep cruising forward.
-	velocity.x = 0.0
-	velocity.z = 0.0
-	# FORCE physics on. The drone may have been INACTIVE (set_active(false)
-	# by VehicleSwitcher) when the player shot it down from the tank/heli —
-	# without this call _physics_process stays disabled and the wreck freezes
-	# mid-air instead of falling. Same pattern as HelicopterController._on_destroyed.
-	set_physics_process(true)
-	_apply_destroyed_visual()
+	if _by_source == DamageTypes.Source.DRONE_KAMIKAZE:
+		_is_destroyed = true
+		_auto_respawn_after_burn = true
+		_start_crash_burn(_pre_slide_velocity.length())
+	else:
+		_begin_wreck_fall(true)
 	self_destructed.emit(global_position)
-	# Schedule respawn after the wreck burn window.
-	var timer: SceneTreeTimer = get_tree().create_timer(respawn_delay)
-	timer.timeout.connect(_respawn)
-
 
 func apply_network_destroyed() -> void:
 	if _is_destroyed:
 		return
 	_mark_health_destroyed_no_signal()
-	_is_destroyed = true
-	velocity.x = 0.0
-	velocity.z = 0.0
-	set_physics_process(true)
-	_apply_destroyed_visual()
-
+	_begin_wreck_fall(false)
 
 func apply_network_respawned() -> void:
 	_clear_destroyed_visual()
 	if _health != null:
 		_health.reset()
 	_is_destroyed = false
+	_wreck_burning = false
+	_wreck_tumble_velocity = Vector3.ZERO
+	_auto_respawn_after_burn = false
 	_remote_driver_active = false
 	velocity = Vector3.ZERO
+	_current_rotor_speed = 0.0
+	rotation.x = 0.0
+	rotation.z = 0.0
 	set_physics_process(_active)
 	respawned.emit()
 
@@ -609,13 +624,77 @@ func _mark_health_destroyed_no_signal() -> void:
 		_health.call("force_destroyed", DamageTypes.Source.DRONE_KAMIKAZE, false)
 
 
-## Wreck mode: gravity-only fall + slide, no input, no rotation, no propellers.
+func _begin_wreck_fall(auto_respawn: bool) -> void:
+	_is_destroyed = true
+	_wreck_burning = false
+	_auto_respawn_after_burn = auto_respawn
+	_remote_driver_active = false
+	var horizontal_velocity: Vector3 = Vector3(velocity.x, 0.0, velocity.z)
+	if horizontal_velocity.length() < 1.0:
+		var forward: Vector3 = -global_transform.basis.z
+		forward.y = 0.0
+		if forward.length_squared() < 0.001:
+			forward = Vector3.FORWARD
+		horizontal_velocity = forward.normalized() * wreck_crash_drift_speed
+		horizontal_velocity = horizontal_velocity.rotated(Vector3.UP, randf_range(-0.45, 0.45))
+	velocity.x = horizontal_velocity.x
+	velocity.z = horizontal_velocity.z
+	velocity.y = -absf(wreck_initial_drop_speed)
+	_wreck_tumble_velocity = Vector3(
+		randf_range(wreck_tumble_speed_min, wreck_tumble_speed_max) * _random_sign(),
+		randf_range(0.8, 1.9) * _random_sign(),
+		randf_range(wreck_tumble_speed_min, wreck_tumble_speed_max) * _random_sign()
+	)
+	set_physics_process(true)
+
+
+func _random_sign() -> float:
+	return -1.0 if randf() < 0.5 else 1.0
+
+
+## Wreck mode: fall first, then burn only after real ground impact.
 func _wreck_fall(delta: float) -> void:
-	if is_on_floor():
-		velocity = Vector3.ZERO
-	else:
-		velocity.y -= gravity * delta
+	if _wreck_burning:
+		return
+	_apply_crash_tumble(delta)
+	_animate_crash_propellers(delta)
+	var rotor_t: float = clampf(_current_rotor_speed / maxf(max_rotor_speed_rad_per_sec, 0.001), 0.0, 1.0)
+	var gravity_scale: float = lerpf(1.0, wreck_rotor_lift_gravity_scale, rotor_t)
+	velocity.y = maxf(velocity.y - gravity * gravity_scale * delta, -absf(wreck_terminal_fall_speed))
+	var drag: float = exp(-wreck_air_drag * delta)
+	velocity.x *= drag
+	velocity.z *= drag
+	if velocity.y < 0.0:
+		velocity.y *= drag
+	var impact_speed: float = maxf(-velocity.y, 0.0)
 	move_and_slide()
+	if is_on_floor():
+		_start_crash_burn(impact_speed)
+
+
+func _apply_crash_tumble(delta: float) -> void:
+	rotation.x += _wreck_tumble_velocity.x * delta
+	rotation.y += _wreck_tumble_velocity.y * delta
+	rotation.z += _wreck_tumble_velocity.z * delta
+	_wreck_tumble_velocity = _wreck_tumble_velocity.lerp(Vector3.ZERO, clampf(delta * 0.08, 0.0, 0.25))
+
+
+func _animate_crash_propellers(delta: float) -> void:
+	_current_rotor_speed = lerpf(_current_rotor_speed, 0.0, clampf(delta * 0.9, 0.0, 1.0))
+	_spin_propellers(_current_rotor_speed * delta)
+
+
+func _start_crash_burn(_impact_speed: float) -> void:
+	if _wreck_burning:
+		return
+	_wreck_burning = true
+	velocity = Vector3.ZERO
+	_wreck_tumble_velocity = Vector3.ZERO
+	_apply_destroyed_visual()
+	if _auto_respawn_after_burn:
+		var timer: SceneTreeTimer = get_tree().create_timer(respawn_delay)
+		timer.timeout.connect(_respawn)
+	set_physics_process(false)
 
 
 func _respawn() -> void:
@@ -635,6 +714,10 @@ func _respawn() -> void:
 	if _health != null:
 		_health.reset()
 	_is_destroyed = false
+	_wreck_burning = false
+	_wreck_tumble_velocity = Vector3.ZERO
+	_auto_respawn_after_burn = false
+	_current_rotor_speed = idle_rotor_speed_rad_per_sec
 	if _active:
 		set_physics_process(true)
 	respawned.emit()
