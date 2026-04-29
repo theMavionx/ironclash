@@ -59,6 +59,13 @@ signal fired_with_aim(spawn_origin: Vector3, aim_dir: Vector3)
 ## How quickly the steering input ramps up/down. Lower = smoother start/stop.
 @export var turn_acceleration: float = 4.0
 
+@export_group("Slope Contact")
+## CharacterBody floor snap keeps the low tread colliders glued to terrain
+## instead of visually hanging from a broad hull box on steep slopes.
+@export var tank_floor_snap_length: float = 0.55
+@export_range(0.0, 89.0, 1.0, "degrees") var tank_floor_max_angle_deg: float = 62.0
+@export var tank_safe_margin: float = 0.025
+
 @export_group("Aiming")
 ## Turret mesh — visual reference only (used for camera yaw_source).
 @export_node_path("Node3D") var turret_path: NodePath
@@ -146,10 +153,14 @@ signal fired_with_aim(spawn_origin: Vector3, aim_dir: Vector3)
 ## Build runtime BoxShape3D colliders from the visual mesh AABBs instead of
 ## using the old single broad fallback shape authored in the scene.
 @export var rebuild_collision_from_visual_aabb: bool = true
-@export var collision_aabb_padding: Vector3 = Vector3(0.12, 0.08, 0.12)
-@export var collision_aabb_min_size: Vector3 = Vector3(0.22, 0.18, 0.22)
-@export var collision_aabb_max_shapes: int = 18
-@export var collision_aabb_ignore_names: PackedStringArray = []
+@export var collision_aabb_padding: Vector3 = Vector3(0.035, 0.025, 0.035)
+@export var collision_aabb_min_size: Vector3 = Vector3(0.12, 0.10, 0.08)
+@export var collision_aabb_max_shapes: int = 4
+@export var collision_aabb_ignore_names: PackedStringArray = PackedStringArray([
+	"TankBody_002",
+	"WheelLeft1", "WheelLeft2", "WheelLeft3", "WheelLeft4", "WheelLeft5", "WheelLeft6", "WheelLeft7",
+	"WheelRight1", "WheelRight2", "WheelRight3", "WheelRight4", "WheelRight5", "WheelRight6", "WheelRight7",
+])
 
 # ---------------------------------------------------------------------------
 # Private variables
@@ -308,6 +319,7 @@ func _mark_health_destroyed_no_signal() -> void:
 func _ready() -> void:
 	_spawn_collision_layer = collision_layer
 	_spawn_collision_mask = collision_mask
+	_apply_slope_contact_settings()
 	_rebuild_visual_aabb_collision()
 	_collect_wheels()
 	_setup_tread_materials()
@@ -327,6 +339,12 @@ func _ready() -> void:
 	# into bone-driven wheel meshes — otherwise their global_position would still
 	# be at the tank origin and auto-derive returns ~0.
 	call_deferred("_resolve_tread_gauge")
+
+
+func _apply_slope_contact_settings() -> void:
+	floor_snap_length = tank_floor_snap_length
+	floor_max_angle = deg_to_rad(tank_floor_max_angle_deg)
+	safe_margin = tank_safe_margin
 
 
 func _rebuild_visual_aabb_collision() -> void:
