@@ -1,6 +1,8 @@
 class_name HelicopterController
 extends CharacterBody3D
 
+const _VEHICLE_DUST_VFX := preload("res://src/gameplay/vfx/vehicle_dust_vfx.gd")
+
 ## Helicopter flight controller with rotor animation.
 ## Implements: design/gdd/helicopter_movement.md (pending)
 ## Space = lift thrust. WASD = strafe in local XZ. Mouse X = yaw only.
@@ -58,6 +60,13 @@ extends CharacterBody3D
 ## until the tail rotor disc spins like a disc (not tumbles).
 @export var tail_rotor_axis: Vector3 = Vector3.FORWARD
 
+@export_group("Rotor Dust")
+@export var rotor_dust_enabled: bool = true
+@export var rotor_dust_max_ground_distance: float = 7.0
+@export var rotor_dust_ground_offset: float = 0.08
+@export var rotor_dust_min_speed: float = 6.0
+@export_flags_3d_physics var rotor_dust_collision_mask: int = 1
+
 @export_group("Crash Debris")
 ## Name of the main-rotor Node3D in the GLB hierarchy to use as a subtree
 ## for rotor-disc debris. Leave empty to skip rotor disc debris.
@@ -106,6 +115,7 @@ var _active: bool = true
 var _current_rotor_speed: float = 0.0
 var _main_rotor: Node3D
 var _tail_rotor: Node3D
+var _rotor_dust: CPUParticles3D = null
 ## Set by VehicleSync when a non-local peer is driving — keeps rotors spinning
 ## even though our `_physics_process` is suspended.
 var _remote_driver_active: bool = false
@@ -123,11 +133,13 @@ func is_locally_driven() -> bool:
 
 func _process(delta: float) -> void:
 	if _is_destroyed:
+		_set_rotor_dust_emitting(false)
 		return
 	# When the local controller is active, _physics_process drives rotors.
 	if _active:
 		return
 	_animate_rotors(_remote_driver_active, delta)
+	_update_rotor_dust()
 
 ## Target yaw accumulated from mouse input (radians).
 var _yaw_target: float = 0.0
@@ -185,6 +197,8 @@ func _ready() -> void:
 	if _tail_rotor == null:
 		push_warning("HelicopterController: tail rotor pivot 'Circle_003_12' not found")
 
+	_setup_rotor_dust()
+
 	_yaw_target = rotation.y
 	_yaw_current = rotation.y
 	# Start rotors at idle so they're visibly spinning from frame 1.
@@ -213,6 +227,7 @@ func _on_destroyed(_by_source: int) -> void:
 	_is_destroyed = true
 	_wreck_burning = false
 	_remote_driver_active = false
+	_set_rotor_dust_emitting(false)
 	var horizontal_velocity: Vector3 = Vector3(velocity.x, 0.0, velocity.z)
 	if horizontal_velocity.length() < 1.0:
 		var forward: Vector3 = -global_transform.basis.z
@@ -346,6 +361,7 @@ func set_active(is_active: bool) -> void:
 	set_physics_process(is_active)
 	if not is_active:
 		velocity = Vector3.ZERO
+		_set_rotor_dust_emitting(false)
 	else:
 		WebPointerLock.capture_for_activation()
 
@@ -367,6 +383,7 @@ func apply_network_respawned() -> void:
 	_remote_driver_active = false
 	_current_rotor_speed = 0.0
 	velocity = Vector3.ZERO
+	_set_rotor_dust_emitting(false)
 	rotation.x = 0.0
 	rotation.z = 0.0
 	_pitch_tilt_current = 0.0
@@ -463,6 +480,7 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 
 	_animate_rotors(lifting, delta)
+	_update_rotor_dust()
 	_tick_missile_timers(delta)
 
 
@@ -574,6 +592,54 @@ func _animate_rotors(lifting: bool, delta: float) -> void:
 		_tail_rotor.rotate_object_local(tail_rotor_axis, _current_rotor_speed * delta)
 
 
+func _setup_rotor_dust() -> void:
+	if not rotor_dust_enabled:
+		return
+	_rotor_dust = _VEHICLE_DUST_VFX.make_rotor_dust()
+	add_child(_rotor_dust)
+
+
+func _update_rotor_dust() -> void:
+	if _rotor_dust == null:
+		return
+	if not rotor_dust_enabled or _is_destroyed or _current_rotor_speed < rotor_dust_min_speed:
+		_set_rotor_dust_emitting(false)
+		return
+
+	var hit: Dictionary = _rotor_ground_hit()
+	if hit.is_empty():
+		_set_rotor_dust_emitting(false)
+		return
+	var hit_pos: Vector3 = hit.get("position", global_position)
+	var hit_normal: Vector3 = hit.get("normal", Vector3.UP)
+	_rotor_dust.global_position = hit_pos + hit_normal.normalized() * rotor_dust_ground_offset
+	_set_rotor_dust_emitting(true)
+
+
+func _rotor_ground_hit() -> Dictionary:
+	var world: World3D = get_world_3d()
+	if world == null:
+		return {}
+	var space: PhysicsDirectSpaceState3D = world.direct_space_state
+	if space == null:
+		return {}
+	var from_pos: Vector3 = global_position + Vector3.UP * 0.65
+	var to_pos: Vector3 = global_position - Vector3.UP * rotor_dust_max_ground_distance
+	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+		from_pos,
+		to_pos,
+		rotor_dust_collision_mask
+	)
+	query.collide_with_areas = false
+	query.exclude = [get_rid()]
+	return space.intersect_ray(query)
+
+
+func _set_rotor_dust_emitting(is_emitting: bool) -> void:
+	if _rotor_dust != null:
+		_rotor_dust.emitting = is_emitting
+
+
 ## Recursive depth-first search for a node with [param target_name].
 func _find_descendant_by_name(root: Node, target_name: String) -> Node:
 	if root.name == target_name:
@@ -619,6 +685,7 @@ func _hide_destroyed_wreck() -> void:
 	DestructionVFX.clear_vfx(self)
 	DestructionVFX.clear_charred(self)
 	velocity = Vector3.ZERO
+	_set_rotor_dust_emitting(false)
 	collision_layer = 0
 	collision_mask = 0
 	visible = false

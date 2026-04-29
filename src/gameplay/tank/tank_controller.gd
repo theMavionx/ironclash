@@ -2,6 +2,7 @@ class_name TankController
 extends CharacterBody3D
 
 const _VISUAL_AABB_COLLIDERS := preload("res://src/gameplay/vehicle/visual_aabb_colliders.gd")
+const _VEHICLE_DUST_VFX := preload("res://src/gameplay/vfx/vehicle_dust_vfx.gd")
 
 ## Basic tank drive controller.
 ## Reads forward/turn input, moves the body, rotates wheels, scrolls tread UVs,
@@ -141,6 +142,13 @@ signal fired_with_aim(spawn_origin: Vector3, aim_dir: Vector3)
 ## Hard cap on simultaneously alive marks. Older marks are freed FIFO when exceeded.
 @export var tread_mark_max_alive: int = 240
 
+@export_group("Drive Dust")
+@export var tread_dust_enabled: bool = true
+@export var tread_dust_side_offset: float = 0.62
+@export var tread_dust_rear_offset: float = 0.48
+@export var tread_dust_ground_offset: float = 0.055
+@export var tread_dust_min_step: float = 0.006
+
 @export_group("Cook-Off (Turret Debris)")
 ## Mass of the detached turret RigidBody3D (kg). Still applied so the physics
 ## material + damping feel right, but launch velocity is set directly.
@@ -232,6 +240,9 @@ var _resolved_tread_gauge: float = 1.0
 ## Tiny white texture used by all decals; tinted to black via modulate.
 ## Static so all tanks share one texture (decal projects nothing without a texture).
 static var _tread_decal_texture: Texture2D = null
+var _tread_dust_left: CPUParticles3D = null
+var _tread_dust_right: CPUParticles3D = null
+var _last_dust_pos: Vector3 = Vector3.ZERO
 
 # ---------------------------------------------------------------------------
 # Public methods
@@ -281,10 +292,12 @@ func set_active(is_active: bool) -> void:
 	if _is_destroyed:
 		set_physics_process(false)
 		velocity = Vector3.ZERO
+		_set_tread_dust_emitting(false)
 		return
 	set_physics_process(is_active)
 	if not is_active:
 		velocity = Vector3.ZERO
+		_set_tread_dust_emitting(false)
 	else:
 		WebPointerLock.capture_for_activation()
 
@@ -307,6 +320,7 @@ func apply_network_respawned() -> void:
 	collision_mask = _spawn_collision_mask
 	_is_destroyed = false
 	velocity = Vector3.ZERO
+	_set_tread_dust_emitting(false)
 	if _health != null:
 		_health.reset()
 	if _turret is MeshInstance3D:
@@ -333,6 +347,7 @@ func _ready() -> void:
 	_rebuild_visual_aabb_collision()
 	_collect_wheels()
 	_setup_tread_materials()
+	_setup_tread_dust()
 	_hull_yaw = rotation.y
 	# Start turret aimed where the hull is facing.
 	_yaw_delta = _hull_yaw
@@ -379,6 +394,7 @@ func _on_destroyed(_by_source: int) -> void:
 	_is_destroyed = true
 	set_physics_process(false)
 	velocity = Vector3.ZERO
+	_set_tread_dust_emitting(false)
 	DestructionVFX.spawn_explosion(get_tree().current_scene, global_position + Vector3(0, 1.2, 0))
 	DestructionVFX.apply_charred(self)
 	DestructionVFX.spawn_smoke_fire(self, 1.2, true, wreck_burn_seconds)
@@ -494,8 +510,11 @@ func _unhandled_input(event: InputEvent) -> void:
 ## VehicleSync lerps the body works without any extra plumbing.
 func _process(_delta: float) -> void:
 	if _active or _is_destroyed:
+		if _is_destroyed:
+			_set_tread_dust_emitting(false)
 		return
 	_update_tread_marks()
+	_update_tread_dust()
 
 
 func _physics_process(delta: float) -> void:
@@ -542,6 +561,7 @@ func _physics_process(delta: float) -> void:
 	_update_slope_alignment(delta)
 
 	_update_tread_marks()
+	_update_tread_dust()
 
 	# Decrement fire cooldown.
 	if _fire_timer > 0.0:
@@ -612,6 +632,73 @@ func _setup_tread_materials() -> void:
 	_tread_material_right = _build_tread_material(shader)
 	_apply_material_to_first_mesh_under("TreadLeft", _tread_material_left)
 	_apply_material_to_first_mesh_under("TreadRight", _tread_material_right)
+
+
+func _setup_tread_dust() -> void:
+	if not tread_dust_enabled:
+		return
+	_tread_dust_left = _VEHICLE_DUST_VFX.make_tread_dust()
+	_tread_dust_left.name = "LeftTreadDust"
+	add_child(_tread_dust_left)
+	_tread_dust_right = _VEHICLE_DUST_VFX.make_tread_dust()
+	_tread_dust_right.name = "RightTreadDust"
+	add_child(_tread_dust_right)
+	_last_dust_pos = global_position
+
+
+func _update_tread_dust() -> void:
+	if _tread_dust_left == null or _tread_dust_right == null:
+		return
+	var moved: Vector3 = global_position - _last_dust_pos
+	moved.y = 0.0
+	_last_dust_pos = global_position
+	var horizontal_speed: float = Vector2(velocity.x, velocity.z).length()
+	var moving: bool = moved.length() >= tread_dust_min_step or horizontal_speed > 0.08
+	if not tread_dust_enabled or _is_destroyed or not is_on_floor() or not moving:
+		_set_tread_dust_emitting(false)
+		return
+
+	var forward: Vector3 = _get_flat_forward_from_yaw()
+	var right: Vector3 = forward.cross(Vector3.UP)
+	if right.length_squared() < 0.0001:
+		right = Vector3.RIGHT
+	else:
+		right = right.normalized()
+	var base: Vector3 = global_position - forward * tread_dust_rear_offset
+	_tread_dust_left.global_position = _dust_ground_position(base - right * tread_dust_side_offset)
+	_tread_dust_right.global_position = _dust_ground_position(base + right * tread_dust_side_offset)
+	_set_tread_dust_emitting(true)
+
+
+func _dust_ground_position(world_pos: Vector3) -> Vector3:
+	var world: World3D = get_world_3d()
+	if world == null:
+		return world_pos
+	var space: PhysicsDirectSpaceState3D = world.direct_space_state
+	if space == null:
+		return world_pos
+	var from_pos: Vector3 = world_pos + Vector3.UP * slope_probe_up
+	var to_pos: Vector3 = world_pos - Vector3.UP * slope_probe_down
+	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+		from_pos,
+		to_pos,
+		slope_probe_collision_mask
+	)
+	query.collide_with_areas = false
+	query.exclude = [get_rid()]
+	var hit: Dictionary = space.intersect_ray(query)
+	if hit.is_empty():
+		return world_pos
+	var hit_pos: Vector3 = hit.get("position", world_pos)
+	var hit_normal: Vector3 = hit.get("normal", Vector3.UP)
+	return hit_pos + hit_normal.normalized() * tread_dust_ground_offset
+
+
+func _set_tread_dust_emitting(is_emitting: bool) -> void:
+	if _tread_dust_left != null:
+		_tread_dust_left.emitting = is_emitting
+	if _tread_dust_right != null:
+		_tread_dust_right.emitting = is_emitting
 
 
 func _build_tread_material(shader: Shader) -> ShaderMaterial:
