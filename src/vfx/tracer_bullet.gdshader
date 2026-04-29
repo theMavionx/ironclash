@@ -46,10 +46,10 @@ uniform vec4 core_color : source_color = vec4(1.0, 1.0, 1.0, 1.0);
 uniform vec4 halo_color : source_color = vec4(1.0, 0.55, 0.18, 1.0);
 uniform float emission_strength : hint_range(1.0, 100.0) = 45.0;
 uniform float fade_edge : hint_range(0.0, 0.5) = 0.18;
-// beam_width in world metres — kept small (12mm) because bloom from the HDR
-// emission creates the perceived thickness. A geometrically wide beam would
-// read as a fat orange band, not a laser streak.
-uniform float beam_width : hint_range(0.001, 0.2) = 0.012;
+// beam_width in world metres — 36mm after the AK readability pass. Bloom from
+// the HDR emission creates the perceived thickness, so the geometry still
+// reads as a tracer instead of a flat orange band.
+uniform float beam_width : hint_range(0.001, 0.2) = 0.036;
 
 // Gaussian kernel parameters — exposed as uniforms so they are tunable in the
 // Inspector without recompiling. k_core / k_halo are the exponent coefficients

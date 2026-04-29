@@ -81,13 +81,13 @@ static func _ensure_textures_loaded() -> void:
 		_flash_texture = load(_FLASH_TEXTURE_PATH) as Texture2D
 	if _tracer_mesh == null:
 		var cyl: CylinderMesh = CylinderMesh.new()
-		# 1.5cm radius — CS:GO-style thin streak, bumped 50% for readability.
+		# 4.5cm radius — AK tracer readability pass, 3x the older thin streak.
 		# Additive shader + emission
 		# make it read brighter/thicker than the raw geometry, so the mesh
 		# itself stays small. Prior radius 0.025 looked fat once the fresnel
 		# rim and bloom kicked in.
-		cyl.top_radius = 0.015
-		cyl.bottom_radius = 0.015
+		cyl.top_radius = 0.045
+		cyl.bottom_radius = 0.045
 		cyl.height = 0.8
 		cyl.radial_segments = 8
 		cyl.rings = 1
@@ -137,8 +137,8 @@ static func _ensure_shader_pipeline() -> void:
 	#                in isolation but yellow after the additive halo sum — fixed.
 	#   halo_color:  warm orange, only visible where the tight core gaussian has
 	#                decayed (cx > ~0.2). Replaces the old "glow_color" uniform.
-	#   beam_width:  12mm world-space. Bloom from HDR emission (~45x) creates the
-	#                perceived width; wide geometry reads as a flat orange band.
+	#   beam_width:  36mm world-space. Bloom from HDR emission (~45x) creates the
+	#                perceived width; tuned 3x larger for AK bullet readability.
 	#   emission:    45.0 — pushes cx=0 RGB to ~170, far past glow_hdr_threshold
 	#                (0.9) so WorldEnvironment bloom fires on every frame.
 	#   gaussian params: core_tightness=55 (narrow white peak), halo_tightness=5
@@ -148,7 +148,7 @@ static func _ensure_shader_pipeline() -> void:
 	shader_mat.set_shader_parameter("halo_color", Color(1.0, 0.55, 0.18, 1.0))
 	shader_mat.set_shader_parameter("emission_strength", 45.0)
 	shader_mat.set_shader_parameter("fade_edge", 0.18)
-	shader_mat.set_shader_parameter("beam_width", 0.012)
+	shader_mat.set_shader_parameter("beam_width", 0.036)
 	shader_mat.set_shader_parameter("core_tightness", 55.0)
 	shader_mat.set_shader_parameter("halo_tightness", 5.0)
 	shader_mat.set_shader_parameter("core_strength", 3.2)
