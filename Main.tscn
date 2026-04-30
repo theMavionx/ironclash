@@ -265,9 +265,9 @@ drone_path = NodePath("../Drone")
 
 [node name="Terrain3D" type="Terrain3D" parent="."]
 data_directory = "res://MapData"
-script = ExtResource("terrain_web_script")
-web_shader = ExtResource("terrain_web_shader")
 material = SubResource("Terrain3DMaterial_3ae8t")
 assets = SubResource("Terrain3DAssets_sfo7h")
 top_level = true
+script = ExtResource("terrain_web_script")
+web_shader = ExtResource("terrain_web_shader")
 metadata/_edit_lock_ = true
