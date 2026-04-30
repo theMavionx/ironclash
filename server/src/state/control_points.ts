@@ -55,9 +55,10 @@ export function tick_control_points(dt_s: number): ControlPointScoreTick {
 		if (present.size === 1) {
 			const team: Team = Array.from(present)[0] as Team;
 			tick_capture(point, team, dt_s);
+		} else if (present.size > 1) {
+			pause_capture(point);
 		} else {
-			point.capture_team = "neutral";
-			point.capture_elapsed_s = 0;
+			pause_capture(point);
 		}
 
 		if (point.owner === "red") score.red_points += point.points_per_second * dt_s;
@@ -105,6 +106,11 @@ function tick_capture(point: ControlPointRuntime, team: Team, dt_s: number): voi
 		point.capture_team = "neutral";
 		point.capture_elapsed_s = 0;
 	}
+}
+
+function pause_capture(_point: ControlPointRuntime): void {
+	// Empty or contested points freeze in place. The same attacking team can
+	// continue later; defenders clear the pending capture by entering alone.
 }
 
 function collect_team_positions(): TeamPosition[] {

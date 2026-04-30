@@ -36,7 +36,7 @@ extends Node3D
 ## Hard ceiling — if Main.tscn doesn't finish loading after this, swap anyway
 ## and let the gameplay scene finish loading on its own. Prevents a soft hang
 ## if threaded loading deadlocks.
-@export var max_hold_seconds: float = 10.0
+@export var max_hold_seconds: float = 18.0
 
 ## How far ahead of the camera the warmup root sits. Far enough that the
 ## whole probe spread remains in-frustum even on narrow browser canvases.
@@ -50,10 +50,11 @@ const _BLACKOUT_CANVAS_LAYER: int = 128
 const _WARMUP_PROBE_LIFETIME: float = 8.0
 const _WARMUP_SHOT_REPETITIONS: int = 10
 const _WARMUP_PROJECTILE_REPETITIONS: int = 4
-const _WARMUP_DESTRUCTION_REPETITIONS: int = 2
+const _WARMUP_DESTRUCTION_REPETITIONS: int = 1
 const _WARMUP_VEHICLE_FIRE_REPETITIONS: int = 3
 const _WARMUP_DELAYED_SHOT_BURSTS: int = 2
 const _WARMUP_SHOTS_PER_DELAYED_BURST: int = 2
+const _WARMUP_FRAME_GAP: int = 1
 const _MAIN_TANK_SCALE: float = 2.8
 const _MAIN_HELICOPTER_SCALE: float = 3.2
 const _MAIN_DRONE_SCALE: float = 1.0
@@ -75,6 +76,13 @@ var _last_log_msec: int = 0
 ## which prefab is the slowest to compile.
 var _probe_timings: Dictionary = {}
 var _probes_spawned: int = 0
+var _probe_staging_complete: bool = false
+var _pending_async_probes: int = 0
+var _completed_async_probes: int = 0
+var _async_probes_scheduled: int = 0
+var _main_scene_resource: PackedScene = null
+var _main_scene_load_done: bool = false
+var _main_scene_load_failed: bool = false
 var _camera_motion_enabled: bool = false
 var _camera_base_transform: Transform3D = Transform3D.IDENTITY
 var _started: bool = false
@@ -133,6 +141,13 @@ func _start_warmup() -> void:
 	_last_log_msec = 0
 	_probe_timings.clear()
 	_probes_spawned = 0
+	_probe_staging_complete = false
+	_pending_async_probes = 0
+	_completed_async_probes = 0
+	_async_probes_scheduled = 0
+	_main_scene_resource = null
+	_main_scene_load_done = false
+	_main_scene_load_failed = false
 	_start_msec = Time.get_ticks_msec()
 	print("[warmup] ui_play - gl_compatibility prewarm start")
 	_emit_progress(0.02, _STAGE_LOADING)
@@ -141,11 +156,7 @@ func _start_warmup() -> void:
 	# more in-engine menu) so it must self-start networking. has_method guards
 	# protect editor smoke tests where the autoload isn't present.
 	_start_network_connection()
-	var t0: int = Time.get_ticks_msec()
-	var err: int = ResourceLoader.load_threaded_request(main_scene_path)
-	print("[warmup] load_threaded_request(%s) → err=%d in %d ms" % [main_scene_path, err, Time.get_ticks_msec() - t0])
-	if err != OK:
-		push_warning("[warmup] load_threaded_request failed — will fall back to synchronous load on switch")
+	print("[warmup] Main.tscn will be loaded synchronously inside warmup overlay")
 	# Spawn next frame so the camera transform is already current.
 	call_deferred("_spawn_warmup_actors")
 
@@ -181,18 +192,17 @@ func _start_network_connection() -> void:
 	nm.call("connect_to_server")
 
 
-func _process(delta: float) -> void:
+func _process(_delta: float) -> void:
 	if not _started:
 		return
-	_elapsed += delta
+	_elapsed = float(Time.get_ticks_msec() - _start_msec) / 1000.0
 	_update_camera_motion_probe()
 	if _switching:
 		return
-	var status_progress: Array = [0]
-	var status: int = ResourceLoader.load_threaded_get_status(main_scene_path, status_progress)
-	var asset_progress: float = 0.0
-	if status_progress.size() > 0:
-		asset_progress = float(status_progress[0])
+	var status: int = _main_load_status()
+	var asset_progress: float = 1.0 if _main_scene_load_done else 0.0
+	if not _main_scene_load_done and not _main_scene_load_failed:
+		asset_progress = clampf(_elapsed / maxf(min_hold_seconds, 0.001), 0.0, 0.5)
 	# Two-band progress mapping so the bar always feels alive:
 	#   0 → 70 %: tracks asset_progress while Main.tscn is being parsed.
 	#             Single-threaded web export means this often jumps from 0 to
@@ -211,17 +221,22 @@ func _process(delta: float) -> void:
 		var loading_crawl: float = clampf(0.02 + (time_floor * 0.58), 0.02, 0.60)
 		blended = clampf(maxf(asset_band, loading_crawl), 0.02, 0.65)
 	else:
-		blended = clampf(0.7 + (time_floor * 0.25), 0.7, 0.95)
+		var probes_ready_for_swap: bool = _probe_staging_complete and _pending_async_probes <= 0
+		var compile_cap: float = 0.95 if probes_ready_for_swap else 0.90
+		blended = clampf(0.7 + (time_floor * (compile_cap - 0.7)), 0.7, compile_cap)
 	var stage: String = _STAGE_COMPILING if asset_progress >= 0.999 else _STAGE_LOADING
 	_emit_progress(blended, stage)
 	_log_tick_throttled(status, asset_progress, blended, stage)
 
 	var assets_ready: bool = (status == ResourceLoader.THREAD_LOAD_LOADED)
-	var hold_satisfied: bool = _elapsed >= min_hold_seconds
+	var probes_ready: bool = _probe_staging_complete and _pending_async_probes <= 0
+	var hold_satisfied: bool = _elapsed >= min_hold_seconds and probes_ready
 	var force_switch: bool = _elapsed >= max_hold_seconds
-	if (assets_ready and hold_satisfied) or force_switch:
-		if force_switch and not assets_ready:
+	if ((assets_ready or _main_scene_load_failed) and hold_satisfied) or force_switch:
+		if force_switch and not assets_ready and not _main_scene_load_failed:
 			push_warning("[warmup] FORCED SWITCH after %.2fs — Main.tscn still %s (asset_progress=%.2f). Game may hitch on first frame." % [_elapsed, _status_label(status), asset_progress])
+		elif force_switch and not probes_ready:
+			push_warning("[warmup] FORCED SWITCH after %.2fs - warmup probes still pending=%d staged=%s. Game may hitch on first combat VFX." % [_elapsed, _pending_async_probes, str(_probe_staging_complete)])
 		else:
 			print("[warmup] ready to switch: elapsed=%.2fs asset=100%% status=LOADED" % _elapsed)
 		_switch_to_main()
@@ -237,13 +252,17 @@ func _log_tick_throttled(status: int, asset_progress: float, blended: float, sta
 		return
 	_last_logged_asset = asset_progress
 	_last_log_msec = now
-	print("[warmup] tick t=%.2fs asset=%3d%% blended=%3d%% stage=%s status=%s probes=%d" % [
+	print("[warmup] tick t=%.2fs asset=%3d%% blended=%3d%% stage=%s status=%s probes=%d async=%d/%d pending=%d staged=%s" % [
 		_elapsed,
 		int(asset_progress * 100.0),
 		int(blended * 100.0),
 		stage,
 		_status_label(status),
 		_probes_spawned,
+		_completed_async_probes,
+		_async_probes_scheduled,
+		_pending_async_probes,
+		str(_probe_staging_complete),
 	])
 
 
@@ -254,6 +273,14 @@ func _status_label(status: int) -> String:
 		ResourceLoader.THREAD_LOAD_FAILED: return "FAILED"
 		ResourceLoader.THREAD_LOAD_LOADED: return "LOADED"
 		_: return "?"
+
+
+func _main_load_status() -> int:
+	if _main_scene_load_done:
+		return ResourceLoader.THREAD_LOAD_LOADED
+	if _main_scene_load_failed:
+		return ResourceLoader.THREAD_LOAD_FAILED
+	return ResourceLoader.THREAD_LOAD_IN_PROGRESS
 
 
 func _spawn_warmup_actors() -> void:
@@ -272,24 +299,56 @@ func _spawn_warmup_actors() -> void:
 	var t: int = Time.get_ticks_msec()
 	PlayerFireVFX.prewarm(_warmup_root)
 	_record_probe_time("PlayerFireVFX.prewarm", Time.get_ticks_msec() - t)
+	await _yield_warmup_frames()
 	_spawn_canvas_shader_probe()
+	await _yield_warmup_frames()
 	_spawn_camera_motion_probe()
+	await _yield_warmup_frames()
 
 	# Round 2 — actual frame draws of every per-shot pipeline. Each helper
 	# spawns the same primitive that runtime gameplay would, so the
 	# Compatibility renderer compiles the matching pipeline here instead of
 	# during a live firefight.
 	_spawn_player_shot_probe()
-	_spawn_vehicle_fire_probes()
+	await _yield_warmup_frames()
+	await _wait_for_main_load_before_scene_probes()
+	await _yield_warmup_frames()
+	await _spawn_vehicle_fire_probes()
+	await _yield_warmup_frames()
 	_spawn_charred_probe()
+	await _yield_warmup_frames()
 	_spawn_smoke_fire_probe()
+	await _yield_warmup_frames()
 	_spawn_explosion_probe()
+	await _yield_warmup_frames()
 	_spawn_static_debris_probe()
-	_spawn_projectile_scene_probes()
-	_spawn_grass_probe()
-	_spawn_vehicle_destruction_probes()
-	_spawn_actual_vehicle_destruction_probes()
-	print("[warmup] all %d probes staged in %d ms" % [_probes_spawned, Time.get_ticks_msec() - _start_msec])
+	await _yield_warmup_frames()
+	await _spawn_projectile_scene_probes()
+	await _yield_warmup_frames()
+	await _wait_for_async_probes("projectile/fire delayed probes", 3.0)
+	_probe_staging_complete = true
+	print("[warmup] all %d probes staged in %d ms (async scheduled=%d pending=%d)" % [_probes_spawned, Time.get_ticks_msec() - _start_msec, _async_probes_scheduled, _pending_async_probes])
+
+
+func _yield_warmup_frames(frames: int = _WARMUP_FRAME_GAP) -> void:
+	for _i: int in range(maxi(frames, 1)):
+		await get_tree().process_frame
+
+
+func _wait_for_main_load_before_scene_probes(_max_wait_seconds: float = 6.0) -> void:
+	if _main_scene_load_done or _main_scene_load_failed:
+		return
+	await _yield_warmup_frames()
+	var t: int = Time.get_ticks_msec()
+	print("[warmup] loading %s synchronously before scene probes" % main_scene_path)
+	var resource: Resource = ResourceLoader.load(main_scene_path)
+	if resource is PackedScene:
+		_main_scene_resource = resource as PackedScene
+		_main_scene_load_done = true
+		print("[warmup] synchronous Main load done in %d ms" % (Time.get_ticks_msec() - t))
+	else:
+		_main_scene_load_failed = true
+		push_warning("[warmup] synchronous Main load failed in %d ms; will fall back to change_scene_to_file" % (Time.get_ticks_msec() - t))
 
 
 ## Compile each vehicle type's STATIC materials by briefly instantiating its
@@ -304,32 +363,8 @@ func _spawn_warmup_actors() -> void:
 ## via [_spawn_turret_debris_synthetic_probe] using a dummy skeleton, so the
 ## first real tank cook-off doesn't compile that path inline.
 func _spawn_vehicle_destruction_probes() -> void:
-	var tank_overrides: Dictionary = {
-		"turret_path": NodePath("Model/Armature/Skeleton3D/TankBody_001"),
-		"barrel_path": NodePath("Model/Armature/Skeleton3D/TankBody_002"),
-	}
-	_spawn_vehicle_material_probe(
-		"tank materials",
-		"res://scenes/tank/tank.tscn",
-		Vector3(8.0, -2.2, _VEHICLE_PROBE_Z),
-		tank_overrides,
-		_MAIN_TANK_SCALE,
-	)
-	_spawn_vehicle_material_probe(
-		"helicopter materials",
-		"res://scenes/helicopter/helicopter.tscn",
-		Vector3(-8.0, -2.0, _VEHICLE_PROBE_Z),
-		{},
-		_MAIN_HELICOPTER_SCALE,
-	)
-	_spawn_vehicle_material_probe(
-		"drone materials",
-		"res://scenes/drone/drone.tscn",
-		Vector3(0.0, -1.2, _VEHICLE_PROBE_Z + 4.0),
-		{},
-		_MAIN_DRONE_SCALE,
-	)
 	_spawn_turret_debris_synthetic_probe()
+	await _yield_warmup_frames()
 	_spawn_real_tank_debris_probe()
 
 
@@ -387,12 +422,14 @@ func _spawn_actual_vehicle_destruction_probes() -> void:
 				n.position = base_pos + repeat_offset
 				var s: float = float(data["scale"])
 				n.scale = Vector3(s, s, s)
-			var run_timer: SceneTreeTimer = get_tree().create_timer(0.20 + 0.12 * float(repeat_index))
-			run_timer.timeout.connect(_run_actual_vehicle_destruction_probe.bind(
-				inst,
-				"%s #%d" % [String(data["label"]), repeat_index + 1]
-			))
+			var label: String = "%s #%d" % [String(data["label"]), repeat_index + 1]
+			_schedule_async_probe(
+				0.20 + 0.12 * float(repeat_index),
+				Callable(self, "_run_actual_vehicle_destruction_probe").bind(inst, label),
+				label
+			)
 			_schedule_free(inst, _WARMUP_PROBE_LIFETIME * 2.0)
+			await _yield_warmup_frames()
 	_record_probe_time("actual vehicle destruction flows x%d" % _WARMUP_DESTRUCTION_REPETITIONS, Time.get_ticks_msec() - t)
 
 
@@ -416,6 +453,37 @@ func _record_probe_time(name: String, msec: int) -> void:
 	_probe_timings[name] = msec
 	_probes_spawned += 1
 	print("[warmup]   probe '%s' staged in %d ms" % [name, msec])
+
+
+func _schedule_async_probe(delay_seconds: float, callback: Callable, label: String) -> void:
+	_pending_async_probes += 1
+	_async_probes_scheduled += 1
+	var timer: SceneTreeTimer = get_tree().create_timer(delay_seconds)
+	timer.timeout.connect(_run_async_probe.bind(callback, label))
+
+
+func _run_async_probe(callback: Callable, label: String) -> void:
+	if callback.is_valid():
+		callback.call()
+	_completed_async_probes += 1
+	_pending_async_probes = maxi(_pending_async_probes - 1, 0)
+	print("[warmup]   async probe '%s' complete (%d/%d, pending=%d)" % [
+		label,
+		_completed_async_probes,
+		_async_probes_scheduled,
+		_pending_async_probes,
+	])
+
+
+func _wait_for_async_probes(label: String, max_wait_seconds: float) -> void:
+	var start_msec: int = Time.get_ticks_msec()
+	while _pending_async_probes > 0 and not _switching:
+		var waited: float = float(Time.get_ticks_msec() - start_msec) / 1000.0
+		if waited >= max_wait_seconds:
+			push_warning("[warmup] async barrier '%s' timed out with pending=%d" % [label, _pending_async_probes])
+			return
+		await get_tree().process_frame
+	print("[warmup] async barrier '%s' clear" % label)
 
 
 func _update_camera_motion_probe() -> void:
@@ -504,8 +572,11 @@ func _spawn_player_shot_probe() -> void:
 		)
 
 	for burst_index: int in range(_WARMUP_DELAYED_SHOT_BURSTS):
-		var timer: SceneTreeTimer = get_tree().create_timer(0.18 + 0.12 * float(burst_index))
-		timer.timeout.connect(_run_player_shot_probe_burst.bind(muzzle, origin, base_aim, burst_index))
+		_schedule_async_probe(
+			0.18 + 0.12 * float(burst_index),
+			Callable(self, "_run_player_shot_probe_burst").bind(muzzle, origin, base_aim, burst_index),
+			"AR delayed burst #%d" % (burst_index + 1)
+		)
 
 	_schedule_free(muzzle, _WARMUP_PROBE_LIFETIME)
 	_schedule_free(tracer_pool, _WARMUP_PROBE_LIFETIME)
@@ -535,6 +606,7 @@ func _run_player_shot_probe_burst(muzzle: Node3D, origin: Vector3, base_aim: Vec
 func _spawn_vehicle_fire_probes() -> void:
 	var t: int = Time.get_ticks_msec()
 	_spawn_tank_fire_probe()
+	await _yield_warmup_frames()
 	_spawn_helicopter_fire_probe()
 	_record_probe_time(
 		"tank + helicopter controller fire x%d" % _WARMUP_VEHICLE_FIRE_REPETITIONS,
@@ -562,8 +634,11 @@ func _spawn_tank_fire_probe() -> void:
 	if tank.has_method("set_active"):
 		tank.call("set_active", false)
 	for i: int in range(_WARMUP_VEHICLE_FIRE_REPETITIONS):
-		var timer: SceneTreeTimer = get_tree().create_timer(0.20 + 0.16 * float(i))
-		timer.timeout.connect(_run_tank_fire_probe.bind(tank))
+		_schedule_async_probe(
+			0.20 + 0.16 * float(i),
+			Callable(self, "_run_tank_fire_probe").bind(tank),
+			"tank fire #%d" % (i + 1)
+		)
 	_schedule_free(tank, _WARMUP_PROBE_LIFETIME * 2.0)
 
 
@@ -593,8 +668,11 @@ func _spawn_helicopter_fire_probe() -> void:
 	if heli.has_method("set_active"):
 		heli.call("set_active", false)
 	for i: int in range(_WARMUP_VEHICLE_FIRE_REPETITIONS):
-		var timer: SceneTreeTimer = get_tree().create_timer(0.20 + 0.16 * float(i))
-		timer.timeout.connect(_run_helicopter_fire_probe.bind(heli))
+		_schedule_async_probe(
+			0.20 + 0.16 * float(i),
+			Callable(self, "_run_helicopter_fire_probe").bind(heli),
+			"helicopter missile fire #%d" % (i + 1)
+		)
 	_schedule_free(heli, _WARMUP_PROBE_LIFETIME * 2.0)
 
 
@@ -799,10 +877,9 @@ func _spawn_projectile_scene_probes() -> void:
 			continue
 		for i: int in range(_WARMUP_PROJECTILE_REPETITIONS):
 			_stage_projectile_probe(packed, x, i, 0.0)
-			var timer: SceneTreeTimer = get_tree().create_timer(0.12 + 0.08 * float(i))
-			timer.timeout.connect(_stage_projectile_probe.bind(packed, x + 0.04, i, -0.24))
 		x += 0.3
 		_record_probe_time("%s x%d" % [p.get_file(), _WARMUP_PROJECTILE_REPETITIONS], Time.get_ticks_msec() - t)
+		await _yield_warmup_frames()
 
 
 func _stage_projectile_probe(packed: PackedScene, x: float, index: int, y: float) -> void:
@@ -965,7 +1042,11 @@ func _spawn_real_tank_debris_probe() -> void:
 		n.scale = Vector3(_MAIN_TANK_SCALE, _MAIN_TANK_SCALE, _MAIN_TANK_SCALE)
 	# Defer one frame so tank's call_deferred("_capture_turret_and_barrel")
 	# from _ready has populated _skeleton / _turret_bone / _barrel_bone.
-	call_deferred("_run_real_tank_debris_probe", tank)
+	_schedule_async_probe(
+		0.05,
+		Callable(self, "_run_real_tank_debris_probe").bind(tank),
+		"real tank turret debris"
+	)
 	# Keep tank alive long enough for deferred capture + spawn_turret_debris,
 	# then free it. The debris RigidBody3D it spawns has its own lifetime
 	# (passed to spawn_turret_debris) so it cleans up independently.
@@ -1061,7 +1142,12 @@ func _switch_to_main() -> void:
 	_switching = true
 	_emit_progress(1.0, _STAGE_READY)
 	var total_msec: int = Time.get_ticks_msec() - _start_msec
-	print("[warmup] ===== summary (total %.2fs, %d probes) =====" % [total_msec / 1000.0, _probes_spawned])
+	print("[warmup] ===== summary (total %.2fs, %d probes, async %d/%d) =====" % [
+		total_msec / 1000.0,
+		_probes_spawned,
+		_completed_async_probes,
+		_async_probes_scheduled,
+	])
 	var keys: Array = _probe_timings.keys()
 	keys.sort_custom(func(a: Variant, b: Variant) -> bool:
 		return int(_probe_timings[a]) > int(_probe_timings[b]))
@@ -1069,12 +1155,11 @@ func _switch_to_main() -> void:
 		print("[warmup]   %5d ms  %s" % [int(_probe_timings[k]), k])
 	print("[warmup] ============================================")
 	PlayerFireVFX.set_pools(null, null)
-	var resource: Resource = ResourceLoader.load_threaded_get(main_scene_path)
-	if resource is PackedScene:
+	if _main_scene_resource is PackedScene:
 		print("[warmup] swapping to %s (PackedScene)" % main_scene_path)
 		# Defer one frame so the final progress event reaches React before the
 		# scene swap clears the WebBridge handler list.
-		call_deferred("_change_to_packed", resource as PackedScene)
+		call_deferred("_change_to_packed", _main_scene_resource)
 	else:
 		push_warning("[warmup] threaded load did not yield PackedScene — falling back to change_scene_to_file")
 		call_deferred("_change_to_file_fallback")

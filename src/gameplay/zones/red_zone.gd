@@ -193,16 +193,17 @@ func _collect_presence() -> Dictionary:
 
 func _update_local_capture(team_counts: Dictionary) -> void:
 	if team_counts.size() != 1:
-		_cancel_pending_capture()
+		_pause_pending_capture()
 		return
 	var present_team: String = String(team_counts.keys()[0])
 	if present_team == TEAM_NEUTRAL:
-		_cancel_pending_capture()
+		_pause_pending_capture()
 		return
 	if present_team == _owner_team:
 		_cancel_pending_capture()
 		return
 	if present_team == _capture_team:
+		_resume_pending_capture()
 		return
 	_start_capture(present_team)
 
@@ -213,8 +214,11 @@ func _start_capture(team: String) -> void:
 		_apply_flag_color(team)
 		_apply_zone_color(team)
 		return
+	var switching_capture: bool = _capture_team != TEAM_NEUTRAL and _capture_team != team
 	if _flag_tween != null:
 		_flag_tween.kill()
+	if switching_capture:
+		_set_flag_y(flag_top_y)
 
 	_capture_team = team
 	_apply_zone_color(_owner_team)
@@ -248,6 +252,18 @@ func _cancel_pending_capture() -> void:
 	_apply_flag_color(_owner_team)
 	_apply_zone_color(_owner_team)
 	_set_flag_y(flag_top_y)
+
+
+func _pause_pending_capture() -> void:
+	if _capture_team == TEAM_NEUTRAL or _flag_tween == null:
+		return
+	_flag_tween.pause()
+
+
+func _resume_pending_capture() -> void:
+	if _capture_team == TEAM_NEUTRAL or _flag_tween == null:
+		return
+	_flag_tween.play()
 
 
 func _set_flag_y(y: float) -> void:

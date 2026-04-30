@@ -103,7 +103,7 @@ func connect_to_server(url_override: String = "") -> void:
 			return
 		_socket.close()
 		_socket = null
-	var url: String = url_override if url_override != "" else config.client_url
+	var url: String = _resolve_client_url(url_override)
 	_socket = WebSocketPeer.new()
 	# Default 64 KB is too small — when the menu→Main scene transition stalls
 	# `_process` for a few hundred ms, snapshot bursts pile up and `write_packet`
@@ -122,6 +122,34 @@ func connect_to_server(url_override: String = "") -> void:
 	_hello_sent = false
 	_state = WebSocketPeer.STATE_CONNECTING
 	print("[net] dialing %s ..." % url)
+
+
+func _resolve_client_url(url_override: String = "") -> String:
+	if url_override != "":
+		return url_override
+	var configured_url: String = config.client_url.strip_edges()
+	if OS.has_feature("web") and _is_local_client_url(configured_url):
+		var browser_url: String = _browser_ws_url()
+		if browser_url != "":
+			return browser_url
+	return configured_url
+
+
+func _is_local_client_url(url: String) -> bool:
+	var lowered: String = url.to_lower()
+	return lowered.begins_with("ws://127.0.0.1") or lowered.begins_with("ws://localhost")
+
+
+func _browser_ws_url() -> String:
+	var host_name: String = str(JavaScriptBridge.eval("window.location.hostname", true))
+	if host_name == "" or host_name == "localhost" or host_name == "127.0.0.1":
+		return ""
+	var host: String = str(JavaScriptBridge.eval("window.location.host", true))
+	if host == "":
+		return ""
+	var page_protocol: String = str(JavaScriptBridge.eval("window.location.protocol", true))
+	var ws_scheme: String = "wss" if page_protocol == "https:" else "ws"
+	return "%s://%s/ws" % [ws_scheme, host]
 
 
 func disconnect_from_server() -> void:

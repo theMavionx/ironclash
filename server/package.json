@@ -6,7 +6,8 @@
 	"description": "Authoritative Node.js game server for Ironclash 5v5.",
 	"scripts": {
 		"dev": "node --watch src/index.ts",
-		"start": "node src/index.ts"
+		"start": "node src/index.ts",
+		"test": "node --test --import tsx test/*.test.ts"
 	},
 	"dependencies": {
 		"ws": "^8.18.0"
