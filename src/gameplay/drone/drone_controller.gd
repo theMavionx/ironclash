@@ -1,6 +1,8 @@
 class_name DroneController
 extends CharacterBody3D
 
+const _VISUAL_CONVEX_COLLIDERS := preload("res://src/gameplay/vehicle/visual_convex_colliders.gd")
+
 ## Emitted after the drone has been teleported back to its spawn point and
 ## physics is re-enabled. FPV HUD listens to clear the "DRONE OFFLINE" overlay.
 signal respawned
@@ -154,6 +156,12 @@ signal self_destructed(at_position: Vector3)
 ## How many blade meshes per motor (used to group consecutive entries).
 @export var blades_per_motor: int = 3
 
+@export_group("Collision Mesh")
+@export var rebuild_collision_from_visual_mesh: bool = true
+@export var collision_mesh_min_size: Vector3 = Vector3(0.04, 0.04, 0.04)
+@export var collision_mesh_max_shapes: int = 8
+@export var collision_mesh_ignore_names: PackedStringArray = PackedStringArray()
+
 # ---------------------------------------------------------------------------
 # Private state
 # ---------------------------------------------------------------------------
@@ -267,8 +275,30 @@ func _ready() -> void:
 		push_warning("DroneController: fpv_mount_path not set or not a Node3D (%s)" % fpv_mount_path)
 	if _model == null:
 		push_warning("DroneController: model_path not set or not a Node3D (%s)" % model_path)
+	else:
+		_rebuild_visual_mesh_collision()
 
 	_setup_propellers()
+
+
+func _rebuild_visual_mesh_collision() -> void:
+	if not rebuild_collision_from_visual_mesh:
+		return
+
+	var ignore_names := PackedStringArray(collision_mesh_ignore_names)
+	for propeller_name: String in propeller_node_names:
+		if not ignore_names.has(propeller_name):
+			ignore_names.append(propeller_name)
+
+	var built: int = _VISUAL_CONVEX_COLLIDERS.rebuild(
+		self,
+		_model,
+		collision_mesh_min_size,
+		ignore_names,
+		collision_mesh_max_shapes
+	)
+	if built == 0:
+		push_warning("DroneController: visual mesh collision build failed; keeping scene fallback shape")
 
 
 func _setup_propellers() -> void:
@@ -436,7 +466,7 @@ func _send_kamikaze_claim(collider: Node) -> void:
 	}
 	while node != null:
 		var lower: String = node.name.to_lower()
-		if lower == "tank" or lower == "helicopter":
+		if lower.begins_with("tank") or lower.begins_with("helicopter"):
 			msg["target_vehicle_id"] = lower
 			break
 		if "peer_id" in node:

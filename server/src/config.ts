@@ -31,6 +31,16 @@ export interface WeaponsRegistry {
 	[id: string]: WeaponDef;
 }
 
+export interface ControlPointConfig {
+	id: string;
+	label: string;
+	pos: Vec3;
+	radius_m: number;
+	height_m: number;
+	capture_seconds: number;
+	points_per_second: number;
+}
+
 export interface MatchConfig {
 	max_per_team: number;
 	min_per_team_to_start: number;
@@ -45,7 +55,9 @@ export interface MatchConfig {
 	warmup_seconds: number;
 	match_duration_seconds: number;
 	post_match_seconds: number;
-	kill_cap_per_team: number;
+	score_cap_per_team: number;
+	kill_score_points: number;
+	control_points: ControlPointConfig[];
 }
 
 const DEFAULT_MATCH: MatchConfig = {
@@ -60,9 +72,15 @@ const DEFAULT_MATCH: MatchConfig = {
 	max_horizontal_speed_mps: 12.0,
 	position_jitter_tolerance_m: 0.5,
 	warmup_seconds: 5.0,
-	match_duration_seconds: 120.0,
+	match_duration_seconds: 600.0,
 	post_match_seconds: 10.0,
-	kill_cap_per_team: 30,
+	score_cap_per_team: 1000,
+	kill_score_points: 0,
+	control_points: [
+		{ id: "alpha", label: "A", pos: [-9.77786, 0, -25.208], radius_m: 8.0, height_m: 80.0, capture_seconds: 5.0, points_per_second: 1.0 },
+		{ id: "bravo", label: "B", pos: [-54.6082, 10, -2.03007], radius_m: 8.0, height_m: 80.0, capture_seconds: 5.0, points_per_second: 1.0 },
+		{ id: "charlie", label: "C", pos: [42.0109, 10, -50.0658], radius_m: 8.0, height_m: 80.0, capture_seconds: 5.0, points_per_second: 1.0 },
+	],
 };
 
 const DEFAULT_WEAPONS: WeaponsRegistry = {

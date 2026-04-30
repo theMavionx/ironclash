@@ -24,6 +24,9 @@ extends Node
 ## Wire-protocol projectile id sent in `vehicle_fire` packets. Empty string
 ## disables fire forwarding (e.g. drone has no projectile yet).
 @export var projectile_id: String = "tank_shell"
+## Push the scene-authored start transform to the server after connect so
+## parked vehicles do not snap back to stale server constants.
+@export var sync_scene_spawn_on_connect: bool = true
 
 const _WEB_BRIDGE_PATH: NodePath = ^"/root/WebBridge"
 
@@ -40,6 +43,7 @@ var _server_aim_pitch: float = 0.0
 var _server_driver: int = -1
 var _server_alive: bool = true
 var _has_server_state: bool = false
+var _spawn_sync_sent: bool = false
 
 
 func _ready() -> void:
@@ -56,6 +60,10 @@ func _ready() -> void:
 		set_process(false)
 		return
 	NetworkManager.snapshot_received.connect(_on_snapshot)
+	if sync_scene_spawn_on_connect:
+		NetworkManager.connected_to_server.connect(_on_connected_to_server)
+		if NetworkManager.is_online():
+			call_deferred("_send_scene_spawn_sync")
 	# Wire local fire signals so when this peer is driving and the controller
 	# fires a projectile, we forward the spawn pose to the server which then
 	# broadcasts a `vehicle_fire` vfx_event for remote viewers.
@@ -79,6 +87,26 @@ func _is_driving_locally() -> bool:
 	if not _controller.has_method("is_physics_processing"):
 		return false
 	return bool(_controller.call("is_physics_processing"))
+
+
+func _on_connected_to_server(_peer_id: int, _team: String) -> void:
+	_send_scene_spawn_sync()
+
+
+func _send_scene_spawn_sync() -> void:
+	if _spawn_sync_sent or not sync_scene_spawn_on_connect:
+		return
+	if _body == null or not _has_network_manager() or not NetworkManager.is_online():
+		return
+	var aim_yaw: float = _body.rotation.y
+	var aim_pitch: float = 0.0
+	if _controller != null:
+		if _controller.has_method("get_aim_yaw"):
+			aim_yaw = float(_controller.call("get_aim_yaw"))
+		if _controller.has_method("get_aim_pitch"):
+			aim_pitch = float(_controller.call("get_aim_pitch"))
+	NetworkManager.send_vehicle_spawn_sync(vehicle_id, _body.global_position, _body.rotation, aim_yaw, aim_pitch)
+	_spawn_sync_sent = true
 
 
 func _get_health_component() -> HealthComponent:
@@ -207,6 +235,8 @@ func _on_snapshot(_tick: int, _server_t: int, _players: Array, vehicles: Array) 
 		var rot_arr: Array = v.get("rot", [0, 0, 0])
 		if pos_arr.size() < 3 or rot_arr.size() < 3:
 			return
+		var had_server_state: bool = _has_server_state
+		var was_alive: bool = _server_alive
 		_server_pos = Vector3(float(pos_arr[0]), float(pos_arr[1]), float(pos_arr[2]))
 		_server_rot = Vector3(float(rot_arr[0]), float(rot_arr[1]), float(rot_arr[2]))
 		_server_aim_yaw = float(v.get("aim_yaw", _server_rot.y))
@@ -214,6 +244,13 @@ func _on_snapshot(_tick: int, _server_t: int, _players: Array, vehicles: Array) 
 		_server_driver = int(v.get("driver_peer_id", -1))
 		_server_alive = bool(v.get("alive", true))
 		_has_server_state = true
+		if _server_alive and had_server_state and not was_alive:
+			_body.global_position = _server_pos
+			_body.rotation = _server_rot
+			if _controller != null and _controller.has_method("apply_network_respawned"):
+				_controller.call("apply_network_respawned")
+			if _controller != null and _controller.has_method("set_remote_aim"):
+				_controller.call("set_remote_aim", _server_aim_yaw, _server_aim_pitch)
 		# Tell the controller whether a non-local peer is currently driving so
 		# heli rotors / drone propellers keep spinning even though our local
 		# _physics_process is suspended.

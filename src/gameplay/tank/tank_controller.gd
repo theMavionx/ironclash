@@ -1,7 +1,7 @@
 class_name TankController
 extends CharacterBody3D
 
-const _VISUAL_AABB_COLLIDERS := preload("res://src/gameplay/vehicle/visual_aabb_colliders.gd")
+const _VISUAL_CONVEX_COLLIDERS := preload("res://src/gameplay/vehicle/visual_convex_colliders.gd")
 const _VEHICLE_DUST_VFX := preload("res://src/gameplay/vfx/vehicle_dust_vfx.gd")
 
 ## Basic tank drive controller.
@@ -166,14 +166,13 @@ signal fired_with_aim(spawn_origin: Vector3, aim_dir: Vector3)
 ## Seconds the destroyed tank smokes before the wreck, smoke, and debris disappear.
 @export var wreck_burn_seconds: float = 20.0
 
-@export_group("Collision AABB")
-## Build runtime BoxShape3D colliders from the visual mesh AABBs instead of
-## using the old single broad fallback shape authored in the scene.
-@export var rebuild_collision_from_visual_aabb: bool = true
-@export var collision_aabb_padding: Vector3 = Vector3(0.035, 0.025, 0.035)
-@export var collision_aabb_min_size: Vector3 = Vector3(0.12, 0.10, 0.08)
-@export var collision_aabb_max_shapes: int = 4
-@export var collision_aabb_ignore_names: PackedStringArray = PackedStringArray([
+@export_group("Collision Mesh")
+## Build runtime convex mesh colliders from the visual mesh instead of using
+## the old broad fallback box authored in the scene.
+@export var rebuild_collision_from_visual_mesh: bool = true
+@export var collision_mesh_min_size: Vector3 = Vector3(0.12, 0.10, 0.08)
+@export var collision_mesh_max_shapes: int = 8
+@export var collision_mesh_ignore_names: PackedStringArray = PackedStringArray([
 	"TankBody_002",
 	"WheelLeft1", "WheelLeft2", "WheelLeft3", "WheelLeft4", "WheelLeft5", "WheelLeft6", "WheelLeft7",
 	"WheelRight1", "WheelRight2", "WheelRight3", "WheelRight4", "WheelRight5", "WheelRight6", "WheelRight7",
@@ -204,6 +203,7 @@ var _pitch_delta: float = 0.0
 var _hull_yaw: float = 0.0
 var _current_turn_rate: float = 0.0
 var _ground_up: Vector3 = Vector3.UP
+var _body_scale: Vector3 = Vector3.ONE
 
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
 var _active: bool = true
@@ -341,10 +341,13 @@ func _mark_health_destroyed_no_signal() -> void:
 # ---------------------------------------------------------------------------
 
 func _ready() -> void:
+	_body_scale = global_transform.basis.get_scale().abs()
+	if _body_scale.x <= 0.001 or _body_scale.y <= 0.001 or _body_scale.z <= 0.001:
+		_body_scale = Vector3.ONE
 	_spawn_collision_layer = collision_layer
 	_spawn_collision_mask = collision_mask
 	_apply_slope_contact_settings()
-	_rebuild_visual_aabb_collision()
+	_rebuild_visual_mesh_collision()
 	_collect_wheels()
 	_setup_tread_materials()
 	_setup_tread_dust()
@@ -372,19 +375,18 @@ func _apply_slope_contact_settings() -> void:
 	safe_margin = tank_safe_margin
 
 
-func _rebuild_visual_aabb_collision() -> void:
-	if not rebuild_collision_from_visual_aabb:
+func _rebuild_visual_mesh_collision() -> void:
+	if not rebuild_collision_from_visual_mesh:
 		return
-	var built: int = _VISUAL_AABB_COLLIDERS.rebuild(
+	var built: int = _VISUAL_CONVEX_COLLIDERS.rebuild(
 		self,
 		_model,
-		collision_aabb_padding,
-		collision_aabb_min_size,
-		collision_aabb_ignore_names,
-		collision_aabb_max_shapes
+		collision_mesh_min_size,
+		collision_mesh_ignore_names,
+		collision_mesh_max_shapes
 	)
 	if built == 0:
-		push_warning("TankController: visual AABB collision build failed; keeping scene fallback shape")
+		push_warning("TankController: visual mesh collision build failed; keeping scene fallback shape")
 
 
 func _on_destroyed(_by_source: int) -> void:
@@ -982,7 +984,7 @@ func _apply_hull_basis(up: Vector3) -> void:
 			var z_axis: Vector3 = -forward
 			var x_axis: Vector3 = up.cross(z_axis).normalized()
 			basis = Basis(x_axis, up, z_axis)
-	global_basis = basis.orthonormalized()
+	global_basis = basis.orthonormalized().scaled(_body_scale)
 
 
 func _animate_wheels(linear_speed: float, delta: float) -> void:

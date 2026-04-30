@@ -26,10 +26,12 @@ extends Node
 @export_group("Camera Offsets — Tank")
 @export var tank_camera_offset: Vector3 = Vector3(2.5, 2.2, 0.0)
 @export var tank_camera_look_offset: Vector3 = Vector3(0.0, 1.3, 0.0)
+@export var tank_camera_pitch_look_scale: float = 3.0
 
 @export_group("Camera Offsets — Helicopter")
-@export var helicopter_camera_offset: Vector3 = Vector3(0.0, 2.2, -3.3)
-@export var helicopter_camera_look_offset: Vector3 = Vector3(0.0, 1.8, 0.0)
+@export var helicopter_camera_offset: Vector3 = Vector3(0.0, 5.6, -14.0)
+@export var helicopter_camera_look_offset: Vector3 = Vector3(0.0, 2.4, 0.0)
+@export var helicopter_camera_pitch_angle_scale: float = 1.0
 
 @export_group("Camera Offsets — Drone")
 @export var drone_camera_offset: Vector3 = Vector3(0.0, 0.75, 1.5)
@@ -43,6 +45,7 @@ extends Node
 @export var exit_ground_probe_up: float = 4.0
 @export var exit_ground_probe_down: float = 60.0
 @export var exit_ground_collision_mask: int = 1
+@export var auto_disable_extra_scene_vehicles: bool = true
 
 ## 0 = player, 1 = tank, 2 = helicopter, 3 = drone.
 var _active_index: int = 0
@@ -53,6 +56,7 @@ var _drone: DroneController
 var _camera: ChaseCamera
 var _fpv_post_process: CanvasLayer = null
 var _fpv_hud: CanvasLayer = null
+var _extra_scene_vehicles: Array[Node] = []
 
 
 func _ready() -> void:
@@ -79,13 +83,11 @@ func _ready() -> void:
 	if _fpv_hud == null and not fpv_hud_path.is_empty():
 		push_warning("VehicleSwitcher: fpv_hud_path not set or not a CanvasLayer")
 
+	if auto_disable_extra_scene_vehicles:
+		_collect_extra_scene_vehicles()
+
 	# Initialise all to inactive, then activate the first available slot.
-	if _tank:
-		_tank.set_active(false)
-	if _helicopter:
-		_helicopter.set_active(false)
-	if _drone:
-		_drone.set_active(false)
+	_deactivate_all_scene_vehicles()
 	if _player:
 		_player.set_active(false)
 	if _camera != null:
@@ -102,6 +104,7 @@ func _ready() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("interact"):
 		_handle_interact_pressed()
+		WebPointerLock.capture_from_user_gesture()
 		get_viewport().set_input_as_handled()
 
 
@@ -233,12 +236,7 @@ func _is_index_destroyed(index: int) -> bool:
 
 
 func _activate_player() -> void:
-	if _tank:
-		_tank.set_active(false)
-	if _helicopter:
-		_helicopter.set_active(false)
-	if _drone:
-		_drone.set_active(false)
+	_deactivate_all_scene_vehicles()
 	if _player:
 		_player.set_active(true)  # Player's embedded camera becomes current.
 	# Disable external chase camera — player's internal camera is current now.
@@ -254,6 +252,7 @@ func _activate_player() -> void:
 func _activate_tank() -> void:
 	if _player:
 		_player.set_active(false)
+	_deactivate_extra_scene_vehicles()
 	if _helicopter:
 		_helicopter.set_active(false)
 	if _drone:
@@ -263,12 +262,17 @@ func _activate_tank() -> void:
 	# Restore chase camera as the active renderer.
 	if _camera != null:
 		_camera.current = true
-		_camera.target_path = tank_path
-		_camera.yaw_source_path = tank_yaw_source_path if not tank_yaw_source_path.is_empty() else tank_path
-		_camera.offset = tank_camera_offset
-		_camera.look_offset = tank_camera_look_offset
-		# Re-resolve camera targets at runtime.
-		_camera._ready()
+		var yaw_path: NodePath = tank_yaw_source_path if not tank_yaw_source_path.is_empty() else tank_path
+		_camera.rebind(
+			tank_path,
+			yaw_path,
+			tank_camera_offset,
+			tank_camera_look_offset,
+			true,
+			false,
+			1.0,
+			tank_camera_pitch_look_scale
+		)
 	# Hide FPV overlays.
 	if _fpv_post_process != null:
 		_fpv_post_process.visible = false
@@ -279,6 +283,7 @@ func _activate_tank() -> void:
 func _activate_helicopter() -> void:
 	if _player:
 		_player.set_active(false)
+	_deactivate_extra_scene_vehicles()
 	if _tank:
 		_tank.set_active(false)
 	if _drone:
@@ -288,12 +293,15 @@ func _activate_helicopter() -> void:
 	# Restore chase camera as the active renderer.
 	if _camera != null:
 		_camera.current = true
-		_camera.target_path = helicopter_path
-		_camera.yaw_source_path = helicopter_path  # Heli body itself is the yaw source.
-		_camera.offset = helicopter_camera_offset
-		_camera.look_offset = helicopter_camera_look_offset
-		# Re-resolve camera targets at runtime.
-		_camera._ready()
+		_camera.rebind(
+			helicopter_path,
+			helicopter_path,
+			helicopter_camera_offset,
+			helicopter_camera_look_offset,
+			true,
+			true,
+			helicopter_camera_pitch_angle_scale
+		)
 	# Hide FPV overlays.
 	if _fpv_post_process != null:
 		_fpv_post_process.visible = false
@@ -304,6 +312,7 @@ func _activate_helicopter() -> void:
 func _activate_drone() -> void:
 	if _player:
 		_player.set_active(false)
+	_deactivate_extra_scene_vehicles()
 	if _tank:
 		_tank.set_active(false)
 	if _helicopter:
@@ -314,13 +323,45 @@ func _activate_drone() -> void:
 	if _camera != null:
 		_camera.current = false
 		# Still update target so it stays in sync if drone is deactivated.
-		_camera.target_path = drone_path
-		_camera.yaw_source_path = drone_path
-		_camera.offset = drone_camera_offset
-		_camera.look_offset = drone_camera_look_offset
-		_camera._ready()
+		_camera.rebind(drone_path, drone_path, drone_camera_offset, drone_camera_look_offset)
 	# Show FPV overlays.
 	if _fpv_post_process != null:
 		_fpv_post_process.visible = true
 	if _fpv_hud != null:
 		_fpv_hud.visible = true
+
+
+func _deactivate_all_scene_vehicles() -> void:
+	if _tank:
+		_tank.set_active(false)
+	if _helicopter:
+		_helicopter.set_active(false)
+	if _drone:
+		_drone.set_active(false)
+	_deactivate_extra_scene_vehicles()
+
+
+func _deactivate_extra_scene_vehicles() -> void:
+	for vehicle in _extra_scene_vehicles:
+		if vehicle == null or not is_instance_valid(vehicle):
+			continue
+		if vehicle.has_method("set_active"):
+			vehicle.call("set_active", false)
+
+
+func _collect_extra_scene_vehicles() -> void:
+	_extra_scene_vehicles.clear()
+	var root: Node = get_tree().current_scene
+	if root == null:
+		root = get_parent()
+	if root != null:
+		_collect_extra_scene_vehicles_recursive(root)
+
+
+func _collect_extra_scene_vehicles_recursive(node: Node) -> void:
+	var is_vehicle: bool = node is TankController or node is HelicopterController or node is DroneController
+	if is_vehicle and node != _tank and node != _helicopter and node != _drone:
+		if not _extra_scene_vehicles.has(node):
+			_extra_scene_vehicles.append(node)
+	for child in node.get_children():
+		_collect_extra_scene_vehicles_recursive(child)

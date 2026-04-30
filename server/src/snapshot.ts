@@ -8,7 +8,7 @@
 import type { SnapshotPlayer, SnapshotVehicle } from "../../shared/protocol.ts";
 import { cfg } from "./config.ts";
 import { players } from "./state/players.ts";
-import { vehicles } from "./state/vehicles.ts";
+import { check_vehicle_respawns, vehicles } from "./state/vehicles.ts";
 import { check_respawns, maybe_broadcast_match_state, tick_match_state } from "./state/match.ts";
 import { broadcast } from "./net/socket.ts";
 
@@ -20,6 +20,7 @@ function build_player_snapshot(): SnapshotPlayer[] {
 	for (const p of players.values()) {
 		out.push({
 			id: p.peer_id, team: p.team,
+			display_name: p.display_name,
 			pos: p.pos, rot_y: p.rot_y, aim_pitch: p.aim_pitch,
 			hp: p.hp, max_hp: p.max_hp, alive: p.alive,
 			weapon: p.weapon, move_state: p.move_state,
@@ -48,6 +49,9 @@ export function start_snapshot_loop(): void {
 		tick_match_state(now);
 		maybe_broadcast_match_state(now);
 		check_respawns(now);
+		for (const v of check_vehicle_respawns(now)) {
+			broadcast({ t: "vfx_event", kind: "smoke_fire_stop", entity_id: v.id, pos: v.pos });
+		}
 		if (players.size > 0) {
 			broadcast({
 				t: "snapshot",

@@ -28,6 +28,7 @@ export default function App() {
 	const [engineReady, setEngineReady] = useState<boolean>(false);
 	const [warmupReadyForPlay, setWarmupReadyForPlay] = useState<boolean>(false);
 	const [bootError, setBootError] = useState<string | null>(null);
+	const [displayName, setDisplayName] = useState<string>("Player");
 	const playSentRef = useRef<boolean>(false);
 
 	useEffect(() => {
@@ -40,10 +41,10 @@ export default function App() {
 		if (!playRequested || !engineReady || !warmupReadyForPlay || playSentRef.current) return;
 		playSentRef.current = true;
 		const id = window.setTimeout(() => {
-			godotBridge.emit(UiEvent.Play, {});
+			godotBridge.emit(UiEvent.Play, { display_name: displayName });
 		}, 0);
 		return () => window.clearTimeout(id);
-	}, [engineReady, playRequested, warmupReadyForPlay]);
+	}, [displayName, engineReady, playRequested, warmupReadyForPlay]);
 
 	return (
 		<div className="relative h-full w-full bg-bg">
@@ -59,7 +60,12 @@ export default function App() {
 			<div className="pointer-events-none absolute inset-0">
 				<HUD />
 				{engineReady && warmupReadyForPlay && !playRequested && bootError === null && (
-					<MenuOverlay onPlay={() => setPlayRequested(true)} />
+					<MenuOverlay
+						onPlay={(name) => {
+							setDisplayName(name);
+							setPlayRequested(true);
+						}}
+					/>
 				)}
 				{(!engineReady || !warmupReadyForPlay || playRequested || bootError !== null) && (
 					<LoadingOverlay

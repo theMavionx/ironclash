@@ -7,6 +7,7 @@ import {
 	type KillFeedPayload,
 	type LocalDiedPayload,
 	type MatchStatePayload,
+	type MatchZoneStatePayload,
 	type NetworkConnectedPayload,
 	type VehicleDriveStartPayload,
 	type VehicleHpPayload,
@@ -53,7 +54,17 @@ export default function HUD() {
 	useGodotEvent<KillFeedPayload>(GameEvent.KillFeed, (p) => {
 		setKills((rows) => {
 			const next: KillFeedRow[] = [
-				{ id: Date.now() + Math.random(), killer: p.killer, victim: p.victim, weapon: p.weapon, headshot: p.headshot },
+				{
+					id: Date.now() + Math.random(),
+					killer: p.killer,
+					killerName: p.killer_name || `P${p.killer}`,
+					killerTeam: p.killer_team,
+					victim: p.victim,
+					victimName: p.victim_name || `P${p.victim}`,
+					victimTeam: p.victim_team,
+					weapon: p.weapon,
+					headshot: p.headshot,
+				},
 				...rows,
 			];
 			return next.slice(0, 6);
@@ -83,19 +94,24 @@ export default function HUD() {
 
 	const hpPct: number = Math.max(0, Math.min(100, (hp.hp / Math.max(hp.max, 1)) * 100));
 	const isLow: boolean = hpPct <= 25;
+	const scoreCap: number = match?.score_cap ?? 1000;
 
 	return (
 		<>
 			{/* ── Top-center: team scoreboard + match state ─────────────────── */}
-			<div className="absolute left-1/2 top-4 -translate-x-1/2 flex items-center gap-4">
-				<TeamBadge color="red" count={match?.red_count ?? 0} score={match?.red_score ?? 0} />
-				<div className="flex flex-col items-center min-w-[140px]">
+			<div className="absolute left-1/2 top-4 flex -translate-x-1/2 items-start gap-4">
+				<TeamBadge color="red" count={match?.red_count ?? 0} score={match?.red_score ?? 0} cap={scoreCap} />
+				<div className="flex min-w-[170px] flex-col items-center bg-hud-bg px-3 py-2">
 					<div className="ui-label text-text-muted">{matchStateLabel(match?.state)}</div>
 					<div className="font-mono text-metric leading-none text-text">
 						{matchClockText(match)}
 					</div>
+					<div className="mt-1 font-mono text-caption uppercase text-text-muted">
+						Target {scoreCap}
+					</div>
+					<ZoneStrip zones={match?.zones ?? []} />
 				</div>
-				<TeamBadge color="blue" count={match?.blue_count ?? 0} score={match?.blue_score ?? 0} />
+				<TeamBadge color="blue" count={match?.blue_count ?? 0} score={match?.blue_score ?? 0} cap={scoreCap} />
 			</div>
 
 			{/* ── Warmup countdown overlay ─────────────────────────────────── */}
@@ -128,6 +144,9 @@ export default function HUD() {
 						</div>
 					</div>
 					<div className="mt-6 ui-label text-text-muted">
+						{postMatchReason(match)}
+					</div>
+					<div className="mt-1 ui-label text-text-muted">
 						Next match in {match.time_remaining.toFixed(0)}s
 					</div>
 				</div>
@@ -136,7 +155,7 @@ export default function HUD() {
 			{/* ── Top-right: kill feed ──────────────────────────────────────── */}
 			<div className="absolute right-6 top-6 flex w-72 flex-col gap-1 text-right">
 				{kills.map((row) => (
-					<KillFeedRowEl key={row.id} row={row} localPeer={localPeer?.peer_id} />
+					<KillFeedRowEl key={row.id} row={row} />
 				))}
 			</div>
 
@@ -147,7 +166,7 @@ export default function HUD() {
 					<div>
 						<div className="ui-label text-text-muted">You</div>
 						<div className="font-mono text-value text-text">
-							P{localPeer.peer_id}{" "}
+							{localPeer.display_name ?? `P${localPeer.peer_id}`}{" "}
 							<span className={localPeer.team === "red" ? "text-red-400" : "text-blue-400"}>
 								{(localPeer.team ?? "").toUpperCase()}
 							</span>
@@ -238,9 +257,18 @@ function matchClockText(m: MatchStatePayload | null): string {
 }
 
 function postMatchHeadline(m: MatchStatePayload): string {
+	if (m.winner === "red") return "RED WINS";
+	if (m.winner === "blue") return "BLUE WINS";
+	if (m.winner === "draw") return "DRAW";
 	if (m.red_score > m.blue_score) return "RED WINS";
 	if (m.blue_score > m.red_score) return "BLUE WINS";
 	return "DRAW";
+}
+
+function postMatchReason(m: MatchStatePayload): string {
+	if (m.win_reason === "score_cap") return "POINT LIMIT REACHED";
+	if (m.win_reason === "time") return "TIME LIMIT REACHED";
+	return "MATCH COMPLETE";
 }
 
 type ConnState = "connecting" | "open" | "closed" | "failed";
@@ -297,7 +325,11 @@ function ConnDot({ state }: { state: ConnState }) {
 interface KillFeedRow {
 	id: number;
 	killer: number;
+	killerName: string;
+	killerTeam: string;
 	victim: number;
+	victimName: string;
+	victimTeam: string;
 	weapon: string;
 	headshot: boolean;
 }
@@ -306,34 +338,96 @@ interface TeamBadgeProps {
 	color: "red" | "blue";
 	count: number;
 	score: number;
+	cap: number;
 }
 
-function TeamBadge({ color, count, score }: TeamBadgeProps) {
+function TeamBadge({ color, count, score, cap }: TeamBadgeProps) {
 	const colorClass: string = color === "red" ? "text-red-400 border-red-500/60" : "text-blue-400 border-blue-500/60";
+	const fillClass: string = color === "red" ? "bg-red-400" : "bg-blue-400";
+	const pct: number = Math.max(0, Math.min(100, (score / Math.max(cap, 1)) * 100));
 	return (
-		<div className={"flex flex-col items-center border px-4 py-1 min-w-[88px] " + colorClass}>
+		<div className={"flex min-w-[116px] flex-col items-center border bg-hud-bg px-4 py-2 " + colorClass}>
 			<div className="ui-label">{color.toUpperCase()}</div>
-			<div className="font-mono text-metric leading-none">{score}</div>
+			<div className="mt-1 flex items-end gap-1 font-mono leading-none">
+				<span className="text-metric">{score}</span>
+				<span className="pb-0.5 text-caption text-text-muted">/ {cap}</span>
+			</div>
+			<div className="mt-2 h-[3px] w-full bg-border">
+				<div className={"h-full transition-[width] duration-200 " + fillClass} style={{ width: `${pct}%` }} />
+			</div>
 			<div className="font-mono text-caption text-text-muted">{count} players</div>
+		</div>
+	);
+}
+
+function ZoneStrip({ zones }: { zones: MatchZoneStatePayload[] }) {
+	const visibleZones: MatchZoneStatePayload[] = zones.length > 0 ? zones : [
+		{ id: "alpha", label: "A", owner: "neutral", capture_team: "neutral", capture_progress: 0 },
+		{ id: "bravo", label: "B", owner: "neutral", capture_team: "neutral", capture_progress: 0 },
+		{ id: "charlie", label: "C", owner: "neutral", capture_team: "neutral", capture_progress: 0 },
+	];
+	return (
+		<div className="mt-2 flex items-center gap-1">
+			{visibleZones.map((zone) => (
+				<ZoneDot key={zone.id} zone={zone} />
+			))}
+		</div>
+	);
+}
+
+function ZoneDot({ zone }: { zone: MatchZoneStatePayload }) {
+	const ownerClass: string =
+		zone.owner === "red" ? "border-red-400 bg-red-500/30 text-red-200" :
+		zone.owner === "blue" ? "border-blue-400 bg-blue-500/30 text-blue-200" :
+		"border-text-muted bg-black/30 text-text-muted";
+	const captureClass: string =
+		zone.capture_team === "red" ? "bg-red-400" :
+		zone.capture_team === "blue" ? "bg-blue-400" :
+		"bg-transparent";
+	return (
+		<div className={"relative h-6 w-6 overflow-hidden border text-center font-mono text-caption leading-6 " + ownerClass}>
+			<div
+				className={"absolute bottom-0 left-0 h-[3px] transition-[width] duration-200 " + captureClass}
+				style={{ width: `${Math.max(0, Math.min(100, zone.capture_progress * 100))}%` }}
+			/>
+			<span className="relative">{zone.label}</span>
 		</div>
 	);
 }
 
 interface KillFeedRowElProps {
 	row: KillFeedRow;
-	localPeer?: number;
 }
 
-function KillFeedRowEl({ row, localPeer }: KillFeedRowElProps) {
-	const youKilled: boolean = row.killer === localPeer;
-	const youDied: boolean = row.victim === localPeer;
-	const killerCls: string = youKilled ? "text-friendly" : "text-text";
-	const victimCls: string = youDied ? "text-danger" : "text-enemy";
+function KillFeedRowEl({ row }: KillFeedRowElProps) {
+	const killerCls: string = teamNameClass(row.killerTeam);
+	const victimCls: string = teamNameClass(row.victimTeam);
 	return (
 		<div className="flex items-center justify-end gap-2 bg-hud-bg px-2 py-1 text-label">
-			<span className={killerCls}>P{row.killer}</span>
-			<span className="text-text-muted">[{row.weapon.toUpperCase()}{row.headshot ? " HS" : ""}]</span>
-			<span className={victimCls}>P{row.victim}</span>
+			<span className={killerCls}>{row.killerName}</span>
+			<WeaponGlyph weapon={row.weapon} headshot={row.headshot} />
+			<span className={victimCls}>{row.victimName}</span>
 		</div>
+	);
+}
+
+function teamNameClass(team: string): string {
+	if (team === "red") return "text-red-400";
+	if (team === "blue") return "text-blue-400";
+	return "text-text";
+}
+
+function WeaponGlyph({ weapon, headshot }: { weapon: string; headshot: boolean }) {
+	return (
+		<span className="inline-flex items-center gap-1 text-text-muted" title={`${weapon.toUpperCase()}${headshot ? " HS" : ""}`}>
+			<svg
+				aria-hidden
+				viewBox="0 0 24 24"
+				className="h-4 w-4 fill-current"
+			>
+				<path d="M3 9h11.5l1.4-2H21v3h-3.3l-1.6 2.2 1.9 1.8v3h-3v-1.8l-2.4-2.2H9.2L8 17H5l1.2-4H3V9Zm6 2h5.1l.7-1H9v1Z" />
+			</svg>
+			{headshot && <span className="font-mono text-caption text-accent">HS</span>}
+		</span>
 	);
 }

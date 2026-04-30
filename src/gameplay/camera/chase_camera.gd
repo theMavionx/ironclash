@@ -19,6 +19,10 @@ extends Camera3D
 ## How much the camera look-target shifts vertically per radian of barrel pitch.
 ## Higher = camera tilts more dramatically with aim. 0 = camera ignores pitch.
 @export var pitch_look_scale: float = 3.0
+## When true, pitch rotates the view direction as an angle instead of only
+## shifting the look target. Useful for high/far vehicle cameras like heli.
+@export var use_angular_pitch: bool = false
+@export var pitch_angle_scale: float = 1.0
 ## Flip sign if mouse-up ends up looking DOWN instead of UP.
 @export var invert_aim_pitch: bool = true
 
@@ -37,6 +41,35 @@ var _manual_yaw: float = 0.0
 
 
 func _ready() -> void:
+	_resolve_targets()
+	_update_camera()
+
+
+func rebind(
+	new_target_path: NodePath,
+	new_yaw_source_path: NodePath,
+	new_offset: Vector3,
+	new_look_offset: Vector3,
+	reset_manual_orbit: bool = true,
+	new_use_angular_pitch: bool = false,
+	new_pitch_angle_scale: float = 1.0,
+	new_pitch_look_scale: float = NAN
+) -> void:
+	target_path = new_target_path
+	yaw_source_path = new_yaw_source_path
+	offset = new_offset
+	look_offset = new_look_offset
+	use_angular_pitch = new_use_angular_pitch
+	pitch_angle_scale = new_pitch_angle_scale
+	if not is_nan(new_pitch_look_scale):
+		pitch_look_scale = new_pitch_look_scale
+	if reset_manual_orbit:
+		_manual_yaw = 0.0
+	_resolve_targets()
+	_update_camera()
+
+
+func _resolve_targets() -> void:
 	_target = get_node_or_null(target_path) as Node3D
 	if _target == null:
 		push_warning("ChaseCamera: target_path not set or not a Node3D (%s)" % target_path)
@@ -44,7 +77,6 @@ func _ready() -> void:
 	_yaw_source = get_node_or_null(yaw_source_path) as Node3D
 	if _yaw_source == null:
 		_yaw_source = _target
-	_update_camera()
 
 
 func _physics_process(delta: float) -> void:
@@ -67,6 +99,8 @@ func _read_arrow_input(delta: float) -> void:
 
 
 func _update_camera() -> void:
+	if _target == null or _yaw_source == null:
+		return
 	var yaw: float
 	if _target and _target.has_method("get_aim_yaw"):
 		yaw = _target.call("get_aim_yaw")
@@ -85,5 +119,16 @@ func _update_camera() -> void:
 		pitch = _target.call("get_aim_pitch")
 	if invert_aim_pitch:
 		pitch = -pitch
+	var base_look_target: Vector3 = _target.global_position + look_offset
+	if use_angular_pitch:
+		var forward: Vector3 = base_look_target - global_position
+		if forward.length_squared() > 0.0001:
+			forward = forward.normalized()
+			var right: Vector3 = forward.cross(Vector3.UP)
+			if right.length_squared() > 0.0001:
+				right = right.normalized()
+				forward = forward.rotated(right, pitch * pitch_angle_scale)
+				look_at(global_position + forward, Vector3.UP)
+				return
 	var pitch_y: float = pitch * pitch_look_scale
-	look_at(_target.global_position + look_offset + Vector3(0.0, pitch_y, 0.0), Vector3.UP)
+	look_at(base_look_target + Vector3(0.0, pitch_y, 0.0), Vector3.UP)

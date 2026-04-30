@@ -141,14 +141,15 @@ static func spawn_smoke_fire(
 			root.position = smoke_origin
 
 	var smoke_footprint: Vector2 = _estimate_smoke_footprint(vehicle)
+	var smoke_density_scale: float = _estimate_smoke_density_scale(vehicle)
 
 	# Smoke starts from the lower visible body mesh, then spreads across the
 	# vehicle footprint so wreck smoke rises out of the hull/ground contact.
 	var source_pos: Vector3 = Vector3.ZERO
 	if not _should_use_gpu_particle_emitters():
-		_build_web_smoke(root, smoke_footprint, source_pos)
+		_build_web_smoke(root, smoke_footprint, source_pos, smoke_density_scale)
 	else:
-		var smoke: GPUParticles3D = _build_smoke(smoke_footprint)
+		var smoke: GPUParticles3D = _build_smoke(smoke_footprint, smoke_density_scale)
 		smoke.position = source_pos
 		root.add_child(smoke)
 
@@ -199,7 +200,7 @@ static func spawn_turret_debris(
 	turret_pose: Quaternion,
 	barrel_pose: Quaternion,
 	spawn_world: Transform3D,
-	turret_bone_local: Transform3D,
+	_turret_bone_local: Transform3D,
 	keep_mesh_names: PackedStringArray,
 	mass: float = 500.0,
 	upward_velocity: float = 12.0,
@@ -210,6 +211,11 @@ static func spawn_turret_debris(
 	if model_node == null:
 		push_warning("DestructionVFX: model_node null, skipping cook-off")
 		return null
+
+	var visual_scale: Vector3 = spawn_world.basis.get_scale().abs()
+	var shape_scale: float = maxf(maxf(visual_scale.x, visual_scale.y), visual_scale.z)
+	if shape_scale <= 0.001:
+		shape_scale = 1.0
 
 	# Build the rigid body programmatically.
 	var debris: RigidBody3D = RigidBody3D.new()
@@ -235,7 +241,7 @@ static func spawn_turret_debris(
 	# Collision shape: rough bounds of turret + barrel.
 	var shape: CollisionShape3D = CollisionShape3D.new()
 	var box: BoxShape3D = BoxShape3D.new()
-	box.size = Vector3(1.5, 0.6, 2.0)
+	box.size = Vector3(1.5, 0.6, 2.0) * shape_scale
 	shape.shape = box
 	debris.add_child(shape)
 
@@ -249,6 +255,7 @@ static func spawn_turret_debris(
 		push_warning("DestructionVFX: no Skeleton3D under model_node, skipping cook-off")
 		debris.queue_free()
 		return null
+	var skel_world: Transform3D = src_skel.global_transform
 	var skel_copy: Skeleton3D = _clone_skeleton_bones(src_skel)
 	debris.add_child(skel_copy)
 	# Freeze the new skeleton at the destruction-frame pose: rest by default,
@@ -270,9 +277,11 @@ static func spawn_turret_debris(
 		# airborne turret/barrel read as burned too.
 		apply_charred(skel_copy)
 
-	# Parent to world root BEFORE setting global_transform.
+	# Parent to world root BEFORE setting global_transform. Keep the physics
+	# body unscaled: physics can strip scale from RigidBody3D transforms, which
+	# made enlarged tanks shed a tiny turret. The visual child keeps the scale.
 	world_root.add_child(debris)
-	debris.global_transform = spawn_world
+	debris.global_transform = Transform3D(spawn_world.basis.orthonormalized(), spawn_world.origin)
 	# Exclude collision with any PhysicsBody3D at the spawn point.
 	if model_node != null:
 		var donor: Node = model_node.get_parent()
@@ -284,7 +293,7 @@ static func spawn_turret_debris(
 	# — the turret would dip below ground during tumble.
 	# Math: skeleton.global * turret_bone_local = debris.global (desired)
 	#     → skeleton.global = debris.global * turret_bone_local.affine_inverse()
-	skel_copy.global_transform = spawn_world * turret_bone_local.affine_inverse()
+	skel_copy.global_transform = skel_world
 
 	# Set velocities DIRECTLY (m/s and rad/s) instead of impulses. Bypasses
 	# any mass-synchronization issues with the physics server on spawn.
@@ -426,6 +435,14 @@ static func _estimate_smoke_footprint(vehicle: Node3D) -> Vector2:
 	)
 
 
+static func _estimate_smoke_density_scale(vehicle: Node3D) -> float:
+	var visual_scale: Vector3 = vehicle.global_transform.basis.get_scale().abs()
+	var scale_max: float = maxf(maxf(visual_scale.x, visual_scale.y), visual_scale.z)
+	if scale_max <= 0.001:
+		return 1.0
+	return clampf(scale_max / 2.0, 1.0, 2.0)
+
+
 static func _estimate_visual_smoke_origin(vehicle: Node3D, fallback_y: float) -> Vector3:
 	var bounds: Dictionary = {
 		"found": false,
@@ -505,17 +522,21 @@ static func _accumulate_mesh_footprint(root: Node, vehicle_inverse: Transform3D,
 # Internal builders
 # ---------------------------------------------------------------------------
 
-static func _build_smoke(footprint: Vector2 = Vector2(0.8, 0.8)) -> GPUParticles3D:
+static func _build_smoke(
+	footprint: Vector2 = Vector2(0.8, 0.8),
+	density_scale: float = 1.0
+) -> GPUParticles3D:
 	# Wreck smoke plume. Uses authored smoke sprites instead of radial discs so
 	# individual particles blend into a soft, torn smoke column rather than
 	# visible circular bubbles.
 	var footprint_x: float = clampf(footprint.x, 0.5, 3.6)
 	var footprint_z: float = clampf(footprint.y, 0.5, 4.8)
 	var footprint_scale: float = clampf(maxf(footprint_x, footprint_z) / 2.8, 0.75, 1.35)
+	var density: float = clampf(density_scale, 1.0, 2.0)
 	var web_build: bool = _is_web_build()
 	var p: GPUParticles3D = GPUParticles3D.new()
 	p.name = "Smoke"
-	p.amount = int(roundf((34.0 if web_build else 72.0) * footprint_scale))
+	p.amount = int(roundf((38.0 if web_build else 82.0) * footprint_scale * density))
 	p.lifetime = 3.8 if web_build else 4.4
 	p.preprocess = 0.65 if web_build else 1.1
 	p.explosiveness = 0.0
@@ -578,7 +599,7 @@ static func _build_smoke(footprint: Vector2 = Vector2(0.8, 0.8)) -> GPUParticles
 	var quad: QuadMesh = QuadMesh.new()
 	quad.size = Vector2(1.18, 1.04) if web_build else Vector2(1.55, 1.32)
 	var smoke_mat: Material = _make_smoke_material(
-		Color(0.28, 0.29, 0.32, 0.62) if web_build else Color(0.26, 0.27, 0.30, 0.86),
+		Color(0.27, 0.28, 0.31, 0.72) if web_build else Color(0.24, 0.25, 0.28, 0.92),
 		3.0 if web_build else 4.0
 	)
 	if smoke_mat != null:
@@ -728,24 +749,30 @@ static func _build_embers() -> GPUParticles3D:
 	return p
 
 
-static func _build_web_smoke(root: Node3D, footprint: Vector2, source_pos: Vector3) -> void:
+static func _build_web_smoke(
+	root: Node3D,
+	footprint: Vector2,
+	source_pos: Vector3,
+	density_scale: float = 1.0
+) -> void:
 	var vfx = _WEB_SHADER_BILLBOARD_VFX_SCRIPT.new()
 	vfx.name = "WebShaderSmoke"
 	root.add_child(vfx)
 	vfx.position = source_pos
-	_populate_web_shader_smoke(vfx, footprint)
+	_populate_web_shader_smoke(vfx, footprint, density_scale)
 
 
-static func _populate_web_shader_smoke(vfx, footprint: Vector2) -> void:
+static func _populate_web_shader_smoke(vfx, footprint: Vector2, density_scale: float = 1.0) -> void:
 	var footprint_x: float = clampf(footprint.x, 0.5, 3.6)
 	var footprint_z: float = clampf(footprint.y, 0.5, 4.8)
 	var footprint_scale: float = clampf(maxf(footprint_x, footprint_z) / 2.8, 0.75, 1.35)
+	var density: float = clampf(density_scale, 1.0, 2.0)
 
-	var smoke_count: int = int(roundf(32.0 * footprint_scale))
+	var smoke_count: int = int(roundf(42.0 * footprint_scale * density))
 	for i: int in range(smoke_count):
 		vfx.add_card(
 			"Smoke%02d" % i,
-			_make_web_smoke_material(Color(0.24, 0.25, 0.27, 0.86), randf() * 20.0),
+			_make_web_smoke_material(Color(0.22, 0.23, 0.25, 0.92), randf() * 20.0),
 			Vector2(1.34, 1.18),
 			Vector3(0.0, 0.04, 0.0),
 			Vector3(footprint_x * 0.30, 0.03, footprint_z * 0.26),

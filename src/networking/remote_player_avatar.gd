@@ -13,6 +13,7 @@ extends Node3D
 
 var peer_id: int = -1
 var team: String = ""
+var display_name: String = ""
 
 var _target_pos: Vector3 = Vector3.ZERO
 var _target_rot_y: float = 0.0
@@ -59,9 +60,10 @@ func _ensure_ak_muzzle() -> void:
 	ak47.add_child(muzzle)
 
 
-func setup(p_peer_id: int, p_team: String, initial_pos: Vector3, initial_rot_y: float) -> void:
+func setup(p_peer_id: int, p_team: String, initial_pos: Vector3, initial_rot_y: float, p_display_name: String = "") -> void:
 	peer_id = p_peer_id
 	team = p_team
+	display_name = _clean_display_name(p_display_name)
 	if _body != null:
 		_body.global_position = initial_pos
 		_body.rotation.y = initial_rot_y
@@ -72,8 +74,13 @@ func setup(p_peer_id: int, p_team: String, initial_pos: Vector3, initial_rot_y: 
 	_refresh_label()
 
 
-func update_from_snapshot(pos: Vector3, rot_y: float, hp: int, max_hp: int, alive: bool, weapon: String = "", move_state: String = "") -> void:
+func update_from_snapshot(pos: Vector3, rot_y: float, hp: int, max_hp: int, alive: bool, weapon: String = "", move_state: String = "", p_display_name: String = "") -> void:
 	var now: int = Time.get_ticks_msec()
+	if p_display_name != "":
+		var next_name: String = _clean_display_name(p_display_name)
+		if next_name != display_name:
+			display_name = next_name
+			_refresh_label()
 	var dt_ms: float = max(1.0, float(now - _last_snapshot_msec))
 	var dt: float = dt_ms / 1000.0
 	if _body != null:
@@ -182,5 +189,14 @@ func _process(delta: float) -> void:
 func _refresh_label() -> void:
 	if _label == null:
 		return
-	_label.text = "P%d %s  %d/%d" % [peer_id, team, _hp, _max_hp]
+	var shown_name: String = display_name if display_name != "" else "P%d" % peer_id
+	_label.text = "%s  %d/%d" % [shown_name, _hp, _max_hp]
 	_label.modulate = Color(1.0, 0.45, 0.45) if team == "red" else Color(0.5, 0.75, 1.0)
+
+
+func _clean_display_name(raw: String) -> String:
+	var clean: String = raw.strip_edges()
+	clean = clean.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+	if clean.length() > 16:
+		clean = clean.substr(0, 16)
+	return clean

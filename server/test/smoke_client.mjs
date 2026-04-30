@@ -14,6 +14,7 @@ import { WebSocket } from "ws";
 
 const URL = process.env.URL ?? "ws://127.0.0.1:9080";
 const NUM_CLIENTS = 3;
+const PROTOCOL_VERSION = process.env.PROTOCOL_VERSION ?? "0.1.3";
 
 class TestClient {
 	constructor(label) {
@@ -35,8 +36,9 @@ class TestClient {
 			this.ws.once("open", () => {
 				this.ws.send(JSON.stringify({
 					t: "hello",
-					client_version: "smoke-0.1.0",
-					protocol_version: "0.1.0",
+					client_version: `smoke-${PROTOCOL_VERSION}`,
+					protocol_version: PROTOCOL_VERSION,
+					display_name: label,
 				}));
 				res();
 			});

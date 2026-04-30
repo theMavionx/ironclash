@@ -64,6 +64,7 @@ func _on_snapshot(_tick: int, _server_t: int, players: Array, vehicles: Array) -
 			continue
 		seen[pid] = true
 		var team: String = String(p_dict.get("team", ""))
+		var display_name: String = String(p_dict.get("display_name", "Player%d" % pid))
 		var pos: Vector3 = _vec3_from_array(p_dict.get("pos", null))
 		var rot_y: float = float(p_dict.get("rot_y", 0.0))
 		var hp: int = int(p_dict.get("hp", 100))
@@ -73,9 +74,9 @@ func _on_snapshot(_tick: int, _server_t: int, players: Array, vehicles: Array) -
 		var move_state: String = String(p_dict.get("move_state", "idle"))
 		var rp: Node3D = _remote_players.get(pid)
 		if rp == null or not is_instance_valid(rp):
-			rp = _spawn(pid, team, pos, rot_y)
+			rp = _spawn(pid, team, display_name, pos, rot_y)
 		if rp != null and rp.has_method("update_from_snapshot"):
-			rp.call("update_from_snapshot", pos, rot_y, hp, max_hp, alive, weapon, move_state)
+			rp.call("update_from_snapshot", pos, rot_y, hp, max_hp, alive, weapon, move_state, display_name)
 		if rp != null and is_instance_valid(rp):
 			_flush_pending_remote_fire_events(pid)
 
@@ -124,13 +125,13 @@ func _sync_local_vehicle_hud(vehicles: Array) -> void:
 	})
 
 
-func _spawn(peer_id: int, team: String, pos: Vector3, rot_y: float) -> Node3D:
+func _spawn(peer_id: int, team: String, display_name: String, pos: Vector3, rot_y: float) -> Node3D:
 	var rp: Node3D = REMOTE_PLAYER_SCENE.instantiate()
 	add_child(rp)
 	if rp.has_method("setup"):
-		rp.call("setup", peer_id, team, pos, rot_y)
+		rp.call("setup", peer_id, team, pos, rot_y, display_name)
 	_remote_players[peer_id] = rp
-	print("[net] spawned remote peer=%d team=%s at %s" % [peer_id, team, pos])
+	print("[net] spawned remote peer=%d name=%s team=%s at %s" % [peer_id, display_name, team, pos])
 	return rp
 
 
@@ -455,7 +456,7 @@ func _start_vehicle_destroyed_vfx(vehicle_id: String, vehicle: Node3D) -> void:
 	_apply_network_vehicle_destroyed(vehicle)
 	var already_has_vfx: bool = vehicle.get_node_or_null("_DestructionVFX") != null
 	var is_drone: bool = vehicle_key == "drone"
-	var is_helicopter: bool = vehicle_key == "helicopter" or vehicle_key == "heli"
+	var is_helicopter: bool = vehicle_key.begins_with("helicopter") or vehicle_key == "heli"
 	# Controller-owned destruction may already have spawned attached VFX.
 	# A second generic charred pass would also hit those smoke MeshInstances,
 	# turning their transparent cards into black quads. Drone/heli also have
@@ -546,11 +547,20 @@ func _stop_network_smoke_by_key(key: String) -> void:
 
 func _vehicle_node_for_id(vehicle_id: String) -> Node3D:
 	var name: String = ""
-	match vehicle_id.to_lower():
+	var key: String = vehicle_id.to_lower()
+	match key:
 		"tank":
 			name = "Tank"
+		"tank2":
+			name = "Tank2"
+		"tank3":
+			name = "Tank3"
+		"tank4":
+			name = "Tank4"
 		"helicopter", "heli":
 			name = "Helicopter"
+		"helicopter2", "heli2":
+			name = "Helicopter2"
 		"drone":
 			name = "Drone"
 		_:
@@ -567,15 +577,14 @@ func _vehicle_node_for_id(vehicle_id: String) -> Node3D:
 
 
 func _vehicle_vfx_offset(vehicle_id: String) -> float:
-	match vehicle_id.to_lower():
-		"tank":
-			return 1.2
-		"helicopter", "heli":
-			return 1.5
-		"drone":
-			return 0.4
-		_:
-			return 1.0
+	var key: String = vehicle_id.to_lower()
+	if key.begins_with("tank"):
+		return 1.2
+	if key.begins_with("helicopter") or key == "heli" or key == "heli2":
+		return 1.5
+	if key == "drone":
+		return 0.4
+	return 1.0
 
 
 func _payload_has_vec3(payload: Dictionary, key: String) -> bool:

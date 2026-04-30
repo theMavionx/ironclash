@@ -2,6 +2,7 @@ class_name HelicopterController
 extends CharacterBody3D
 
 const _VEHICLE_DUST_VFX := preload("res://src/gameplay/vfx/vehicle_dust_vfx.gd")
+const _VISUAL_CONVEX_COLLIDERS := preload("res://src/gameplay/vehicle/visual_convex_colliders.gd")
 
 ## Helicopter flight controller with rotor animation.
 ## Implements: design/gdd/helicopter_movement.md (pending)
@@ -34,9 +35,17 @@ const _VEHICLE_DUST_VFX := preload("res://src/gameplay/vfx/vehicle_dust_vfx.gd")
 @export_group("Camera Pitch")
 ## Radians per screen pixel of mouse Y. Drives camera tilt ONLY (body doesn't pitch).
 @export var camera_pitch_sensitivity: float = 0.0025
-@export var camera_min_pitch_deg: float = -45.0
-@export var camera_max_pitch_deg: float = 45.0
+@export var camera_min_pitch_deg: float = -60.0
+@export var camera_max_pitch_deg: float = 75.0
 @export var invert_camera_pitch: bool = true
+
+@export_group("Ground Safety")
+@export var ground_clearance: float = 3.15
+@export var ground_probe_up: float = 12.0
+@export var ground_probe_down: float = 90.0
+@export_flags_3d_physics var ground_probe_collision_mask: int = 1
+@export var wreck_ground_clearance: float = 1.1
+@export_node_path("Node3D") var ground_terrain_path: NodePath
 
 @export_group("Missiles")
 ## Shell scene spawned when firing a missile (reuses tank shell visual).
@@ -67,6 +76,16 @@ const _VEHICLE_DUST_VFX := preload("res://src/gameplay/vfx/vehicle_dust_vfx.gd")
 @export var rotor_dust_min_speed: float = 6.0
 @export_flags_3d_physics var rotor_dust_collision_mask: int = 1
 
+@export_group("Collision Mesh")
+@export var rebuild_collision_from_visual_mesh: bool = true
+@export var collision_mesh_min_size: Vector3 = Vector3(0.08, 0.08, 0.08)
+@export var collision_mesh_max_shapes: int = 10
+@export var collision_mesh_ignore_names: PackedStringArray = PackedStringArray([
+	"Object_10",
+	"Object_37", "Object_39", "Cube_003_11",
+	"r1", "r2", "r3", "r4",
+])
+
 @export_group("Crash Debris")
 ## Name of the main-rotor Node3D in the GLB hierarchy to use as a subtree
 ## for rotor-disc debris. Leave empty to skip rotor disc debris.
@@ -95,7 +114,7 @@ const _VEHICLE_DUST_VFX := preload("res://src/gameplay/vfx/vehicle_dust_vfx.gd")
 
 @export_group("Destroyed Wreck")
 ## Seconds the destroyed helicopter smokes before the wreck, smoke, and debris disappear.
-@export var wreck_burn_seconds: float = 20.0
+@export var wreck_burn_seconds: float = 45.0
 ## Initial downward speed applied on death so stale floor state/snapshots cannot leave it hovering.
 @export var wreck_initial_drop_speed: float = 2.2
 ## Clamp fall speed to avoid physics spikes in browser builds.
@@ -154,6 +173,8 @@ var _camera_pitch: float = 0.0
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
 
 @onready var _health: HealthComponent = $HealthComponent
+@onready var _model: Node3D = $Model
+var _terrain_node: Node = null
 var _is_destroyed: bool = false
 var _spawn_collision_layer: int = 0
 var _spawn_collision_mask: int = 0
@@ -178,6 +199,7 @@ signal reload_finished
 func _ready() -> void:
 	_spawn_collision_layer = collision_layer
 	_spawn_collision_mask = collision_mask
+	_rebuild_visual_mesh_collision()
 	# Prefer explicit NodePath, fall back to name-based search.
 	if main_rotor_path and not main_rotor_path.is_empty():
 		_main_rotor = get_node_or_null(main_rotor_path) as Node3D
@@ -218,6 +240,21 @@ func _ready() -> void:
 
 	if _health != null:
 		_health.destroyed.connect(_on_destroyed)
+	_terrain_node = _resolve_terrain_node()
+
+
+func _rebuild_visual_mesh_collision() -> void:
+	if not rebuild_collision_from_visual_mesh:
+		return
+	var built: int = _VISUAL_CONVEX_COLLIDERS.rebuild(
+		self,
+		_model,
+		collision_mesh_min_size,
+		collision_mesh_ignore_names,
+		collision_mesh_max_shapes
+	)
+	if built == 0:
+		push_warning("HelicopterController: visual mesh collision build failed; keeping scene fallback shape")
 
 
 func _on_destroyed(_by_source: int) -> void:
@@ -269,6 +306,8 @@ func _wreck_fall(delta: float) -> void:
 	var impact_speed: float = maxf(-velocity.y, 0.0)
 	move_and_slide()
 	if is_on_floor():
+		_start_crash_burn(impact_speed)
+	elif _prevent_ground_sink(wreck_ground_clearance):
 		_start_crash_burn(impact_speed)
 
 
@@ -332,12 +371,20 @@ func _unhandled_input(event: InputEvent) -> void:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		elif key_event.pressed and key_event.keycode == KEY_F1:
 			WebPointerLock.capture_from_user_gesture()
+		elif key_event.pressed and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+			WebPointerLock.capture_from_user_gesture()
 
 
 ## Returns the camera pitch angle in radians — read by ChaseCamera to tilt
 ## the view up/down without rotating the helicopter body.
 func get_aim_pitch() -> float:
 	return _camera_pitch
+
+
+## Returns the stable yaw used by ChaseCamera. Reading global_rotation.y from the
+## tilted body can wobble as visual pitch/roll change.
+func get_aim_yaw() -> float:
+	return _yaw_current
 
 
 ## Enable or disable this vehicle. Inactive vehicles stop processing and zero velocity.
@@ -456,8 +503,8 @@ func _physics_process(delta: float) -> void:
 		velocity.x *= damp_factor
 		velocity.z *= damp_factor
 
-	# Smooth yaw toward target.
-	_yaw_current = lerpf(_yaw_current, _yaw_target, clamp(yaw_smooth_speed * delta, 0.0, 1.0))
+	# Smooth yaw toward target across the +/-PI wrap without choosing the long turn.
+	_yaw_current = lerp_angle(_yaw_current, _yaw_target, clamp(yaw_smooth_speed * delta, 0.0, 1.0))
 
 	# Compute target tilts from strafe input (visual only — no physics effect).
 	var target_pitch_tilt: float = strafe_input.y * deg_to_rad(max_pitch_tilt_deg)
@@ -477,6 +524,7 @@ func _physics_process(delta: float) -> void:
 	rotation.z = _roll_tilt_current
 
 	move_and_slide()
+	_prevent_ground_sink(ground_clearance)
 
 	_animate_rotors(lifting, delta)
 	_update_rotor_dust()
@@ -632,6 +680,79 @@ func _rotor_ground_hit() -> Dictionary:
 	query.collide_with_areas = false
 	query.exclude = [get_rid()]
 	return space.intersect_ray(query)
+
+
+func _prevent_ground_sink(min_clearance: float) -> bool:
+	if min_clearance <= 0.0:
+		return false
+	var ground_y: float = _ground_height_under(global_position)
+	if is_nan(ground_y):
+		return false
+	var min_y: float = ground_y + min_clearance
+	if global_position.y >= min_y:
+		return false
+	var pos: Vector3 = global_position
+	pos.y = min_y
+	global_position = pos
+	if velocity.y < 0.0:
+		velocity.y = 0.0
+	return true
+
+
+func _ground_height_under(pos: Vector3) -> float:
+	var result: float = NAN
+	var hit: Dictionary = _ground_probe_hit(pos)
+	if not hit.is_empty():
+		var hit_pos: Vector3 = hit.get("position", pos)
+		result = hit_pos.y
+	var terrain_y: float = _terrain_height_at(pos)
+	if not is_nan(terrain_y):
+		result = terrain_y if is_nan(result) else maxf(result, terrain_y)
+	return result
+
+
+func _ground_probe_hit(pos: Vector3) -> Dictionary:
+	var world: World3D = get_world_3d()
+	if world == null:
+		return {}
+	var space: PhysicsDirectSpaceState3D = world.direct_space_state
+	if space == null:
+		return {}
+	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+		pos + Vector3.UP * ground_probe_up,
+		pos - Vector3.UP * ground_probe_down,
+		ground_probe_collision_mask
+	)
+	query.collide_with_areas = false
+	query.exclude = [get_rid()]
+	return space.intersect_ray(query)
+
+
+func _terrain_height_at(pos: Vector3) -> float:
+	if _terrain_node == null or not is_instance_valid(_terrain_node):
+		_terrain_node = _resolve_terrain_node()
+	if _terrain_node == null:
+		return NAN
+	var terrain_data: Object = _terrain_node.get("data") as Object
+	if terrain_data == null or not terrain_data.has_method("get_height"):
+		return NAN
+	var height_value: Variant = terrain_data.call("get_height", pos)
+	if height_value is float or height_value is int:
+		return float(height_value)
+	return NAN
+
+
+func _resolve_terrain_node() -> Node:
+	if not ground_terrain_path.is_empty():
+		var explicit: Node = get_node_or_null(ground_terrain_path)
+		if explicit != null:
+			return explicit
+	var root: Node = get_tree().current_scene
+	if root == null:
+		root = get_tree().root
+	if root == null:
+		return null
+	return root.find_child("Terrain3D", true, false)
 
 
 func _set_rotor_dust_emitting(is_emitting: bool) -> void:

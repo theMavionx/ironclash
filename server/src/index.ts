@@ -20,11 +20,11 @@ import { reset_all_vehicles, vacate_driver } from "./state/vehicles.ts";
 import { broadcast, kick, send } from "./net/socket.ts";
 import { dispatch } from "./net/dispatch.ts";
 import { register_all_handlers } from "./net/handlers.ts";
+import { PROTOCOL_VERSION } from "./net/protocol_version.ts";
 import { broadcast_match_state } from "./state/match.ts";
 import { start_snapshot_loop } from "./snapshot.ts";
 
 const log = make_logger("net");
-const PROTOCOL_VERSION = "0.1.0";
 
 // Wire every C2S type → handler exactly once.
 register_all_handlers();
@@ -45,17 +45,7 @@ wss.on("connection", (ws: WebSocket, req): void => {
 	const team = pick_team_for_new_peer();
 	const player = make_player(peer_id, ws, team);
 	players.set(peer_id, player);
-	log.info(`join peer=${peer_id} team=${team} (${remote})  red=${team_count("red")} blue=${team_count("blue")}`);
-
-	send(ws, {
-		t: "welcome",
-		peer_id, team,
-		max_per_team: cfg.match.max_per_team,
-		tick_hz: cfg.tick_hz,
-		protocol_version: PROTOCOL_VERSION,
-	});
-	broadcast({ t: "player_joined", peer_id, team }, peer_id);
-	broadcast_match_state(Date.now());
+	log.info(`connect peer=${peer_id} team=${team} (${remote})  red=${team_count("red")} blue=${team_count("blue")}`);
 
 	ws.on("message", (data: Buffer | ArrayBuffer | Buffer[]): void => {
 		const size: number = (data as Buffer).byteLength ?? (data as Buffer).length ?? 0;
@@ -82,7 +72,7 @@ wss.on("connection", (ws: WebSocket, req): void => {
 		// branch a self-disconnect/reconnect would land the player into a
 		// graveyard of wrecks from their last session.
 		if (players.size === 0) {
-			reset_all_vehicles();
+			reset_all_vehicles(true);
 			log.info("server emptied — vehicles reset to full HP");
 		}
 		broadcast_match_state(Date.now());

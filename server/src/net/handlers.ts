@@ -5,11 +5,13 @@ import { LIMITS } from "../config.ts";
 import { cfg } from "../config.ts";
 import { is_finite_vec3, vec_dist } from "../util/vec.ts";
 import type { Player } from "../state/players.ts";
-import { players } from "../state/players.ts";
-import { vehicles } from "../state/vehicles.ts";
+import { normalize_display_name, players } from "../state/players.ts";
+import { request_vehicle_respawn, sync_vehicle_spawn_from_scene, vehicles } from "../state/vehicles.ts";
 import type { Vec3 } from "../../../shared/protocol.ts";
 import { broadcast, kick, send } from "./socket.ts";
 import { register_handler } from "./dispatch.ts";
+import { PROTOCOL_VERSION } from "./protocol_version.ts";
+import { broadcast_match_state } from "../state/match.ts";
 import { pick_player_target, pick_vehicle_target } from "../combat/targeting.ts";
 import { apply_player_damage, apply_vehicle_damage } from "../combat/damage.ts";
 import { process_hit_claim } from "../combat/claims.ts";
@@ -17,7 +19,6 @@ import { make_logger } from "../util/log.ts";
 
 const log_net = make_logger("net");
 const log_veh = make_logger("veh");
-const PROTOCOL_VERSION = "0.1.0";
 
 // ---------------------------------------------------------------------------
 // Speed clamp (anti-teleport). Lives here because it only fires inside the
@@ -46,12 +47,27 @@ function clamp_transform_step(p: Player, requested: Vec3, now_ms: number): Vec3 
 
 export function register_all_handlers(): void {
 	register_handler("hello", (p, msg) => {
-		p.hello_received = true;
 		if (msg.protocol_version !== PROTOCOL_VERSION) {
 			kick(p, `protocol_mismatch:client=${msg.protocol_version}_server=${PROTOCOL_VERSION}`);
 			return;
 		}
-		log_net.info(`hello peer=${p.peer_id} client=${msg.client_version} proto=${msg.protocol_version}`);
+		const first_hello: boolean = !p.hello_received;
+		p.hello_received = true;
+		p.display_name = normalize_display_name(msg.display_name, p.peer_id);
+		send(p.ws, {
+			t: "welcome",
+			peer_id: p.peer_id,
+			team: p.team,
+			display_name: p.display_name,
+			max_per_team: cfg.match.max_per_team,
+			tick_hz: cfg.tick_hz,
+			protocol_version: PROTOCOL_VERSION,
+		});
+		if (first_hello) {
+			broadcast({ t: "player_joined", peer_id: p.peer_id, team: p.team, display_name: p.display_name }, p.peer_id);
+			broadcast_match_state(Date.now());
+		}
+		log_net.info(`hello peer=${p.peer_id} name="${p.display_name}" client=${msg.client_version} proto=${msg.protocol_version}`);
 	});
 
 	register_handler("transform", (p, msg) => {
@@ -135,6 +151,35 @@ export function register_all_handlers(): void {
 		}
 	});
 
+	register_handler("vehicle_spawn_sync", (p, msg) => {
+		const v = vehicles.get(msg.vehicle_id);
+		if (v === undefined || !v.alive) return;
+		if (v.driver_peer_id !== -1) return;
+		if (v.last_update_ms !== 0) return;
+		if (!is_finite_vec3(msg.pos, LIMITS.max_pos_axis)) { kick(p, "bad_vehicle_spawn_pos"); return; }
+		if (!is_finite_vec3(msg.rot, LIMITS.rot_max_radians)) { kick(p, "bad_vehicle_spawn_rot"); return; }
+		if (msg.aim_yaw !== undefined
+			&& (typeof msg.aim_yaw !== "number" || !Number.isFinite(msg.aim_yaw) || Math.abs(msg.aim_yaw) > LIMITS.rot_max_radians)) {
+			kick(p, "bad_vehicle_spawn_aim_yaw");
+			return;
+		}
+		if (msg.aim_pitch !== undefined
+			&& (typeof msg.aim_pitch !== "number" || !Number.isFinite(msg.aim_pitch) || Math.abs(msg.aim_pitch) > LIMITS.rot_max_radians)) {
+			kick(p, "bad_vehicle_spawn_aim_pitch");
+			return;
+		}
+		const synced: boolean = sync_vehicle_spawn_from_scene(
+			msg.vehicle_id,
+			msg.pos,
+			msg.rot,
+			msg.aim_yaw ?? msg.rot[1],
+			msg.aim_pitch ?? 0,
+		);
+		if (synced) {
+			log_veh.info(`scene spawn sync ${msg.vehicle_id} from peer=${p.peer_id}`);
+		}
+	});
+
 	register_handler("vehicle_transform", (p, msg) => {
 		const v = vehicles.get(msg.vehicle_id);
 		if (v === undefined || !v.alive) return;
@@ -166,8 +211,10 @@ export function register_all_handlers(): void {
 		v.hp = 0;
 		v.alive = false;
 		v.driver_peer_id = -1;
+		request_vehicle_respawn(v);
+		const smoke_duration_s: number = Math.max(0, (v.respawn_at_ms - Date.now()) / 1000);
 		broadcast({ t: "vfx_event", kind: "explosion", entity_id: v.id, pos: v.pos, weapon: "kamikaze" });
-		broadcast({ t: "vfx_event", kind: "smoke_fire_start", entity_id: v.id, pos: v.pos, weapon: "kamikaze" });
+		broadcast({ t: "vfx_event", kind: "smoke_fire_start", entity_id: v.id, pos: v.pos, weapon: "kamikaze", duration: smoke_duration_s });
 		log_veh.info(`self-destruct ${v.id} by peer=${p.peer_id}`);
 	});
 

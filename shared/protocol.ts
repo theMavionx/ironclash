@@ -8,11 +8,13 @@
 // IMPORTANT: every change here is a breaking wire change. Bump
 // `PROTOCOL_VERSION` and update both server/ and src/networking/network_manager.gd.
 
-export const PROTOCOL_VERSION = "0.1.0";
+export const PROTOCOL_VERSION = "0.1.3";
 
 export type Team = "red" | "blue";
+export type ZoneOwner = Team | "neutral";
 
 export type MatchState = "waiting" | "warmup" | "in_progress" | "post_match";
+export type WinReason = "" | "score_cap" | "time";
 
 export type Vec3 = [number, number, number];
 export type Vec2 = [number, number];
@@ -25,6 +27,7 @@ export interface C2SHello {
 	t: "hello";
 	client_version: string;
 	protocol_version: string;
+	display_name?: string;
 }
 
 export interface C2STransform {
@@ -89,6 +92,16 @@ export interface C2SVehicleTransform {
 	client_t: number;
 }
 
+export interface C2SVehicleSpawnSync {
+	t: "vehicle_spawn_sync";
+	vehicle_id: string;
+	pos: Vec3;
+	rot: Vec3;
+	aim_yaw?: number;
+	aim_pitch?: number;
+	client_t: number;
+}
+
 export interface C2SVehicleFire {
 	t: "vehicle_fire";
 	vehicle_id: string;
@@ -137,6 +150,7 @@ export type C2S =
 	| C2SAnimState
 	| C2SVehicleEnter
 	| C2SVehicleExit
+	| C2SVehicleSpawnSync
 	| C2SVehicleTransform
 	| C2SVehicleFire
 	| C2SVehicleSelfDestruct
@@ -151,6 +165,7 @@ export interface S2CWelcome {
 	t: "welcome";
 	peer_id: number;
 	team: Team;
+	display_name: string;
 	max_per_team: number;
 	tick_hz: number;
 	protocol_version: string;
@@ -164,11 +179,27 @@ export interface S2CMatchState {
 	blue_score: number;
 	red_count: number;
 	blue_count: number;
+	score_cap: number;
+	winner: Team | "draw" | "";
+	win_reason: WinReason;
+	red_zones: number;
+	blue_zones: number;
+	neutral_zones: number;
+	zones: MatchZoneState[];
+}
+
+export interface MatchZoneState {
+	id: string;
+	label: string;
+	owner: ZoneOwner;
+	capture_team: ZoneOwner;
+	capture_progress: number; // 0..1 toward capture_team
 }
 
 export interface SnapshotPlayer {
 	id: number;
 	team: Team;
+	display_name: string;
 	pos: Vec3;
 	rot_y: number;
 	aim_pitch: number;
@@ -203,6 +234,7 @@ export interface S2CPlayerJoined {
 	t: "player_joined";
 	peer_id: number;
 	team: Team;
+	display_name: string;
 }
 
 export interface S2CPlayerLeft {
@@ -213,7 +245,11 @@ export interface S2CPlayerLeft {
 export interface S2CDamage {
 	t: "damage";
 	victim: number;
+	victim_name: string;
+	victim_team: Team;
 	attacker: number;
+	attacker_name: string;
+	attacker_team: Team;
 	amount: number;
 	new_hp: number;
 	weapon: string;
@@ -223,7 +259,11 @@ export interface S2CDamage {
 export interface S2CDeath {
 	t: "death";
 	victim: number;
+	victim_name: string;
+	victim_team: Team;
 	killer: number;
+	killer_name: string;
+	killer_team: Team;
 	weapon: string;
 }
 
@@ -254,6 +294,8 @@ export interface S2CVfxEvent {
 	projectile?: "tank_shell" | "heli_missile";
 	/** For kind="vehicle_fire": vehicle the projectile came from. */
 	vehicle_id?: string;
+	/** Optional lifetime for persistent VFX such as wreck smoke. */
+	duration?: number;
 }
 
 export interface S2CAnimEvent {

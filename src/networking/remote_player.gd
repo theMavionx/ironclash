@@ -16,6 +16,7 @@ const BLUE_COLOR: Color = Color(0.23, 0.49, 0.85)
 
 var peer_id: int = -1
 var team: String = ""
+var display_name: String = ""
 
 var _target_pos: Vector3 = Vector3.ZERO
 var _target_rot_y: float = 0.0
@@ -24,15 +25,16 @@ var _target_rot_y: float = 0.0
 @onready var _label: Label3D = $Label3D
 
 
-func setup(p_peer_id: int, p_team: String, initial_pos: Vector3, initial_rot_y: float) -> void:
+func setup(p_peer_id: int, p_team: String, initial_pos: Vector3, initial_rot_y: float, p_display_name: String = "") -> void:
 	peer_id = p_peer_id
 	team = p_team
+	display_name = p_display_name.strip_edges()
 	global_position = initial_pos
 	rotation.y = initial_rot_y
 	_target_pos = initial_pos
 	_target_rot_y = initial_rot_y
 	_apply_team_color(RED_COLOR if team == "red" else BLUE_COLOR)
-	_label.text = "P%d %s" % [peer_id, team]
+	_label.text = display_name if display_name != "" else "P%d" % peer_id
 
 
 func _apply_team_color(color: Color) -> void:

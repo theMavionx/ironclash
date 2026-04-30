@@ -41,11 +41,12 @@ signal snapshot_rate_updated(snaps_per_sec: int)
 const _WEB_BRIDGE_PATH: NodePath = ^"/root/WebBridge"
 const _DEFAULT_CONFIG_PATH: String = "res://assets/data/network/default_network_config.tres"
 const _CLIENT_VERSION: String = "0.1.0"
-const _PROTOCOL_VERSION: String = "0.1.0"
+const _PROTOCOL_VERSION: String = "0.1.3"
 
 var config: NetworkConfig = null
 var local_peer_id: int = -1
 var local_team: String = ""
+var local_display_name: String = "Player"
 var server_tick_hz: int = 30
 
 var _socket: WebSocketPeer = null
@@ -90,7 +91,8 @@ func _load_config() -> NetworkConfig:
 # Connection
 # ---------------------------------------------------------------------------
 
-func _on_ui_play(_payload: Dictionary) -> void:
+func _on_ui_play(payload: Dictionary) -> void:
+	local_display_name = _sanitize_display_name(String(payload.get("display_name", local_display_name)))
 	connect_to_server()
 
 
@@ -175,6 +177,7 @@ func _on_state_changed(prev: int, current: int) -> void:
 			"t": "hello",
 			"client_version": _CLIENT_VERSION,
 			"protocol_version": _PROTOCOL_VERSION,
+			"display_name": local_display_name,
 		})
 		_hello_sent = true
 	elif current == WebSocketPeer.STATE_CLOSED:
@@ -248,6 +251,27 @@ func send_vehicle_exit() -> void:
 	send_message({"t": "vehicle_exit"})
 
 
+func send_vehicle_spawn_sync(
+	vehicle_id: String,
+	pos: Vector3,
+	rot: Vector3,
+	aim_yaw: float = NAN,
+	aim_pitch: float = NAN
+) -> void:
+	var msg: Dictionary = {
+		"t": "vehicle_spawn_sync",
+		"vehicle_id": vehicle_id,
+		"pos": [pos.x, pos.y, pos.z],
+		"rot": [rot.x, rot.y, rot.z],
+		"client_t": Time.get_ticks_msec(),
+	}
+	if not is_nan(aim_yaw):
+		msg["aim_yaw"] = aim_yaw
+	if not is_nan(aim_pitch):
+		msg["aim_pitch"] = aim_pitch
+	send_message(msg)
+
+
 func send_vehicle_transform(
 	vehicle_id: String,
 	pos: Vector3,
@@ -293,10 +317,11 @@ func _handle_raw(raw: PackedByteArray) -> void:
 				return
 			local_peer_id = int(msg.get("peer_id", -1))
 			local_team = String(msg.get("team", ""))
+			local_display_name = _sanitize_display_name(String(msg.get("display_name", local_display_name)))
 			server_tick_hz = int(msg.get("tick_hz", 30))
-			print("[net] welcome peer_id=%d team=%s tick=%d Hz" % [local_peer_id, local_team, server_tick_hz])
+			print("[net] welcome peer_id=%d name=%s team=%s tick=%d Hz" % [local_peer_id, local_display_name, local_team, server_tick_hz])
 			connected_to_server.emit(local_peer_id, local_team)
-			_send_bridge_event("network_connected", {"peer_id": local_peer_id, "team": local_team})
+			_send_bridge_event("network_connected", {"peer_id": local_peer_id, "team": local_team, "display_name": local_display_name})
 		"snapshot":
 			var snap_tick: int = int(msg.get("tick", 0))
 			var server_t: int = int(msg.get("server_t", 0))
@@ -312,6 +337,7 @@ func _handle_raw(raw: PackedByteArray) -> void:
 			var bc: int = int(msg.get("blue_count", 0))
 			var tr: float = float(msg.get("time_remaining", 0.0))
 			match_state_changed.emit(ms, rs, bs, rc, bc, tr)
+			get_tree().call_group("score_zones", "apply_server_match_state", msg)
 			_send_bridge_event("match_state", msg)
 		"player_joined":
 			player_joined.emit(int(msg.get("peer_id", -1)), String(msg.get("team", "")))
@@ -331,7 +357,11 @@ func _handle_raw(raw: PackedByteArray) -> void:
 			if int(msg.get("new_hp", 0)) == 0:
 				_send_bridge_event("kill_feed", {
 					"killer": int(msg.get("attacker", -1)),
+					"killer_name": String(msg.get("attacker_name", "")),
+					"killer_team": String(msg.get("attacker_team", "")),
 					"victim": int(msg.get("victim", -1)),
+					"victim_name": String(msg.get("victim_name", "")),
+					"victim_team": String(msg.get("victim_team", "")),
 					"weapon": String(msg.get("weapon", "")),
 					"headshot": bool(msg.get("headshot", false)),
 				})
@@ -342,6 +372,8 @@ func _handle_raw(raw: PackedByteArray) -> void:
 				# `respawn` packet; HUD locally counts down from now.
 				_send_bridge_event("local_died", {
 					"killer": int(msg.get("killer", -1)),
+					"killer_name": String(msg.get("killer_name", "")),
+					"killer_team": String(msg.get("killer_team", "")),
 					"weapon": String(msg.get("weapon", "")),
 				})
 		"respawn":
@@ -376,6 +408,19 @@ func _send_bridge_event(event_name: String, payload: Dictionary) -> void:
 	var bridge: Node = get_node(_WEB_BRIDGE_PATH)
 	if bridge.has_method("send_event"):
 		bridge.send_event(event_name, payload)
+
+
+func _sanitize_display_name(raw: String) -> String:
+	var clean: String = raw.strip_edges()
+	clean = clean.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+	clean = clean.replace("<", "").replace(">", "")
+	while clean.contains("  "):
+		clean = clean.replace("  ", " ")
+	if clean.is_empty():
+		return "Player"
+	if clean.length() > 16:
+		clean = clean.substr(0, 16)
+	return clean
 
 
 func is_online() -> bool:

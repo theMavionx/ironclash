@@ -3,25 +3,17 @@ import { godotBridge } from "@/bridge/godotBridge";
 import { GameEvent } from "@/bridge/eventTypes";
 
 interface Props {
-	/** Fires when the user clicks PLAY. Godot is already booted; this sends the
-	 *  warmup/start signal through App.tsx. */
-	onPlay: () => void;
+	onPlay: (displayName: string) => void;
 }
 
-/**
- * Pure-React 2D title screen shown after the Godot export has loaded.
- * PLAY does not boot the engine anymore; it starts match warmup.
- *
- * Re-shows on `network_disconnected` so the user can retry — but only if the
- * page never advanced past the menu (App.tsx owns the `started` state and is
- * the source of truth for visibility).
- */
 export default function MenuOverlay({ onPlay }: Props) {
 	const [busy, setBusy] = useState<boolean>(false);
+	const [displayName, setDisplayName] = useState<string>(() => {
+		const saved: string | null = window.localStorage.getItem("ironclash.displayName");
+		return sanitizeDisplayName(saved ?? "");
+	});
 
 	useEffect(() => {
-		// Belt-and-braces — if the parent re-mounts us after a disconnect, reset
-		// the busy flag so PLAY is clickable again.
 		const off = godotBridge.subscribe(GameEvent.NetworkDisconnected, () => {
 			setBusy(false);
 		});
@@ -30,33 +22,51 @@ export default function MenuOverlay({ onPlay }: Props) {
 
 	function handlePlay(): void {
 		if (busy) return;
+		const cleanName: string = sanitizeDisplayName(displayName);
+		setDisplayName(cleanName);
+		window.localStorage.setItem("ironclash.displayName", cleanName);
 		setBusy(true);
-		// Focus the canvas eagerly — when Godot eventually mounts, its
-		// `Input.mouse_mode = MOUSE_MODE_CAPTURED` (fired from PlayerController)
-		// will inherit the click's transient activation. We don't request
-		// pointer-lock here — that path triggered WrongDocumentError when the
-		// canvas ownerDocument changed.
 		const canvas: HTMLCanvasElement | null = document.getElementById(
 			"godot-canvas",
 		) as HTMLCanvasElement | null;
 		if (canvas !== null) canvas.focus();
-		onPlay();
+		onPlay(cleanName);
+	}
+
+	function handleNameChange(value: string): void {
+		setDisplayName(cleanDisplayName(value));
 	}
 
 	return (
 		<div className="pointer-events-none absolute inset-0 flex flex-col bg-bg">
-			{/* ── Title (top-left) ───────────────────────────────────────────── */}
 			<div className="pointer-events-none absolute left-10 top-10 select-none">
-				<div className="font-sans text-display tracking-tight text-text leading-none">
+				<div className="font-sans text-display leading-none tracking-tight text-text">
 					IRONCLASH
 				</div>
 				<div className="mt-2 font-sans text-caption uppercase tracking-label text-accent">
-					5 v 5 · Browser Combined Arms
+					5 v 5 - Browser Combined Arms
 				</div>
 			</div>
 
-			{/* ── Centered PLAY button ───────────────────────────────────────── */}
-			<div className="pointer-events-auto absolute inset-0 flex items-center justify-center">
+			<div className="pointer-events-auto absolute inset-0 flex flex-col items-center justify-center gap-4">
+				<input
+					type="text"
+					value={displayName}
+					onChange={(event) => handleNameChange(event.target.value)}
+					onKeyDown={(event) => {
+						if (event.key === "Enter") handlePlay();
+					}}
+					disabled={busy}
+					maxLength={16}
+					spellCheck={false}
+					placeholder="CALLSIGN"
+					className={
+						"w-[360px] border-2 border-border-strong bg-black/65 px-5 py-3 " +
+						"text-center font-mono text-value uppercase text-text outline-none " +
+						"transition-colors duration-150 placeholder:text-text-muted " +
+						"focus:border-accent disabled:cursor-wait disabled:opacity-40"
+					}
+				/>
 				<button
 					type="button"
 					onClick={handlePlay}
@@ -67,26 +77,38 @@ export default function MenuOverlay({ onPlay }: Props) {
 						"border-2 border-accent bg-accent text-bg " +
 						"transition-all duration-150 " +
 						"hover:bg-bg hover:text-accent active:scale-[0.97] " +
-						"disabled:opacity-40 disabled:cursor-wait disabled:hover:bg-accent disabled:hover:text-bg"
+						"disabled:cursor-wait disabled:opacity-40 disabled:hover:bg-accent disabled:hover:text-bg"
 					}
 				>
-					<span className="relative z-10">{busy ? "STARTING…" : "PLAY"}</span>
+					<span className="relative z-10">{busy ? "STARTING..." : "PLAY"}</span>
 					<span
 						aria-hidden
-						className="absolute -bottom-2 left-3 right-3 h-[3px] bg-accent opacity-50 group-hover:opacity-100 transition-opacity"
+						className="absolute -bottom-2 left-3 right-3 h-[3px] bg-accent opacity-50 transition-opacity group-hover:opacity-100"
 					/>
 				</button>
 			</div>
 
-			{/* ── Hint just below the button ─────────────────────────────────── */}
 			<div className="pointer-events-none absolute bottom-1/3 left-0 right-0 mt-6 text-center font-sans text-caption uppercase tracking-label text-text-muted">
-				{busy ? "Starting warmup..." : "Game loaded. Click PLAY to deploy"}
+				{busy ? "Starting warmup..." : "Game loaded. Pick callsign and deploy"}
 			</div>
 
-			{/* ── Tiny build tag (bottom-left) ───────────────────────────────── */}
 			<div className="pointer-events-none absolute bottom-6 left-10 font-mono text-caption text-text-muted">
-				v0.1 · proto 0.1.0
+				v0.1 - proto 0.1.3
 			</div>
 		</div>
 	);
+}
+
+function sanitizeDisplayName(raw: string): string {
+	const clean: string = cleanDisplayName(raw);
+	return clean.length > 0 ? clean : "Player";
+}
+
+function cleanDisplayName(raw: string): string {
+	return raw
+		.normalize("NFKC")
+		.replace(/[^\p{L}\p{N}_ -]/gu, "")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, 16);
 }

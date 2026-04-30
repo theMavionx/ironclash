@@ -75,6 +75,7 @@ export interface MatchEndedPayload {
 export interface NetworkConnectedPayload {
 	peer_id: number;
 	team: string;
+	display_name: string;
 }
 
 export interface NetworkConnectionFailedPayload {
@@ -90,17 +91,38 @@ export interface MatchStatePayload {
 	blue_score: number;
 	red_count: number;
 	blue_count: number;
+	score_cap: number;
+	winner: "red" | "blue" | "draw" | "";
+	win_reason: "" | "score_cap" | "time";
+	red_zones: number;
+	blue_zones: number;
+	neutral_zones: number;
+	zones: MatchZoneStatePayload[];
+}
+
+export interface MatchZoneStatePayload {
+	id: string;
+	label: string;
+	owner: "red" | "blue" | "neutral";
+	capture_team: "red" | "blue" | "neutral";
+	capture_progress: number;
 }
 
 export interface KillFeedPayload {
 	killer: number;
+	killer_name: string;
+	killer_team: string;
 	victim: number;
+	victim_name: string;
+	victim_team: string;
 	weapon: string;
 	headshot: boolean;
 }
 
 export interface LocalDiedPayload {
 	killer: number;
+	killer_name?: string;
+	killer_team?: string;
 	weapon: string;
 }
 

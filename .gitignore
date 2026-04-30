@@ -22,6 +22,9 @@ production/session-state/*.md
 docs/IMPROVEMENTS-PROPOSAL.md
 docs/MULTI-STAGE-DOCUMENT-WORKFLOW.md
 
+# === Imported Reference Projects ===
+ai-studio-main (1)/
+
 # === Godot Web Export Output (regenerated; .pck > 100 MB exceeds GitHub limit) ===
 # Each `Project → Export → Web` overwrites these. Run the export locally and
 # serve via Vite (web/ui/) — no need to track the binaries.

@@ -12,6 +12,7 @@ export interface Player {
 	peer_id: number;
 	ws: WebSocket;
 	team: Team;
+	display_name: string;
 	alive: boolean;
 	hp: number;
 	max_hp: number;
@@ -57,6 +58,7 @@ export function spawn_for_team(team: Team): Vec3 {
 export function make_player(peer_id: number, ws: WebSocket, team: Team): Player {
 	return {
 		peer_id, ws, team,
+		display_name: normalize_display_name("", peer_id),
 		alive: true,
 		hp: cfg.match.starting_hp,
 		max_hp: cfg.match.starting_hp,
@@ -72,4 +74,17 @@ export function make_player(peer_id: number, ws: WebSocket, team: Team): Player 
 		weapon: "ak",
 		move_state: "idle",
 	};
+}
+
+export function normalize_display_name(raw: unknown, peer_id: number): string {
+	const fallback: string = `Player${peer_id}`;
+	if (typeof raw !== "string") return fallback;
+	const normalized: string = raw.normalize("NFKC").trim().replace(/\s+/g, " ");
+	let clean: string = "";
+	for (const ch of normalized) {
+		if (/[\p{L}\p{N}_ -]/u.test(ch)) clean += ch;
+	}
+	clean = clean.trim();
+	if (clean.length === 0) return fallback;
+	return Array.from(clean).slice(0, 16).join("");
 }

@@ -54,6 +54,10 @@ const _WARMUP_DESTRUCTION_REPETITIONS: int = 2
 const _WARMUP_VEHICLE_FIRE_REPETITIONS: int = 3
 const _WARMUP_DELAYED_SHOT_BURSTS: int = 2
 const _WARMUP_SHOTS_PER_DELAYED_BURST: int = 2
+const _MAIN_TANK_SCALE: float = 2.8
+const _MAIN_HELICOPTER_SCALE: float = 3.2
+const _MAIN_DRONE_SCALE: float = 1.0
+const _VEHICLE_PROBE_Z: float = -34.0
 
 @onready var _camera: Camera3D = $Camera3D
 @onready var _warmup_root: Node3D = $WarmupRoot
@@ -307,20 +311,23 @@ func _spawn_vehicle_destruction_probes() -> void:
 	_spawn_vehicle_material_probe(
 		"tank materials",
 		"res://scenes/tank/tank.tscn",
-		Vector3(1.2, -0.4, 0.0),
+		Vector3(8.0, -2.2, _VEHICLE_PROBE_Z),
 		tank_overrides,
+		_MAIN_TANK_SCALE,
 	)
 	_spawn_vehicle_material_probe(
 		"helicopter materials",
 		"res://scenes/helicopter/helicopter.tscn",
-		Vector3(-1.2, 0.4, 0.0),
+		Vector3(-8.0, -2.0, _VEHICLE_PROBE_Z),
 		{},
+		_MAIN_HELICOPTER_SCALE,
 	)
 	_spawn_vehicle_material_probe(
 		"drone materials",
 		"res://scenes/drone/drone.tscn",
-		Vector3(-1.2, -0.4, 0.0),
+		Vector3(0.0, -1.2, _VEHICLE_PROBE_Z + 4.0),
 		{},
+		_MAIN_DRONE_SCALE,
 	)
 	_spawn_turret_debris_synthetic_probe()
 	_spawn_real_tank_debris_probe()
@@ -332,8 +339,8 @@ func _spawn_actual_vehicle_destruction_probes() -> void:
 		{
 			"label": "tank actual destruction",
 			"path": "res://scenes/tank/tank.tscn",
-			"pos": Vector3(0.85, 0.35, -0.55),
-			"scale": 0.055,
+			"pos": Vector3(8.0, -2.2, _VEHICLE_PROBE_Z - 8.0),
+			"scale": _MAIN_TANK_SCALE,
 			"props": {
 				"turret_path": NodePath("Model/Armature/Skeleton3D/TankBody_001"),
 				"barrel_path": NodePath("Model/Armature/Skeleton3D/TankBody_002"),
@@ -342,15 +349,15 @@ func _spawn_actual_vehicle_destruction_probes() -> void:
 		{
 			"label": "helicopter actual destruction",
 			"path": "res://scenes/helicopter/helicopter.tscn",
-			"pos": Vector3(-0.85, 0.55, -0.45),
-			"scale": 0.060,
+			"pos": Vector3(-8.0, -2.0, _VEHICLE_PROBE_Z - 8.0),
+			"scale": _MAIN_HELICOPTER_SCALE,
 			"props": {},
 		},
 		{
 			"label": "drone actual destruction",
 			"path": "res://scenes/drone/drone.tscn",
-			"pos": Vector3(0.0, 0.72, -0.75),
-			"scale": 0.075,
+			"pos": Vector3(0.0, -1.2, _VEHICLE_PROBE_Z - 4.0),
+			"scale": _MAIN_DRONE_SCALE,
 			"props": {},
 		},
 	]
@@ -550,8 +557,8 @@ func _spawn_tank_fire_probe() -> void:
 	_warmup_root.add_child(tank)
 	if tank is Node3D:
 		var n: Node3D = tank as Node3D
-		n.position = Vector3(-0.55, -0.32, -0.95)
-		n.scale = Vector3(0.045, 0.045, 0.045)
+		n.position = Vector3(8.0, -2.2, _VEHICLE_PROBE_Z + 8.0)
+		n.scale = Vector3(_MAIN_TANK_SCALE, _MAIN_TANK_SCALE, _MAIN_TANK_SCALE)
 	if tank.has_method("set_active"):
 		tank.call("set_active", false)
 	for i: int in range(_WARMUP_VEHICLE_FIRE_REPETITIONS):
@@ -581,8 +588,8 @@ func _spawn_helicopter_fire_probe() -> void:
 	_warmup_root.add_child(heli)
 	if heli is Node3D:
 		var n: Node3D = heli as Node3D
-		n.position = Vector3(0.55, 0.36, -1.05)
-		n.scale = Vector3(0.060, 0.060, 0.060)
+		n.position = Vector3(-8.0, -2.0, _VEHICLE_PROBE_Z + 8.0)
+		n.scale = Vector3(_MAIN_HELICOPTER_SCALE, _MAIN_HELICOPTER_SCALE, _MAIN_HELICOPTER_SCALE)
 	if heli.has_method("set_active"):
 		heli.call("set_active", false)
 	for i: int in range(_WARMUP_VEHICLE_FIRE_REPETITIONS):
@@ -824,6 +831,7 @@ func _spawn_vehicle_material_probe(
 	scene_path: String,
 	pos: Vector3,
 	prop_overrides: Dictionary,
+	visual_scale: float,
 ) -> void:
 	var t: int = Time.get_ticks_msec()
 	if not ResourceLoader.exists(scene_path):
@@ -840,7 +848,9 @@ func _spawn_vehicle_material_probe(
 	if inst is Node3D:
 		var n: Node3D = inst as Node3D
 		n.position = pos
-		n.scale = Vector3(0.04, 0.04, 0.04)
+		n.scale = Vector3(visual_scale, visual_scale, visual_scale)
+	if inst.has_method("set_active"):
+		inst.call("set_active", false)
 	_schedule_free(inst, _WARMUP_PROBE_LIFETIME)
 	_record_probe_time(label, Time.get_ticks_msec() - t)
 
@@ -951,8 +961,8 @@ func _spawn_real_tank_debris_probe() -> void:
 	_warmup_root.add_child(tank)
 	if tank is Node3D:
 		var n: Node3D = tank as Node3D
-		n.position = Vector3(0.6, 0.0, -0.3)
-		n.scale = Vector3(0.04, 0.04, 0.04)
+		n.position = Vector3(8.0, -2.2, _VEHICLE_PROBE_Z - 16.0)
+		n.scale = Vector3(_MAIN_TANK_SCALE, _MAIN_TANK_SCALE, _MAIN_TANK_SCALE)
 	# Defer one frame so tank's call_deferred("_capture_turret_and_barrel")
 	# from _ready has populated _skeleton / _turret_bone / _barrel_bone.
 	call_deferred("_run_real_tank_debris_probe", tank)
