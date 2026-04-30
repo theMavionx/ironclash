@@ -32,11 +32,11 @@ extends Node3D
 ## from cache. The Compatibility renderer needs at least one full frame per
 ## prefab to compile pipelines, and repeated shot probes need a little extra
 ## time so two visible frames land before the scene swap.
-@export var min_hold_seconds: float = 8.0
+@export var min_hold_seconds: float = 10.0
 ## Hard ceiling — if Main.tscn doesn't finish loading after this, swap anyway
 ## and let the gameplay scene finish loading on its own. Prevents a soft hang
 ## if threaded loading deadlocks.
-@export var max_hold_seconds: float = 18.0
+@export var max_hold_seconds: float = 45.0
 
 ## How far ahead of the camera the warmup root sits. Far enough that the
 ## whole probe spread remains in-frustum even on narrow browser canvases.
@@ -286,6 +286,7 @@ func _main_load_status() -> int:
 func _spawn_warmup_actors() -> void:
 	if not is_instance_valid(_camera) or not is_instance_valid(_warmup_root):
 		push_warning("[warmup] camera or warmup root missing — skipping prewarm")
+		_probe_staging_complete = true
 		return
 	var cam_xform: Transform3D = _camera.global_transform
 	var origin: Vector3 = cam_xform.origin + (-cam_xform.basis.z) * _SPAWN_DISTANCE
@@ -309,23 +310,37 @@ func _spawn_warmup_actors() -> void:
 	# spawns the same primitive that runtime gameplay would, so the
 	# Compatibility renderer compiles the matching pipeline here instead of
 	# during a live firefight.
-	_spawn_player_shot_probe()
+	await _spawn_player_shot_probe()
 	await _yield_warmup_frames()
 	await _wait_for_main_load_before_scene_probes()
 	await _yield_warmup_frames()
 	await _spawn_vehicle_fire_probes()
 	await _yield_warmup_frames()
+	_spawn_vehicle_material_probe(
+		"drone material probe",
+		"res://scenes/drone/drone.tscn",
+		Vector3(0.0, -1.2, _VEHICLE_PROBE_Z + 5.0),
+		{},
+		_MAIN_DRONE_SCALE
+	)
+	await _yield_warmup_frames()
 	_spawn_charred_probe()
 	await _yield_warmup_frames()
-	_spawn_smoke_fire_probe()
+	await _spawn_smoke_fire_probe()
 	await _yield_warmup_frames()
-	_spawn_explosion_probe()
+	await _spawn_explosion_probe()
 	await _yield_warmup_frames()
-	_spawn_static_debris_probe()
+	await _spawn_static_debris_probe()
+	await _yield_warmup_frames()
+	await _spawn_vehicle_destruction_probes()
+	await _yield_warmup_frames()
+	await _spawn_actual_vehicle_destruction_probes()
+	await _yield_warmup_frames()
+	_spawn_grass_probe()
 	await _yield_warmup_frames()
 	await _spawn_projectile_scene_probes()
 	await _yield_warmup_frames()
-	await _wait_for_async_probes("projectile/fire delayed probes", 3.0)
+	await _wait_for_async_probes("all staged probes", 0.5)
 	_probe_staging_complete = true
 	print("[warmup] all %d probes staged in %d ms (async scheduled=%d pending=%d)" % [_probes_spawned, Time.get_ticks_msec() - _start_msec, _async_probes_scheduled, _pending_async_probes])
 
@@ -365,7 +380,7 @@ func _wait_for_main_load_before_scene_probes(_max_wait_seconds: float = 6.0) -> 
 func _spawn_vehicle_destruction_probes() -> void:
 	_spawn_turret_debris_synthetic_probe()
 	await _yield_warmup_frames()
-	_spawn_real_tank_debris_probe()
+	await _spawn_real_tank_debris_probe()
 
 
 func _spawn_actual_vehicle_destruction_probes() -> void:
@@ -423,11 +438,10 @@ func _spawn_actual_vehicle_destruction_probes() -> void:
 				var s: float = float(data["scale"])
 				n.scale = Vector3(s, s, s)
 			var label: String = "%s #%d" % [String(data["label"]), repeat_index + 1]
-			_schedule_async_probe(
-				0.20 + 0.12 * float(repeat_index),
-				Callable(self, "_run_actual_vehicle_destruction_probe").bind(inst, label),
-				label
-			)
+			if inst.has_method("set_active"):
+				inst.call("set_active", false)
+			await _yield_warmup_frames(2)
+			await _run_actual_vehicle_destruction_probe(inst, label)
 			_schedule_free(inst, _WARMUP_PROBE_LIFETIME * 2.0)
 			await _yield_warmup_frames()
 	_record_probe_time("actual vehicle destruction flows x%d" % _WARMUP_DESTRUCTION_REPETITIONS, Time.get_ticks_msec() - t)
@@ -445,6 +459,13 @@ func _run_actual_vehicle_destruction_probe(inst: Node, label: String) -> void:
 		DestructionVFX.spawn_explosion(get_tree().current_scene, n.global_position + Vector3(0.0, 0.4, 0.0))
 		DestructionVFX.apply_charred(n)
 		DestructionVFX.spawn_smoke_fire(n, 0.5, true, _WARMUP_PROBE_LIFETIME)
+	await _yield_warmup_frames(2)
+	# Helicopter and drone runtime destruction burn starts after ground impact.
+	# Force that isolated warmup instance into burn mode so crash debris,
+	# smoke, explosion, and hidden-propeller paths compile before gameplay.
+	if is_instance_valid(inst) and inst.has_method("_start_crash_burn"):
+		inst.call("_start_crash_burn", 0.0)
+		await _yield_warmup_frames(2)
 	_hide_null_mesh_instances(inst)
 	print("[warmup]   actual destruction probe ran: %s" % label)
 
@@ -570,13 +591,11 @@ func _spawn_player_shot_probe() -> void:
 			12.0,
 			null
 		)
+		await _yield_warmup_frames()
 
 	for burst_index: int in range(_WARMUP_DELAYED_SHOT_BURSTS):
-		_schedule_async_probe(
-			0.18 + 0.12 * float(burst_index),
-			Callable(self, "_run_player_shot_probe_burst").bind(muzzle, origin, base_aim, burst_index),
-			"AR delayed burst #%d" % (burst_index + 1)
-		)
+		_run_player_shot_probe_burst(muzzle, origin, base_aim, burst_index)
+		await _yield_warmup_frames()
 
 	_schedule_free(muzzle, _WARMUP_PROBE_LIFETIME)
 	_schedule_free(tracer_pool, _WARMUP_PROBE_LIFETIME)
@@ -605,9 +624,9 @@ func _run_player_shot_probe_burst(muzzle: Node3D, origin: Vector3, base_aim: Vec
 
 func _spawn_vehicle_fire_probes() -> void:
 	var t: int = Time.get_ticks_msec()
-	_spawn_tank_fire_probe()
+	await _spawn_tank_fire_probe()
 	await _yield_warmup_frames()
-	_spawn_helicopter_fire_probe()
+	await _spawn_helicopter_fire_probe()
 	_record_probe_time(
 		"tank + helicopter controller fire x%d" % _WARMUP_VEHICLE_FIRE_REPETITIONS,
 		Time.get_ticks_msec() - t
@@ -634,11 +653,8 @@ func _spawn_tank_fire_probe() -> void:
 	if tank.has_method("set_active"):
 		tank.call("set_active", false)
 	for i: int in range(_WARMUP_VEHICLE_FIRE_REPETITIONS):
-		_schedule_async_probe(
-			0.20 + 0.16 * float(i),
-			Callable(self, "_run_tank_fire_probe").bind(tank),
-			"tank fire #%d" % (i + 1)
-		)
+		_run_tank_fire_probe(tank)
+		await _yield_warmup_frames()
 	_schedule_free(tank, _WARMUP_PROBE_LIFETIME * 2.0)
 
 
@@ -668,11 +684,8 @@ func _spawn_helicopter_fire_probe() -> void:
 	if heli.has_method("set_active"):
 		heli.call("set_active", false)
 	for i: int in range(_WARMUP_VEHICLE_FIRE_REPETITIONS):
-		_schedule_async_probe(
-			0.20 + 0.16 * float(i),
-			Callable(self, "_run_helicopter_fire_probe").bind(heli),
-			"helicopter missile fire #%d" % (i + 1)
-		)
+		_run_helicopter_fire_probe(heli)
+		await _yield_warmup_frames()
 	_schedule_free(heli, _WARMUP_PROBE_LIFETIME * 2.0)
 
 
@@ -806,6 +819,7 @@ func _spawn_smoke_fire_probe() -> void:
 		# The body mesh also exercises the visual smoke-origin path.
 		DestructionVFX.spawn_smoke_fire(probe, 0.35, true, _WARMUP_PROBE_LIFETIME)
 		_schedule_free(probe, _WARMUP_PROBE_LIFETIME)
+		await _yield_warmup_frames()
 	_record_probe_time("smoke x%d" % _WARMUP_SHOT_REPETITIONS, Time.get_ticks_msec() - t)
 
 
@@ -820,6 +834,7 @@ func _spawn_explosion_probe() -> void:
 	for i: int in range(_WARMUP_SHOT_REPETITIONS):
 		var pos: Vector3 = _warmup_root.global_transform.origin + Vector3(-0.15 + 0.3 * float(i), 0.1, 0.2)
 		DestructionVFX.spawn_explosion(_warmup_root, pos)
+		await _yield_warmup_frames()
 	_record_probe_time("vehicle explosion x%d" % _WARMUP_SHOT_REPETITIONS, Time.get_ticks_msec() - t)
 
 
@@ -850,6 +865,7 @@ func _spawn_static_debris_probe() -> void:
 			_WARMUP_PROBE_LIFETIME,
 		)
 		_schedule_free(src, _WARMUP_PROBE_LIFETIME)
+		await _yield_warmup_frames()
 	_record_probe_time("debris RigidBody3D x%d" % _WARMUP_SHOT_REPETITIONS, Time.get_ticks_msec() - t)
 
 
@@ -877,6 +893,7 @@ func _spawn_projectile_scene_probes() -> void:
 			continue
 		for i: int in range(_WARMUP_PROJECTILE_REPETITIONS):
 			_stage_projectile_probe(packed, x, i, 0.0)
+			await _yield_warmup_frames()
 		x += 0.3
 		_record_probe_time("%s x%d" % [p.get_file(), _WARMUP_PROJECTILE_REPETITIONS], Time.get_ticks_msec() - t)
 		await _yield_warmup_frames()
@@ -1040,13 +1057,10 @@ func _spawn_real_tank_debris_probe() -> void:
 		var n: Node3D = tank as Node3D
 		n.position = Vector3(8.0, -2.2, _VEHICLE_PROBE_Z - 16.0)
 		n.scale = Vector3(_MAIN_TANK_SCALE, _MAIN_TANK_SCALE, _MAIN_TANK_SCALE)
-	# Defer one frame so tank's call_deferred("_capture_turret_and_barrel")
+	# Wait a couple of frames so tank's call_deferred("_capture_turret_and_barrel")
 	# from _ready has populated _skeleton / _turret_bone / _barrel_bone.
-	_schedule_async_probe(
-		0.05,
-		Callable(self, "_run_real_tank_debris_probe").bind(tank),
-		"real tank turret debris"
-	)
+	await _yield_warmup_frames(2)
+	_run_real_tank_debris_probe(tank)
 	# Keep tank alive long enough for deferred capture + spawn_turret_debris,
 	# then free it. The debris RigidBody3D it spawns has its own lifetime
 	# (passed to spawn_turret_debris) so it cleans up independently.
