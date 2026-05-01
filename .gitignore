@@ -32,6 +32,8 @@ web/godot-export/*.pck
 web/godot-export/*.wasm
 web/godot-export/*.js
 web/godot-export/*.html
+web/godot-export/*.br
+web/godot-export/*.gz
 
 # === Build Output ===
 build/

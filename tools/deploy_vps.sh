@@ -28,6 +28,7 @@ INSTALL_GODOT="${INSTALL_GODOT:-1}"
 GODOT_VERSION="${GODOT_VERSION:-4.3}"
 GODOT_RELEASE="${GODOT_RELEASE:-stable}"
 GODOT_BIN="${GODOT_BIN:-}"
+BROTLI_QUALITY="${BROTLI_QUALITY:-9}"
 if [[ -z "${WS_PUBLIC_URL:-}" ]]; then
 	if (( ENABLE_SSL == 1 )); then
 		WS_PUBLIC_URL="wss://${DOMAIN}/ws"
@@ -93,8 +94,15 @@ apt_install_base() {
 	apt-get update
 	apt-get install -y \
 		ca-certificates curl gnupg unzip rsync git build-essential \
-		nginx certbot python3-certbot-nginx ufw \
+		nginx certbot python3-certbot-nginx ufw brotli \
 		libfontconfig1 libx11-6 libxcursor1 libxinerama1 libxrandr2 libxi6 libgl1
+
+	if apt-cache show libnginx-mod-http-brotli-static >/dev/null 2>&1; then
+		apt-get install -y libnginx-mod-http-brotli-static libnginx-mod-http-brotli-filter || \
+			log "Nginx Brotli modules were unavailable; gzip_static will still be used"
+	else
+		log "Nginx Brotli modules are not available in apt; gzip_static will still be used"
+	fi
 }
 
 install_node_if_needed() {
@@ -259,6 +267,59 @@ fs.writeFileSync(out, JSON.stringify({ base, godotConfig }, null, 2) + "\n");
 NODE
 }
 
+compressed_is_smaller() {
+	local source="$1"
+	local candidate="$2"
+	[[ -f "$candidate" ]] || return 1
+	[[ "$(stat -c%s "$candidate")" -lt "$(stat -c%s "$source")" ]]
+}
+
+compress_one_asset() {
+	local file="$1"
+	local brotli_tmp gzip_tmp
+	brotli_tmp="${file}.br.tmp"
+	gzip_tmp="${file}.gz.tmp"
+
+	rm -f "$brotli_tmp" "$gzip_tmp"
+
+	if command -v brotli >/dev/null 2>&1; then
+		if brotli -q "$BROTLI_QUALITY" -c "$file" >"$brotli_tmp"; then
+			if compressed_is_smaller "$file" "$brotli_tmp"; then
+				mv -f "$brotli_tmp" "${file}.br"
+			else
+				rm -f "$brotli_tmp" "${file}.br"
+			fi
+		else
+			rm -f "$brotli_tmp"
+			log "Brotli failed for $file"
+		fi
+	fi
+
+	if gzip -n -9 -c "$file" >"$gzip_tmp"; then
+		if compressed_is_smaller "$file" "$gzip_tmp"; then
+			mv -f "$gzip_tmp" "${file}.gz"
+		else
+			rm -f "$gzip_tmp" "${file}.gz"
+		fi
+	else
+		rm -f "$gzip_tmp"
+		log "gzip failed for $file"
+	fi
+}
+
+compress_godot_export() {
+	local godot_dir="$APP_DIR/web/godot-export"
+	log "Precompressing Godot Web export (.br/.gz)"
+	find "$godot_dir" -maxdepth 1 -type f \
+		\( -name '*.pck' -o -name '*.wasm' -o -name '*.js' -o -name '*.html' -o -name '*.json' \) \
+		-print0 | while IFS= read -r -d '' file; do
+			compress_one_asset "$file"
+		done
+
+	find "$godot_dir" -maxdepth 1 -type f \( -name '*.br' -o -name '*.gz' \) \
+		-printf '%f %s bytes\n' | sort
+}
+
 write_systemd_service() {
 	log "Writing systemd service $SERVICE_NAME"
 	cat >"/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
@@ -296,11 +357,34 @@ EOF
 	}
 }
 
+nginx_supports_gzip_static() {
+	nginx -V 2>&1 | grep -q -- '--with-http_gzip_static_module'
+}
+
+nginx_supports_brotli_static() {
+	nginx -V 2>&1 | grep -qi 'brotli' && return 0
+	find /etc/nginx/modules-enabled -maxdepth 1 -name '*brotli*.conf' -print -quit 2>/dev/null | grep -q .
+}
+
 nginx_locations() {
+	local gzip_static_conf="# gzip_static is not available in this nginx build"
+	local brotli_static_conf="# brotli_static is not available in this nginx build"
+	if nginx_supports_gzip_static; then
+		gzip_static_conf="gzip_static on;"
+	fi
+	if nginx_supports_brotli_static; then
+		brotli_static_conf="brotli_static on;"
+	fi
+
 	cat <<EOF
 	root ${APP_DIR}/web/ui/dist;
 	index index.html;
 	client_max_body_size 256m;
+	sendfile on;
+	tcp_nopush on;
+	gzip_vary on;
+	${gzip_static_conf}
+	${brotli_static_conf}
 
 	add_header Cross-Origin-Opener-Policy "same-origin" always;
 	add_header Cross-Origin-Embedder-Policy "credentialless" always;
@@ -320,6 +404,15 @@ nginx_locations() {
 		proxy_buffering off;
 	}
 
+	location = /godot/_manifest.json {
+		alias ${APP_DIR}/web/godot-export/_manifest.json;
+		default_type application/json;
+		add_header Cross-Origin-Opener-Policy "same-origin" always;
+		add_header Cross-Origin-Embedder-Policy "credentialless" always;
+		add_header Cross-Origin-Resource-Policy "cross-origin" always;
+		add_header Cache-Control "no-store, max-age=0" always;
+	}
+
 	location /godot/ {
 		alias ${APP_DIR}/web/godot-export/;
 		default_type application/octet-stream;
@@ -335,7 +428,7 @@ nginx_locations() {
 		add_header Cross-Origin-Opener-Policy "same-origin" always;
 		add_header Cross-Origin-Embedder-Policy "credentialless" always;
 		add_header Cross-Origin-Resource-Policy "cross-origin" always;
-		add_header Cache-Control "no-store, max-age=0" always;
+		add_header Cache-Control "public, no-cache" always;
 	}
 
 	location ^~ /.well-known/acme-challenge/ {
@@ -471,6 +564,17 @@ verify_deploy() {
 		curl -fsS -H "Host: $DOMAIN" "http://127.0.0.1/godot/_manifest.json" >/dev/null
 	fi
 
+	local base pck_url compression_headers
+	base="$(node --input-type=module -e 'import fs from "node:fs"; const m = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log(m.base);' "$APP_DIR/web/godot-export/_manifest.json")"
+	pck_url="/godot/${base}.pck"
+	if (( ENABLE_SSL == 1 )); then
+		compression_headers="$(curl -fsSI --resolve "${DOMAIN}:443:127.0.0.1" -H 'Accept-Encoding: br,gzip' "https://${DOMAIN}${pck_url}")"
+	else
+		compression_headers="$(curl -fsSI -H "Host: $DOMAIN" -H 'Accept-Encoding: br,gzip' "http://127.0.0.1${pck_url}")"
+	fi
+	echo "$compression_headers" | grep -qi '^content-encoding: \(br\|gzip\)' || \
+		log "Warning: ${pck_url} is not being served with static compression"
+
 	(cd "$APP_DIR/server" && SERVER_HOST_NODE="$SERVER_HOST" SERVER_PORT_NODE="$SERVER_PORT" node --input-type=module <<'NODE'
 import fs from "node:fs";
 import { WebSocket } from "ws";
@@ -540,6 +644,7 @@ main() {
 	build_godot_export
 	ensure_godot_export_exists
 	generate_godot_manifest
+	compress_godot_export
 	install_node_deps_and_build_ui
 	write_systemd_service
 	configure_ssl
