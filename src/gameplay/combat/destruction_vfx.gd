@@ -768,7 +768,7 @@ static func _populate_web_shader_smoke(vfx, footprint: Vector2, density_scale: f
 	var footprint_scale: float = clampf(maxf(footprint_x, footprint_z) / 2.8, 0.75, 1.35)
 	var density: float = clampf(density_scale, 1.0, 2.0)
 
-	var smoke_count: int = int(roundf(42.0 * footprint_scale * density))
+	var smoke_count: int = int(roundf(24.0 * footprint_scale * density))
 	for i: int in range(smoke_count):
 		vfx.add_card(
 			"Smoke%02d" % i,

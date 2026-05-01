@@ -201,7 +201,7 @@ func _build_web_smoke_particles() -> void:
 	vfx.name = "WebSmokeParticles"
 	add_child(vfx)
 
-	var smoke_count: int = mini(amount, 36)
+	var smoke_count: int = mini(amount, 24)
 	for i: int in range(smoke_count):
 		vfx.add_card(
 			"Smoke%02d" % i,

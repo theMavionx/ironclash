@@ -158,9 +158,11 @@ signal self_destructed(at_position: Vector3)
 
 @export_group("Collision Mesh")
 @export var rebuild_collision_from_visual_mesh: bool = true
+@export var rebuild_collision_on_web: bool = false
 @export var collision_mesh_min_size: Vector3 = Vector3(0.04, 0.04, 0.04)
 @export var collision_mesh_max_shapes: int = 8
 @export var collision_mesh_ignore_names: PackedStringArray = PackedStringArray()
+@export var warn_missing_propeller_nodes: bool = false
 
 # ---------------------------------------------------------------------------
 # Private state
@@ -284,6 +286,8 @@ func _ready() -> void:
 func _rebuild_visual_mesh_collision() -> void:
 	if not rebuild_collision_from_visual_mesh:
 		return
+	if OS.has_feature("web") and not rebuild_collision_on_web:
+		return
 
 	var ignore_names := PackedStringArray(collision_mesh_ignore_names)
 	for propeller_name: String in propeller_node_names:
@@ -304,12 +308,15 @@ func _rebuild_visual_mesh_collision() -> void:
 func _setup_propellers() -> void:
 	# Resolve all blade nodes, then split into motor groups of [blades_per_motor].
 	var resolved_blades: Array[Node3D] = []
+	var missing_names: PackedStringArray = PackedStringArray()
 	for prop_name: String in propeller_node_names:
 		var node: Node3D = _find_descendant_by_name(self, prop_name) as Node3D
 		if node == null:
-			push_warning("DroneController: propeller node '%s' not found" % prop_name)
+			missing_names.append(prop_name)
 			continue
 		resolved_blades.append(node)
+	if warn_missing_propeller_nodes and not missing_names.is_empty():
+		push_warning("DroneController: %d propeller nodes not found" % missing_names.size())
 
 	var per_motor: int = maxi(blades_per_motor, 1)
 	var motor_count: int = resolved_blades.size() / per_motor

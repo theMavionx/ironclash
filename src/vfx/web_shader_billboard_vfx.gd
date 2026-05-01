@@ -8,6 +8,9 @@ extends Node3D
 ## and animates them like particles from _process.
 
 var _cards: Array[Dictionary] = []
+@export var update_fps: float = 24.0
+
+var _update_accumulator: float = 0.0
 
 
 func _ready() -> void:
@@ -109,6 +112,15 @@ func add_card_with_velocity(
 
 
 func _process(delta: float) -> void:
+	var step_delta: float = delta
+	if update_fps > 0.0:
+		_update_accumulator += delta
+		var step: float = 1.0 / update_fps
+		if _update_accumulator < step:
+			return
+		step_delta = _update_accumulator
+		_update_accumulator = 0.0
+
 	var camera: Camera3D = get_viewport().get_camera_3d()
 	var live_cards: int = 0
 	for entry: Dictionary in _cards:
@@ -116,7 +128,7 @@ func _process(delta: float) -> void:
 		if card == null or not is_instance_valid(card):
 			continue
 
-		entry["age"] = float(entry["age"]) + delta
+		entry["age"] = float(entry["age"]) + step_delta
 		var lifetime: float = float(entry["lifetime"])
 		if float(entry["age"]) >= lifetime:
 			if bool(entry["looping"]):

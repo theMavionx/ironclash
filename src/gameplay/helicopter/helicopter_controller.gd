@@ -80,6 +80,7 @@ const _VISUAL_CONVEX_COLLIDERS := preload("res://src/gameplay/vehicle/visual_con
 
 @export_group("Collision Mesh")
 @export var rebuild_collision_from_visual_mesh: bool = true
+@export var rebuild_collision_on_web: bool = false
 @export var collision_mesh_min_size: Vector3 = Vector3(0.08, 0.08, 0.08)
 @export var collision_mesh_max_shapes: int = 10
 @export var collision_mesh_ignore_names: PackedStringArray = PackedStringArray([
@@ -247,6 +248,8 @@ func _ready() -> void:
 
 func _rebuild_visual_mesh_collision() -> void:
 	if not rebuild_collision_from_visual_mesh:
+		return
+	if OS.has_feature("web") and not rebuild_collision_on_web:
 		return
 	var built: int = _VISUAL_CONVEX_COLLIDERS.rebuild(
 		self,

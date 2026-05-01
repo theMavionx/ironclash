@@ -179,6 +179,10 @@ signal fired_with_aim(spawn_origin: Vector3, aim_dir: Vector3)
 ## Build runtime convex mesh colliders from the visual mesh instead of using
 ## the old broad fallback box authored in the scene.
 @export var rebuild_collision_from_visual_mesh: bool = true
+## WebGL builds should not spend startup frames generating convex hulls from
+## GLB meshes. The authored fallback box scales with the vehicle and is enough
+## for hit/drive collision in browser.
+@export var rebuild_collision_on_web: bool = false
 @export var collision_mesh_min_size: Vector3 = Vector3(0.12, 0.10, 0.08)
 @export var collision_mesh_max_shapes: int = 8
 @export var collision_mesh_ignore_names: PackedStringArray = PackedStringArray([
@@ -388,6 +392,8 @@ func _apply_slope_contact_settings() -> void:
 
 func _rebuild_visual_mesh_collision() -> void:
 	if not rebuild_collision_from_visual_mesh:
+		return
+	if OS.has_feature("web") and not rebuild_collision_on_web:
 		return
 	var built: int = _VISUAL_CONVEX_COLLIDERS.rebuild(
 		self,
