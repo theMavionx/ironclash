@@ -1,12 +1,20 @@
 shader_type spatial;
 render_mode blend_mix, depth_draw_opaque, cull_back, diffuse_burley, specular_schlick_ggx, skip_vertex_transform;
 
-// WebGL on some Macs reports GL_MAX_UNIFORM_BLOCK_SIZE = 16384. Terrain3D's
-// regular shaders declare _region_map[1024] plus texture/material arrays, which
-// can exceed that limit and make the whole terrain disappear. This fallback keeps
-// only the data needed to place vertices and uses procedural colors.
+// Web terrain shader: keep Terrain3D albedo textures, but avoid the large
+// material/uniform arrays from the default shader that exceed WebGL UBO limits.
 
 const int WEB_REGION_LIMIT = 96;
+
+const int TEX_GROUND = 0;
+const int TEX_MOUNTAIN = 1;
+const int TEX_ROAD = 2;
+const int TEX_ROCK = 3;
+const int TEX_ROCK_ALT = 4;
+const int TEX_SNOW = 5;
+const int TEX_COBBLE = 6;
+
+const uint CONTROL_MASK = 0xFFFFC07Du;
 
 uniform vec3 _camera_pos = vec3(0.0);
 uniform float _mesh_size = 48.0;
@@ -15,7 +23,18 @@ uniform float _vertex_density = 1.0;
 uniform float _region_size = 1024.0;
 uniform float _region_texel_size = 0.0009765625;
 uniform vec2 _region_locations[WEB_REGION_LIMIT];
+
 uniform highp sampler2DArray _height_maps : repeat_disable;
+uniform highp sampler2DArray _control_maps : repeat_disable;
+uniform highp sampler2DArray _color_maps : source_color, filter_linear_mipmap, repeat_disable;
+uniform highp sampler2DArray _texture_array_albedo : source_color, filter_linear_mipmap, repeat_enable;
+
+uniform float auto_slope : hint_range(0.0, 4.0) = 1.0;
+uniform float auto_height_reduction : hint_range(0.0, 1.0) = 0.1;
+uniform int auto_base_texture : hint_range(0, 6) = 0;
+uniform int auto_overlay_texture : hint_range(0, 6) = 1;
+uniform bool height_blending = true;
+uniform float blend_sharpness : hint_range(0.0, 1.0) = 0.87;
 
 varying vec3 v_world_vertex;
 varying vec3 v_world_normal;
@@ -38,12 +57,163 @@ ivec3 get_index_coord(vec2 uv) {
 	return ivec3(ivec2(region_uv), layer);
 }
 
+vec3 get_index_uv(vec2 uv2) {
+	vec2 region_location = floor(uv2);
+	int layer = find_region_layer(region_location);
+	if (layer < 0) {
+		return vec3(fract(uv2), -1.0);
+	}
+	return vec3(uv2 - _region_locations[layer], float(layer));
+}
+
 float height_at(vec2 uv, float fallback_height) {
 	ivec3 index = get_index_coord(uv);
 	if (index.z < 0) {
 		return fallback_height;
 	}
 	return texelFetch(_height_maps, index, 0).r;
+}
+
+uint unpack_control(vec4 rgba) {
+	uvec4 bytes = uvec4(round(clamp(rgba, vec4(0.0), vec4(1.0)) * 255.0));
+	return bytes.r | (bytes.g << 8u) | (bytes.b << 16u) | (bytes.a << 24u);
+}
+
+uint control_at(vec2 uv) {
+	ivec3 index = get_index_coord(uv);
+	if (index.z < 0) {
+		return 0x1u;
+	}
+	return unpack_control(texelFetch(_control_maps, index, 0)) & CONTROL_MASK;
+}
+
+int safe_texture_id(int layer) {
+	return clamp(layer, 0, TEX_COBBLE);
+}
+
+float texture_scale_for_layer(int layer) {
+	if (layer == TEX_ROAD) {
+		return 0.16;
+	}
+	if (layer == TEX_COBBLE) {
+		return 0.22;
+	}
+	if (layer == TEX_SNOW) {
+		return 0.09;
+	}
+	if (layer == TEX_MOUNTAIN || layer == TEX_ROCK || layer == TEX_ROCK_ALT) {
+		return 0.075;
+	}
+	return 0.085;
+}
+
+vec4 sample_albedo_layer(int layer, vec2 world_xz, vec4 ddxy) {
+	int safe_layer = safe_texture_id(layer);
+	float scale = texture_scale_for_layer(safe_layer);
+	vec2 uv = world_xz * scale;
+	vec4 scaled_dd = ddxy * scale;
+	return textureGrad(_texture_array_albedo, vec3(uv, float(safe_layer)), scaled_dd.xy, scaled_dd.zw);
+}
+
+float height_blend_weight(float a_height, float b_height, float blend) {
+	if (!height_blending) {
+		return clamp(blend, 0.0, 1.0);
+	}
+	float ma = max(a_height + (1.0 - blend), b_height + blend) - (1.001 - blend_sharpness);
+	float b1 = max(a_height + (1.0 - blend) - ma, 0.0);
+	float b2 = max(b_height + blend - ma, 0.0);
+	return b2 / max(b1 + b2, 0.0001);
+}
+
+float box_mask(vec2 p, vec2 center, vec2 half_extents, float feather) {
+	vec2 q = abs(p - center) - half_extents;
+	float outside = length(max(q, vec2(0.0)));
+	float inside = min(max(q.x, q.y), 0.0);
+	float signed_distance = outside + inside;
+	return 1.0 - smoothstep(0.0, feather, signed_distance);
+}
+
+float segment_distance(vec2 p, vec2 a, vec2 b) {
+	vec2 pa = p - a;
+	vec2 ba = b - a;
+	float h = clamp(dot(pa, ba) / max(dot(ba, ba), 0.0001), 0.0, 1.0);
+	return length(pa - ba * h);
+}
+
+float road_mask(vec2 p) {
+	float d = min(
+		segment_distance(p, vec2(12.0, 24.0), vec2(-8.0, -25.0)),
+		segment_distance(p, vec2(-8.0, -25.0), vec2(-24.0, -76.0))
+	);
+	return 1.0 - smoothstep(4.5, 7.5, d);
+}
+
+float base_cobble_mask(vec2 p) {
+	float red_base = box_mask(p, vec2(15.5, 20.0), vec2(21.0, 15.5), 4.0);
+	float blue_base = box_mask(p, vec2(-22.5, -73.0), vec2(22.0, 16.0), 4.0);
+	return max(red_base, blue_base);
+}
+
+int procedural_base_layer(float slope, float height_value, float base_mask_value, float road_mask_value) {
+	if (base_mask_value > 0.45) {
+		return TEX_COBBLE;
+	}
+	if (road_mask_value > 0.50) {
+		return TEX_ROAD;
+	}
+	if (height_value > 42.0) {
+		return TEX_SNOW;
+	}
+	if (slope > 0.52) {
+		return TEX_ROCK;
+	}
+	return TEX_GROUND;
+}
+
+int procedural_overlay_layer(float slope, float height_value, int base_layer) {
+	if (height_value > 32.0) {
+		return TEX_SNOW;
+	}
+	if (slope > 0.32) {
+		return TEX_MOUNTAIN;
+	}
+	return base_layer;
+}
+
+float procedural_blend(float slope, float height_value, int base_layer, int overlay_layer) {
+	if (base_layer == overlay_layer) {
+		return 0.0;
+	}
+	float snow_blend = smoothstep(30.0, 48.0, height_value);
+	float slope_blend = smoothstep(0.25, 0.70, slope);
+	if (overlay_layer == TEX_SNOW) {
+		return snow_blend;
+	}
+	return slope_blend;
+}
+
+void resolve_layers(uint control, float slope, float height_value, float base_mask_value, float road_mask_value, out int base_layer, out int overlay_layer, out float blend) {
+	bool has_decoded_control = control != 0u;
+	bool auto_shader = !has_decoded_control || bool(control & 0x1u);
+
+	if (auto_shader) {
+		base_layer = procedural_base_layer(slope, height_value, base_mask_value, road_mask_value);
+		overlay_layer = procedural_overlay_layer(slope, height_value, base_layer);
+		blend = procedural_blend(slope, height_value, base_layer, overlay_layer);
+		return;
+	}
+
+	base_layer = safe_texture_id(int((control >> 27u) & 0x1Fu));
+	overlay_layer = safe_texture_id(int((control >> 22u) & 0x1Fu));
+	blend = float((control >> 14u) & 0xFFu) / 255.0;
+
+	float auto_blend = clamp(
+		(auto_slope * 2.0 * (v_world_normal.y - 1.0) + 1.0)
+		- auto_height_reduction * 0.01 * height_value,
+		0.0,
+		1.0
+	);
+	blend = mix(blend, auto_blend, 0.0);
 }
 
 void vertex() {
@@ -77,26 +247,45 @@ void vertex() {
 	v_world_vertex.y = h;
 	v_world_normal = normalize(vec3(h - h_x, _vertex_spacing, h - h_z));
 
+	vec3 w_tangent = normalize(cross(v_world_normal, vec3(0.0, 0.0, 1.0)));
+	vec3 w_binormal = normalize(cross(v_world_normal, w_tangent));
+
 	VERTEX = (VIEW_MATRIX * vec4(v_world_vertex, 1.0)).xyz;
 	NORMAL = normalize((VIEW_MATRIX * vec4(v_world_normal, 0.0)).xyz);
-	BINORMAL = normalize(cross(NORMAL, vec3(1.0, 0.0, 0.0)));
-	TANGENT = normalize(cross(BINORMAL, NORMAL));
+	BINORMAL = normalize((VIEW_MATRIX * vec4(w_binormal, 0.0)).xyz);
+	TANGENT = normalize((VIEW_MATRIX * vec4(w_tangent, 0.0)).xyz);
 }
 
 void fragment() {
-	float height_factor = clamp((v_world_vertex.y + 4.0) / 42.0, 0.0, 1.0);
+	vec3 dx = dFdx(v_world_vertex);
+	vec3 dy = dFdy(v_world_vertex);
+	vec4 ddxy = vec4(dx.xz, dy.xz);
+	float region_mip = log2(max(length(dx.xz), length(dy.xz)) * _vertex_density);
+
+	uint control = control_at(floor(UV));
+	if (control != 0u && bool((control >> 2u) & 0x1u)) {
+		discard;
+	}
+
 	float slope = 1.0 - clamp(v_world_normal.y, 0.0, 1.0);
+	float cobble_mask = base_cobble_mask(v_world_vertex.xz);
+	float road_value = road_mask(v_world_vertex.xz) * (1.0 - cobble_mask);
 
-	vec3 low_ground = vec3(0.30, 0.34, 0.24);
-	vec3 dry_ground = vec3(0.42, 0.36, 0.27);
-	vec3 rock = vec3(0.43, 0.45, 0.43);
-	vec3 snow = vec3(0.82, 0.86, 0.88);
+	int base_layer;
+	int overlay_layer;
+	float blend;
+	resolve_layers(control, slope, v_world_vertex.y, cobble_mask, road_value, base_layer, overlay_layer, blend);
 
-	vec3 color = mix(low_ground, dry_ground, smoothstep(0.12, 0.38, height_factor));
-	color = mix(color, rock, smoothstep(0.18, 0.62, slope));
-	color = mix(color, snow, smoothstep(0.62, 0.92, height_factor));
+	vec4 base_albedo = sample_albedo_layer(base_layer, v_world_vertex.xz, ddxy);
+	vec4 overlay_albedo = sample_albedo_layer(overlay_layer, v_world_vertex.xz, ddxy);
+	float blend_weight = height_blend_weight(base_albedo.a, overlay_albedo.a, blend);
+	vec3 albedo = mix(base_albedo.rgb, overlay_albedo.rgb, blend_weight);
 
-	ALBEDO = color;
-	ROUGHNESS = 0.82;
+	vec3 region_uv = get_index_uv(UV2);
+	vec4 color_map = region_uv.z > -0.5 ? textureLod(_color_maps, region_uv, region_mip) : vec4(1.0, 1.0, 1.0, 0.0);
+	albedo *= mix(vec3(1.0), max(color_map.rgb * 1.25, vec3(0.2)), clamp(color_map.a * 0.35, 0.0, 1.0));
+
+	ALBEDO = albedo;
+	ROUGHNESS = 0.86;
 	SPECULAR = 0.18;
 }
