@@ -9,19 +9,34 @@ import { players } from "../state/players.ts";
 import { make_logger } from "../util/log.ts";
 
 const log = make_logger("net");
+const SOFT_BACKPRESSURE_BYTES = 512 * 1024;
+const HARD_BACKPRESSURE_BYTES = 2 * 1024 * 1024;
 
-export function send(ws: WebSocket, msg: S2C): void {
-	if (ws.readyState !== WebSocket.OPEN) return;
-	ws.send(JSON.stringify(msg));
+function send_data(ws: WebSocket, data: string, unreliable: boolean = false): boolean {
+	if (ws.readyState !== WebSocket.OPEN) return false;
+	if (ws.bufferedAmount > HARD_BACKPRESSURE_BYTES) {
+		log.warn(`closing slow peer: buffered=${ws.bufferedAmount}`);
+		try { ws.close(1013, "backpressure"); } catch { /* best-effort */ }
+		return false;
+	}
+	if (unreliable && ws.bufferedAmount > SOFT_BACKPRESSURE_BYTES) return false;
+	ws.send(data, (err?: Error | null) => {
+		if (err != null) log.warn(`ws send failed: ${err.message}`);
+	});
+	return true;
+}
+
+export function send(ws: WebSocket, msg: S2C, unreliable: boolean = false): void {
+	send_data(ws, JSON.stringify(msg), unreliable);
 }
 
 /** Broadcast to every connected peer. Pass `except_peer_id` to skip the
  *  shooter when forwarding fire VFX, anim cues, etc. */
-export function broadcast(msg: S2C, except_peer_id?: number): void {
+export function broadcast(msg: S2C, except_peer_id?: number, unreliable: boolean = false): void {
 	const data: string = JSON.stringify(msg);
 	for (const p of players.values()) {
 		if (except_peer_id !== undefined && p.peer_id === except_peer_id) continue;
-		if (p.ws.readyState === WebSocket.OPEN) p.ws.send(data);
+		send_data(p.ws, data, unreliable);
 	}
 }
 

@@ -59,7 +59,7 @@ export function start_snapshot_loop(): void {
 				server_t: now,
 				players: build_player_snapshot(),
 				vehicles: build_vehicle_snapshot(),
-			});
+			}, undefined, true);
 		}
 		_next_tick_at += cfg.tick_ms;
 		if (now - _next_tick_at > cfg.tick_ms * 5) _next_tick_at = now + cfg.tick_ms;

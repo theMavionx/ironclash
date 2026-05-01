@@ -22,7 +22,7 @@ extends Resource
 
 ## Min per team before the match leaves WaitingForPlayers.
 ## Mirrors design/gdd/team-assignment.md → team_min_players_to_start.
-@export_range(1, 5) var team_min_players_to_start: int = 3
+@export_range(1, 5) var team_min_players_to_start: int = 1
 
 ## Authoritative simulation tick rate. ADR-0001 fixes 30 Hz.
 @export_range(10, 60) var server_tick_hz: int = 30

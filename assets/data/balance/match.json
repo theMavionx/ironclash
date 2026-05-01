@@ -2,7 +2,7 @@
 	"_doc": "Match-level tuning. Mirrors design/gdd/team-assignment.md and design/gdd/respawn-system.md tuning knobs. Server reads at boot.",
 
 	"max_per_team": 5,
-	"min_per_team_to_start": 3,
+	"min_per_team_to_start": 1,
 	"max_total": 10,
 
 	"starting_hp": 100,
@@ -10,14 +10,28 @@
 
 	"tick_hz": 30,
 
-	"red_spawn": [-20.0, 1.0, 0.0],
-	"blue_spawn": [20.0, 1.0, 0.0],
+	"red_spawn": [20.0, 10.0, 28.0],
+	"blue_spawn": [-28.0, 10.0, -88.0],
+	"red_spawn_slots": [
+		[17.5, 10.0, 24.0],
+		[21.0, 10.0, 24.0],
+		[17.5, 10.0, 29.0],
+		[21.0, 10.0, 29.0],
+		[24.5, 10.0, 33.0]
+	],
+	"blue_spawn_slots": [
+		[-24.5, 10.0, -83.0],
+		[-28.0, 10.0, -83.0],
+		[-24.5, 10.0, -88.0],
+		[-28.0, 10.0, -88.0],
+		[-31.5, 10.0, -93.0]
+	],
 
 	"_anticheat_doc": "Server clamps horizontal step per transform packet. max_step = max_horizontal_speed * dt + tolerance. Higher tolerance = more lag-friendly but easier to teleport-cheat.",
 	"max_horizontal_speed_mps": 12.0,
 	"position_jitter_tolerance_m": 0.5,
 
-	"_flow_doc": "Match phase durations. waiting → warmup (when both teams have ≥1) → in_progress → post_match → waiting (reset). Production round duration is 10 minutes.",
+	"_flow_doc": "Match phase durations. waiting → warmup when both teams have at least one player → in_progress → post_match → waiting (reset). Production round duration is 10 minutes.",
 	"warmup_seconds": 5.0,
 	"match_duration_seconds": 600.0,
 	"post_match_seconds": 10.0,

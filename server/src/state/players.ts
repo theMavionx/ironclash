@@ -45,14 +45,35 @@ export function pick_team_for_new_peer(): Team {
 	return team_count("red") <= team_count("blue") ? "red" : "blue";
 }
 
-export function spawn_for_team(team: Team): Vec3 {
-	const s: Vec3 = team === "red" ? cfg.match.red_spawn : cfg.match.blue_spawn;
-	const jitter: number = 1.5;
+function spawn_slots_for_team(team: Team): Vec3[] {
+	const slots: Vec3[] | undefined = team === "red" ? cfg.match.red_spawn_slots : cfg.match.blue_spawn_slots;
+	if (slots !== undefined && slots.length > 0) return slots;
+	return [team === "red" ? cfg.match.red_spawn : cfg.match.blue_spawn];
+}
+
+function team_slot_index(peer_id: number, team: Team): number {
+	const ids: number[] = Array.from(players.values())
+		.filter((p) => p.team === team)
+		.map((p) => p.peer_id)
+		.sort((a, b) => a - b);
+	const idx: number = ids.indexOf(peer_id);
+	return idx >= 0 ? idx : ids.length;
+}
+
+export function spawn_for_team(team: Team, slot_hint: number = team_count(team)): Vec3 {
+	const slots: Vec3[] = spawn_slots_for_team(team);
+	const fallback: Vec3 = team === "red" ? cfg.match.red_spawn : cfg.match.blue_spawn;
+	const s: Vec3 = slots[Math.abs(slot_hint) % slots.length] ?? fallback;
+	const jitter: number = 0.35;
 	return [
 		s[0] + (Math.random() - 0.5) * jitter,
 		s[1],
 		s[2] + (Math.random() - 0.5) * jitter,
 	];
+}
+
+export function spawn_for_player(peer_id: number, team: Team): Vec3 {
+	return spawn_for_team(team, team_slot_index(peer_id, team));
 }
 
 export function make_player(peer_id: number, ws: WebSocket, team: Team): Player {

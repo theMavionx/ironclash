@@ -10,7 +10,7 @@
 
 import type { MatchState, Team, Vec3, WinReason } from "../../../shared/protocol.ts";
 import { cfg } from "../config.ts";
-import { players, spawn_for_team, team_count } from "./players.ts";
+import { players, spawn_for_player, spawn_for_team, team_count } from "./players.ts";
 import { reset_all_vehicles } from "./vehicles.ts";
 import {
 	control_point_owner_counts,
@@ -82,7 +82,7 @@ export function reset_match(): void {
 		p.hp = cfg.match.starting_hp;
 		p.alive = true;
 		p.respawn_at_ms = 0;
-		p.pos = spawn_for_team(p.team);
+		p.pos = spawn_for_player(p.peer_id, p.team);
 		if (was_dead) {
 			broadcast({ t: "respawn", peer_id: p.peer_id, pos: p.pos, team: p.team });
 		}
@@ -189,7 +189,7 @@ export function check_respawns(now_ms: number): void {
 		if (now_ms < p.respawn_at_ms) continue;
 		p.alive = true;
 		p.hp = cfg.match.starting_hp;
-		p.pos = spawn_for_team(p.team);
+		p.pos = spawn_for_player(p.peer_id, p.team);
 		p.respawn_at_ms = 0;
 		broadcast({ t: "respawn", peer_id: p.peer_id, pos: p.pos, team: p.team });
 		log.info(`respawn peer=${p.peer_id} team=${p.team}`);

@@ -56,8 +56,12 @@ var _hello_sent: bool = false
 # Ping/RTT bookkeeping. Ping every PING_INTERVAL_S; latency_updated fires
 # whenever a pong rolls in. last_rtt_ms = -1 until the first pong arrives.
 const _PING_INTERVAL_S: float = 1.0
+const _OUTBOUND_SOFT_BACKPRESSURE_BYTES: int = 256 * 1024
+const _OUTBOUND_HARD_BACKPRESSURE_BYTES: int = 768 * 1024
 var _ping_accumulator: float = 0.0
 var last_rtt_ms: int = -1
+var _dropped_unreliable_packets: int = 0
+var _last_backpressure_log_ms: int = 0
 
 # Snapshot-rate sliding window (1s).
 var _snap_count_window: int = 0
@@ -229,10 +233,24 @@ func _on_state_changed(prev: int, current: int) -> void:
 # Outgoing
 # ---------------------------------------------------------------------------
 
-func send_message(msg: Dictionary) -> void:
+func send_message(msg: Dictionary, unreliable: bool = false) -> bool:
 	if _socket == null or _socket.get_ready_state() != WebSocketPeer.STATE_OPEN:
-		return
-	_socket.send_text(JSON.stringify(msg))
+		return false
+	if unreliable and _is_page_hidden():
+		_note_unreliable_drop("hidden")
+		return false
+	var buffered: int = _socket.get_current_outbound_buffered_amount()
+	if buffered >= _OUTBOUND_HARD_BACKPRESSURE_BYTES:
+		_note_unreliable_drop("hard_backpressure:%d" % buffered)
+		return false
+	if unreliable and buffered >= _OUTBOUND_SOFT_BACKPRESSURE_BYTES:
+		_note_unreliable_drop("soft_backpressure:%d" % buffered)
+		return false
+	var err: int = _socket.send_text(JSON.stringify(msg))
+	if err != OK:
+		_note_unreliable_drop("send_error:%d" % err)
+		return false
+	return true
 
 
 func send_transform(pos: Vector3, rot_y: float, aim_pitch: float, vel: Vector3, move_state: String = "") -> void:
@@ -246,7 +264,7 @@ func send_transform(pos: Vector3, rot_y: float, aim_pitch: float, vel: Vector3, 
 	}
 	if move_state != "":
 		msg["move_state"] = move_state
-	send_message(msg)
+	send_message(msg, true)
 
 
 func send_fire(weapon: String, origin: Vector3, dir: Vector3, seq: int = 0) -> void:
@@ -268,7 +286,7 @@ func send_anim_state(state: String, weapon: String = "") -> void:
 
 
 func send_ping() -> void:
-	send_message({"t": "ping", "client_t": Time.get_ticks_msec()})
+	send_message({"t": "ping", "client_t": Time.get_ticks_msec()}, true)
 
 
 func send_vehicle_enter(vehicle_id: String) -> void:
@@ -320,7 +338,7 @@ func send_vehicle_transform(
 		msg["aim_yaw"] = aim_yaw
 	if not is_nan(aim_pitch):
 		msg["aim_pitch"] = aim_pitch
-	send_message(msg)
+	send_message(msg, true)
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +447,21 @@ func _handle_raw(raw: PackedByteArray) -> void:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+func _is_page_hidden() -> bool:
+	if not OS.has_feature("web"):
+		return false
+	return bool(JavaScriptBridge.eval("document.hidden === true", true))
+
+
+func _note_unreliable_drop(reason: String) -> void:
+	_dropped_unreliable_packets += 1
+	var now: int = Time.get_ticks_msec()
+	if now - _last_backpressure_log_ms < 1000:
+		return
+	_last_backpressure_log_ms = now
+	print("[net] outbound backpressure drop x%d (%s)" % [_dropped_unreliable_packets, reason])
+
 
 func _send_bridge_event(event_name: String, payload: Dictionary) -> void:
 	if not has_node(_WEB_BRIDGE_PATH):

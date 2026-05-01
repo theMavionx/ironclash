@@ -9,10 +9,10 @@ extends Node3D
 ## Two jobs:
 ##   1. Background-load Main.tscn through ResourceLoader.load_threaded_request
 ##      so the player's main thread isn't blocked.
-##   2. Instance every shader-bearing prefab in front of [member _camera] for
-##      at least one frame so the Compatibility renderer (gl_compatibility,
-##      OpenGL/WebGL2) compiles its pipelines BEFORE the first AK shot or tank
-##      kill in real combat.
+##   2. Instance the critical first-combat prefabs in front of [member _camera]
+##      for at least one frame so the Compatibility renderer (gl_compatibility,
+##      OpenGL/WebGL2) compiles their pipelines BEFORE the first AK/RPG shot,
+##      vehicle shot, or tank/helicopter kill in real combat.
 ##
 ## Source for the technique: Godot docs — Reducing stutter from shader
 ## (pipeline) compilations.
@@ -36,7 +36,7 @@ extends Node3D
 ## Hard ceiling — if Main.tscn doesn't finish loading after this, swap anyway
 ## and let the gameplay scene finish loading on its own. Prevents a soft hang
 ## if threaded loading deadlocks.
-@export var max_hold_seconds: float = 45.0
+@export var max_hold_seconds: float = 12.0
 
 ## How far ahead of the camera the warmup root sits. Far enough that the
 ## whole probe spread remains in-frustum even on narrow browser canvases.
@@ -47,13 +47,13 @@ const _STAGE_COMPILING: String = "compiling_shaders"
 const _STAGE_READY: String = "ready"
 
 const _BLACKOUT_CANVAS_LAYER: int = 128
-const _WARMUP_PROBE_LIFETIME: float = 8.0
-const _WARMUP_SHOT_REPETITIONS: int = 10
-const _WARMUP_PROJECTILE_REPETITIONS: int = 4
+const _WARMUP_PROBE_LIFETIME: float = 4.0
+const _WARMUP_SHOT_REPETITIONS: int = 4
+const _WARMUP_PROJECTILE_REPETITIONS: int = 1
 const _WARMUP_DESTRUCTION_REPETITIONS: int = 1
-const _WARMUP_VEHICLE_FIRE_REPETITIONS: int = 3
-const _WARMUP_DELAYED_SHOT_BURSTS: int = 2
-const _WARMUP_SHOTS_PER_DELAYED_BURST: int = 2
+const _WARMUP_VEHICLE_FIRE_REPETITIONS: int = 1
+const _WARMUP_DELAYED_SHOT_BURSTS: int = 1
+const _WARMUP_SHOTS_PER_DELAYED_BURST: int = 1
 const _WARMUP_FRAME_GAP: int = 1
 const _MAIN_TANK_SCALE: float = 2.8
 const _MAIN_HELICOPTER_SCALE: float = 3.2
@@ -295,34 +295,22 @@ func _spawn_warmup_actors() -> void:
 	_camera_motion_enabled = true
 	print("[warmup] spawn_warmup_actors — camera=%v root=%v" % [cam_xform.origin, origin])
 
-	# Round 1 — VFX statics. PlayerFireVFX.prewarm internally loads textures,
-	# builds the tracer mesh + materials, and creates a short visible draw.
+	# Critical 10-second warmup: compile the pipelines a player actually hits
+	# in the first fight. Decorative variants are intentionally skipped here;
+	# they were making web startup longer without reducing combat hitches.
 	var t: int = Time.get_ticks_msec()
 	PlayerFireVFX.prewarm(_warmup_root)
 	_record_probe_time("PlayerFireVFX.prewarm", Time.get_ticks_msec() - t)
 	await _yield_warmup_frames()
 	_spawn_canvas_shader_probe()
 	await _yield_warmup_frames()
-	_spawn_camera_motion_probe()
-	await _yield_warmup_frames()
-
-	# Round 2 — actual frame draws of every per-shot pipeline. Each helper
-	# spawns the same primitive that runtime gameplay would, so the
-	# Compatibility renderer compiles the matching pipeline here instead of
-	# during a live firefight.
 	await _spawn_player_shot_probe()
 	await _yield_warmup_frames()
 	await _wait_for_main_load_before_scene_probes()
 	await _yield_warmup_frames()
-	await _spawn_vehicle_fire_probes()
+	await _spawn_projectile_scene_probes()
 	await _yield_warmup_frames()
-	_spawn_vehicle_material_probe(
-		"drone material probe",
-		"res://scenes/drone/drone.tscn",
-		Vector3(0.0, -1.2, _VEHICLE_PROBE_Z + 5.0),
-		{},
-		_MAIN_DRONE_SCALE
-	)
+	await _spawn_vehicle_fire_probes()
 	await _yield_warmup_frames()
 	_spawn_charred_probe()
 	await _yield_warmup_frames()
@@ -330,17 +318,9 @@ func _spawn_warmup_actors() -> void:
 	await _yield_warmup_frames()
 	await _spawn_explosion_probe()
 	await _yield_warmup_frames()
-	await _spawn_static_debris_probe()
-	await _yield_warmup_frames()
-	await _spawn_vehicle_destruction_probes()
-	await _yield_warmup_frames()
 	await _spawn_actual_vehicle_destruction_probes()
 	await _yield_warmup_frames()
-	_spawn_grass_probe()
-	await _yield_warmup_frames()
-	await _spawn_projectile_scene_probes()
-	await _yield_warmup_frames()
-	await _wait_for_async_probes("all staged probes", 0.5)
+	await _wait_for_async_probes("critical staged probes", 0.1)
 	_probe_staging_complete = true
 	print("[warmup] all %d probes staged in %d ms (async scheduled=%d pending=%d)" % [_probes_spawned, Time.get_ticks_msec() - _start_msec, _async_probes_scheduled, _pending_async_probes])
 
@@ -401,13 +381,6 @@ func _spawn_actual_vehicle_destruction_probes() -> void:
 			"path": "res://scenes/helicopter/helicopter.tscn",
 			"pos": Vector3(-8.0, -2.0, _VEHICLE_PROBE_Z - 8.0),
 			"scale": _MAIN_HELICOPTER_SCALE,
-			"props": {},
-		},
-		{
-			"label": "drone actual destruction",
-			"path": "res://scenes/drone/drone.tscn",
-			"pos": Vector3(0.0, -1.2, _VEHICLE_PROBE_Z - 4.0),
-			"scale": _MAIN_DRONE_SCALE,
 			"props": {},
 		},
 	]

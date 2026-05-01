@@ -50,6 +50,8 @@ export interface MatchConfig {
 	tick_hz: number;
 	red_spawn: Vec3;
 	blue_spawn: Vec3;
+	red_spawn_slots?: Vec3[];
+	blue_spawn_slots?: Vec3[];
 	max_horizontal_speed_mps: number;
 	position_jitter_tolerance_m: number;
 	warmup_seconds: number;
@@ -62,13 +64,27 @@ export interface MatchConfig {
 
 const DEFAULT_MATCH: MatchConfig = {
 	max_per_team: 5,
-	min_per_team_to_start: 3,
+	min_per_team_to_start: 1,
 	max_total: 10,
 	starting_hp: 100,
 	respawn_delay_seconds: 5.0,
 	tick_hz: 30,
-	red_spawn: [-20, 1, 0],
-	blue_spawn: [20, 1, 0],
+	red_spawn: [20, 10, 28],
+	blue_spawn: [-28, 10, -88],
+	red_spawn_slots: [
+		[17.5, 10, 24],
+		[21, 10, 24],
+		[17.5, 10, 29],
+		[21, 10, 29],
+		[24.5, 10, 33],
+	],
+	blue_spawn_slots: [
+		[-24.5, 10, -83],
+		[-28, 10, -83],
+		[-24.5, 10, -88],
+		[-28, 10, -88],
+		[-31.5, 10, -93],
+	],
 	max_horizontal_speed_mps: 12.0,
 	position_jitter_tolerance_m: 0.5,
 	warmup_seconds: 5.0,

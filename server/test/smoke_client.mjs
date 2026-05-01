@@ -374,7 +374,9 @@ async function main() {
 	{
 		const c = new TestClient("speed_test");
 		await c.opened;
-		await sleep(200);
+		const observer = new TestClient("observer");
+		await observer.opened;
+		await sleep(400);
 		// First transform — establishes baseline.
 		c.send({ t: "transform", pos: [0, 1, 0], rot_y: 0, aim_pitch: 0, vel: [0,0,0], client_t: Date.now() });
 		await sleep(120);
@@ -383,9 +385,6 @@ async function main() {
 		c.send({ t: "transform", pos: [200, 1, 0], rot_y: 0, aim_pitch: 0, vel: [0,0,0], client_t: Date.now() });
 		await sleep(150);
 		// Inspect a snapshot — clamped X should be < 5 (well under 200).
-		// Use a 2nd peer to read snapshots that include the speed_test player.
-		const observer = new TestClient("observer");
-		await observer.opened;
 		await sleep(400);
 		const observed_pos = observer.last_peer_pos.get(c.welcome?.peer_id);
 		assert(c.kicked === null, `client survived teleport attempt`);
