@@ -16,6 +16,7 @@ const _AK_MUZZLE_PATH: String = "Body/Visual/Player/Skeleton3D/ak47/Muzzle"
 const _RPG_MUZZLE_PATH: String = "Body/Visual/Player/Skeleton3D/rocketbullet"
 const _REMOTE_FIRE_QUEUE_TTL_MSEC: int = 500
 const _REMOTE_FIRE_QUEUE_MAX_PER_PEER: int = 8
+const _VEHICLE_HUD_REFRESH_MSEC: int = 250
 
 ## When true, also spawn a remote-player avatar for the local peer (debug
 ## third-person view of own snapshot fidelity). Off in normal play.
@@ -27,6 +28,8 @@ var _vehicle_alive: Dictionary = {}  # vehicle_id (String) -> bool
 var _vehicle_vfx_started: Dictionary = {}  # vehicle_id (String) -> bool
 var _network_smoke_anchors: Dictionary = {}  # vfx key (String) -> Node3D
 var _pending_remote_fire_events: Dictionary = {}  # peer_id (int) -> Array[Dictionary]
+var _last_vehicle_hud_signature: String = ""
+var _last_vehicle_hud_msec: int = 0
 
 
 func _ready() -> void:
@@ -112,16 +115,29 @@ func _sync_local_vehicle_hud(vehicles: Array) -> void:
 		if _last_local_vehicle != "":
 			bridge.send_event("vehicle_drive_end", {})
 			_last_local_vehicle = ""
+			_last_vehicle_hud_signature = ""
+			_last_vehicle_hud_msec = 0
 		return
 	var vid: String = String(driving.get("id", ""))
 	if vid != _last_local_vehicle:
 		_last_local_vehicle = vid
+		_last_vehicle_hud_signature = ""
+		_last_vehicle_hud_msec = 0
 		bridge.send_event("vehicle_drive_start", {"vehicle_id": vid})
+	var hp: int = int(driving.get("hp", 0))
+	var max_hp: int = int(driving.get("max_hp", 100))
+	var alive: bool = bool(driving.get("alive", true))
+	var signature: String = "%s:%d:%d:%s" % [vid, hp, max_hp, str(alive)]
+	var now_msec: int = Time.get_ticks_msec()
+	if signature == _last_vehicle_hud_signature and now_msec - _last_vehicle_hud_msec < _VEHICLE_HUD_REFRESH_MSEC:
+		return
+	_last_vehicle_hud_signature = signature
+	_last_vehicle_hud_msec = now_msec
 	bridge.send_event("vehicle_hp", {
 		"vehicle_id": vid,
-		"hp": int(driving.get("hp", 0)),
-		"max_hp": int(driving.get("max_hp", 100)),
-		"alive": bool(driving.get("alive", true)),
+		"hp": hp,
+		"max_hp": max_hp,
+		"alive": alive,
 	})
 
 
@@ -161,6 +177,9 @@ func _clear_all() -> void:
 	_vehicle_alive.clear()
 	_vehicle_vfx_started.clear()
 	_pending_remote_fire_events.clear()
+	_last_local_vehicle = ""
+	_last_vehicle_hud_signature = ""
+	_last_vehicle_hud_msec = 0
 
 
 # ---------------------------------------------------------------------------

@@ -58,11 +58,54 @@ const _WARMUP_DESTRUCTION_REPETITIONS: int = 1
 const _WARMUP_VEHICLE_FIRE_REPETITIONS: int = 1
 const _WARMUP_DELAYED_SHOT_BURSTS: int = 1
 const _WARMUP_SHOTS_PER_DELAYED_BURST: int = 1
-const _WARMUP_FRAME_GAP: int = 1
-const _MAIN_TANK_SCALE: float = 2.8
+const _WARMUP_FRAME_GAP: int = 2
+const _MAIN_TANK_SCALE: float = 1.68
 const _MAIN_HELICOPTER_SCALE: float = 3.2
 const _MAIN_DRONE_SCALE: float = 1.0
 const _VEHICLE_PROBE_Z: float = -34.0
+const _THREAD_WAIT_BEFORE_SCENE_PROBES: float = 7.0
+const _THREAD_WAIT_BEFORE_SWAP: float = 1.25
+
+const _TANK_SCENE_PATH: String = "res://scenes/tank/tank.tscn"
+const _HELICOPTER_SCENE_PATH: String = "res://scenes/helicopter/helicopter.tscn"
+const _DRONE_SCENE_PATH: String = "res://scenes/drone/drone.tscn"
+const _RED_ZONE_SCENE_PATH: String = "res://scenes/world/red_zone.tscn"
+const _GRASS_SCENE_PATH: String = "res://Model/Grass/gameready_grass.glb"
+const _MAIN_MAP_PREWARM_NAME: String = "WarmupMainMapProbe"
+const _MAIN_MAP_PREWARM_RENDER_FRAMES: int = 2
+const _MAIN_MAP_PRUNE_NAMES: Array[String] = [
+	"Player",
+	"NetworkPlayerSync",
+	"NetworkDebugOverlay",
+	"WorldReplicator",
+	"VehicleSwitcher",
+	"VehicleSync",
+	"TerrainTreeColliders",
+	"TreeCollisionBodies",
+	"StaticVisualMeshColliders",
+	"Tank",
+	"Tank2",
+	"Tank3",
+	"Tank4",
+	"Helicopter",
+	"Helicopter2",
+	"Drone",
+	"Camera3D",
+	"Crosshair",
+	"HelicopterHUD",
+	"FPVPostProcess",
+	"FPVHUD",
+	"ZoneScoreDisplay",
+]
+const _MAIN_MAP_PRUNE_SCRIPT_NEEDLES: Array[String] = [
+	"network_player_sync",
+	"network_debug_overlay",
+	"world_replicator",
+	"vehicle_sync",
+	"vehicle_switcher",
+	"terrain_tree_colliders",
+	"static_visual_mesh_colliders",
+]
 
 @onready var _camera: Camera3D = $Camera3D
 @onready var _warmup_root: Node3D = $WarmupRoot
@@ -87,8 +130,13 @@ var _async_probes_scheduled: int = 0
 var _main_scene_resource: PackedScene = null
 var _main_scene_load_done: bool = false
 var _main_scene_load_failed: bool = false
+var _threaded_resource_paths: Array[String] = []
+var _threaded_resources: Dictionary = {}
+var _threaded_failures: Dictionary = {}
+var _threaded_resource_progress: Dictionary = {}
 var _camera_motion_enabled: bool = false
 var _camera_base_transform: Transform3D = Transform3D.IDENTITY
+var _main_map_probe: Node3D = null
 var _started: bool = false
 var _play_handler: Callable = Callable()
 var _play_handler_registered: bool = false
@@ -152,15 +200,21 @@ func _start_warmup() -> void:
 	_main_scene_resource = null
 	_main_scene_load_done = false
 	_main_scene_load_failed = false
+	_threaded_resource_paths.clear()
+	_threaded_resources.clear()
+	_threaded_failures.clear()
+	_threaded_resource_progress.clear()
+	_main_map_probe = null
 	_start_msec = Time.get_ticks_msec()
 	print("[warmup] ui_play - gl_compatibility prewarm start")
 	_emit_progress(0.02, _STAGE_LOADING)
+	_request_threaded_resources()
 	# Kick off the websocket handshake in parallel with asset loading. The
 	# warmup scene is the user's first concrete contact with the engine (no
 	# more in-engine menu) so it must self-start networking. has_method guards
 	# protect editor smoke tests where the autoload isn't present.
 	_start_network_connection()
-	print("[warmup] Main.tscn will be loaded synchronously inside warmup overlay")
+	print("[warmup] Main.tscn is loading on a ResourceLoader thread")
 	# Spawn next frame so the camera transform is already current.
 	call_deferred("_spawn_warmup_actors")
 
@@ -196,17 +250,165 @@ func _start_network_connection() -> void:
 	nm.call("connect_to_server")
 
 
+func _request_threaded_resources() -> void:
+	var unique: Dictionary = {}
+	for path: String in _collect_warmup_resource_paths():
+		if path.is_empty() or unique.has(path):
+			continue
+		unique[path] = true
+		if not ResourceLoader.exists(path):
+			_threaded_failures[path] = "missing"
+			push_warning("[warmup] threaded resource missing: %s" % path)
+			if path == main_scene_path:
+				_main_scene_load_failed = true
+			continue
+		var err: int = ResourceLoader.load_threaded_request(
+			path,
+			_type_hint_for_path(path),
+			false,
+			ResourceLoader.CACHE_MODE_REUSE,
+		)
+		if err != OK and err != ERR_BUSY:
+			_threaded_failures[path] = "request_failed:%d" % err
+			push_warning("[warmup] load_threaded_request failed (%d): %s" % [err, path])
+			if path == main_scene_path:
+				_main_scene_load_failed = true
+			continue
+		_threaded_resource_paths.append(path)
+		_threaded_resource_progress[path] = 0.0
+	print("[warmup] threaded resource requests: %d" % _threaded_resource_paths.size())
+
+
+func _collect_warmup_resource_paths() -> Array[String]:
+	# Keep the threaded loader focused on the gameplay scene. In Godot 4.3,
+	# requesting Main.tscn and its child scenes/materials through multiple
+	# concurrent load_threaded_request() calls can race in ResourceLoader and
+	# intermittently produce bogus ".tscn parse error" failures. The combat
+	# prefabs are still fully warmed below; they are loaded sequentially after
+	# Main.tscn is in cache, then rendered for a few frames under the overlay.
+	return [main_scene_path]
+
+
+func _projectile_scene_paths() -> Array[String]:
+	return [
+		"res://scenes/projectile/tank_shell.tscn",
+		"res://scenes/projectile/rpg_rocket.tscn",
+		"res://scenes/projectile/shell_impact.tscn",
+		"res://scenes/projectile/smoke_volume.tscn",
+		"res://scenes/projectile/muzzle_flash.tscn",
+	]
+
+
+func _type_hint_for_path(path: String) -> String:
+	if path.ends_with(".tscn") or path.ends_with(".glb"):
+		return "PackedScene"
+	if path.ends_with(".gdshader"):
+		return "Shader"
+	if path.ends_with(".png") or path.ends_with(".jpg") or path.ends_with(".jpeg") or path.ends_with(".webp"):
+		return "Texture2D"
+	if path.ends_with(".tres") or path.ends_with(".res"):
+		return "Resource"
+	return ""
+
+
+func _poll_threaded_resources() -> void:
+	for path: String in _threaded_resource_paths:
+		if _threaded_resources.has(path) or _threaded_failures.has(path):
+			continue
+		var progress: Array = []
+		var status: int = ResourceLoader.load_threaded_get_status(path, progress)
+		if progress.size() > 0:
+			_threaded_resource_progress[path] = clampf(float(progress[0]), 0.0, 1.0)
+		match status:
+			ResourceLoader.THREAD_LOAD_LOADED:
+				var resource: Resource = ResourceLoader.load_threaded_get(path)
+				if resource == null:
+					_threaded_failures[path] = "null_resource"
+					if path == main_scene_path:
+						_main_scene_load_failed = true
+					continue
+				_threaded_resources[path] = resource
+				_threaded_resource_progress[path] = 1.0
+				if path == main_scene_path:
+					if resource is PackedScene:
+						_main_scene_resource = resource as PackedScene
+						_main_scene_load_done = true
+					else:
+						_main_scene_load_failed = true
+						push_warning("[warmup] Main.tscn threaded load yielded %s, expected PackedScene" % resource.get_class())
+			ResourceLoader.THREAD_LOAD_FAILED, ResourceLoader.THREAD_LOAD_INVALID_RESOURCE:
+				_threaded_failures[path] = _status_label(status)
+				_threaded_resource_progress[path] = 1.0
+				if path == main_scene_path:
+					_main_scene_load_failed = true
+					push_warning("[warmup] Main.tscn threaded load failed: %s" % _status_label(status))
+			_:
+				pass
+
+
+func _threaded_asset_progress() -> float:
+	var count: int = _threaded_resource_paths.size()
+	if count <= 0:
+		return 1.0 if _main_scene_load_failed else 0.0
+	var total: float = 0.0
+	for path: String in _threaded_resource_paths:
+		if _threaded_resources.has(path) or _threaded_failures.has(path):
+			total += 1.0
+		else:
+			total += float(_threaded_resource_progress.get(path, 0.0))
+	return clampf(total / float(count), 0.0, 1.0)
+
+
+func _threaded_assets_ready() -> bool:
+	if _threaded_resource_paths.is_empty():
+		return _main_scene_load_done or _main_scene_load_failed
+	for path: String in _threaded_resource_paths:
+		if not _threaded_resources.has(path) and not _threaded_failures.has(path):
+			return false
+	return true
+
+
+func _get_threaded_resource(path: String) -> Resource:
+	if _threaded_resources.has(path):
+		return _threaded_resources[path] as Resource
+	if _threaded_failures.has(path):
+		return null
+	if _threaded_resource_paths.has(path):
+		var progress: Array = []
+		var status: int = ResourceLoader.load_threaded_get_status(path, progress)
+		if status == ResourceLoader.THREAD_LOAD_LOADED:
+			var resource: Resource = ResourceLoader.load_threaded_get(path)
+			if resource != null:
+				_threaded_resources[path] = resource
+				_threaded_resource_progress[path] = 1.0
+				return resource
+		return null
+	if ResourceLoader.exists(path):
+		return ResourceLoader.load(path, _type_hint_for_path(path), ResourceLoader.CACHE_MODE_REUSE)
+	return null
+
+
+func _load_packed_scene(path: String, label: String = "") -> PackedScene:
+	var resource: Resource = _get_threaded_resource(path)
+	if resource is PackedScene:
+		return resource as PackedScene
+	var name: String = label if not label.is_empty() else path
+	push_warning("[warmup] %s not ready as PackedScene, skipping probe for now: %s" % [name, path])
+	return null
+
+
 func _process(_delta: float) -> void:
 	if not _started:
 		return
 	_elapsed = float(Time.get_ticks_msec() - _start_msec) / 1000.0
+	_poll_threaded_resources()
 	_update_camera_motion_probe()
 	if _switching:
 		return
 	var status: int = _main_load_status()
-	var asset_progress: float = 1.0 if _main_scene_load_done else 0.0
-	if not _main_scene_load_done and not _main_scene_load_failed:
-		asset_progress = clampf(_elapsed / maxf(min_hold_seconds, 0.001), 0.0, 0.5)
+	var asset_progress: float = _threaded_asset_progress()
+	if _main_scene_load_failed:
+		asset_progress = maxf(asset_progress, 1.0)
 	# Two-band progress mapping so the bar always feels alive:
 	#   0 → 70 %: tracks asset_progress while Main.tscn is being parsed.
 	#             Single-threaded web export means this often jumps from 0 to
@@ -313,9 +515,17 @@ func _spawn_warmup_actors() -> void:
 	await _yield_warmup_frames()
 	_spawn_canvas_shader_probe()
 	await _yield_warmup_frames()
+	_spawn_camera_motion_probe()
+	await _yield_warmup_frames()
 	await _spawn_player_shot_probe()
 	await _yield_warmup_frames()
 	await _wait_for_main_load_before_scene_probes()
+	await _yield_warmup_frames()
+	await _spawn_main_map_prewarmer()
+	await _yield_warmup_frames()
+	await _spawn_world_material_probes()
+	await _yield_warmup_frames()
+	await _spawn_vehicle_material_probes()
 	await _yield_warmup_frames()
 	await _spawn_projectile_scene_probes()
 	await _yield_warmup_frames()
@@ -327,7 +537,14 @@ func _spawn_warmup_actors() -> void:
 	await _yield_warmup_frames()
 	await _spawn_explosion_probe()
 	await _yield_warmup_frames()
+	await _spawn_static_debris_probe()
+	await _yield_warmup_frames()
+	await _spawn_vehicle_destruction_probes()
+	await _yield_warmup_frames()
 	await _spawn_actual_vehicle_destruction_probes()
+	await _wait_for_main_ready_before_swap()
+	if not is_instance_valid(_main_map_probe):
+		await _spawn_main_map_prewarmer()
 	_probe_staging_complete = true
 	await _yield_warmup_frames()
 	await _wait_for_async_probes("critical staged probes", 0.1)
@@ -339,20 +556,234 @@ func _yield_warmup_frames(frames: int = _WARMUP_FRAME_GAP) -> void:
 		await get_tree().process_frame
 
 
-func _wait_for_main_load_before_scene_probes(_max_wait_seconds: float = 6.0) -> void:
+func _wait_for_main_load_before_scene_probes(_max_wait_seconds: float = _THREAD_WAIT_BEFORE_SCENE_PROBES) -> void:
+	var t: int = Time.get_ticks_msec()
+	print("[warmup] waiting for threaded Main.tscn before scene probes")
+	while not _threaded_assets_ready() and not _switching:
+		var waited: float = float(Time.get_ticks_msec() - t) / 1000.0
+		if waited >= _max_wait_seconds:
+			push_warning("[warmup] threaded Main.tscn wait timed out after %.2fs (progress=%d%%). Continuing with loaded probes only." % [
+				waited,
+				int(_threaded_asset_progress() * 100.0),
+			])
+			return
+		_poll_threaded_resources()
+		await get_tree().process_frame
+	print("[warmup] threaded Main.tscn ready in %d ms" % (Time.get_ticks_msec() - t))
+
+
+func _wait_for_main_ready_before_swap(_max_wait_seconds: float = _THREAD_WAIT_BEFORE_SWAP) -> void:
 	if _main_scene_load_done or _main_scene_load_failed:
 		return
-	await _yield_warmup_frames()
 	var t: int = Time.get_ticks_msec()
-	print("[warmup] loading %s synchronously before scene probes" % main_scene_path)
-	var resource: Resource = ResourceLoader.load(main_scene_path)
-	if resource is PackedScene:
-		_main_scene_resource = resource as PackedScene
-		_main_scene_load_done = true
-		print("[warmup] synchronous Main load done in %d ms" % (Time.get_ticks_msec() - t))
-	else:
-		_main_scene_load_failed = true
-		push_warning("[warmup] synchronous Main load failed in %d ms; will fall back to change_scene_to_file" % (Time.get_ticks_msec() - t))
+	while not (_main_scene_load_done or _main_scene_load_failed) and not _switching:
+		var waited: float = float(Time.get_ticks_msec() - t) / 1000.0
+		if waited >= _max_wait_seconds:
+			return
+		_poll_threaded_resources()
+		await get_tree().process_frame
+
+
+func _spawn_main_map_prewarmer() -> void:
+	if OS.has_feature("web"):
+		# Terrain3D allocates WebGL texture-array resources internally. Rendering
+		# a duplicate Main.tscn terrain during warmup can leave WebGL trying to
+		# bind the same texture object through multiple targets after the real
+		# match scene starts, which makes terrain/base textures disappear in
+		# Chrome. Keep this native-only until Terrain3D Web can safely duplicate.
+		print("[warmup] skipping real Main map/terrain sweep on web")
+		return
+	if is_instance_valid(_main_map_probe):
+		return
+	var t: int = Time.get_ticks_msec()
+	var packed: PackedScene = _main_scene_resource
+	if packed == null:
+		packed = _load_packed_scene(main_scene_path, "Main map prewarm")
+	if packed == null:
+		return
+
+	var inst: Node = packed.instantiate()
+	if not (inst is Node3D):
+		inst.queue_free()
+		push_warning("[warmup] Main.tscn root is not Node3D - skipping map prewarm")
+		return
+
+	var probe: Node3D = inst as Node3D
+	probe.name = _MAIN_MAP_PREWARM_NAME
+	_prune_main_map_probe(probe)
+	add_child(probe)
+	_main_map_probe = probe
+	await _yield_warmup_frames(1)
+	_deactivate_main_map_probe_runtime(probe)
+
+	var previous_camera_transform: Transform3D = _camera.global_transform
+	var previous_camera_current: bool = _camera.current
+	var was_camera_motion_enabled: bool = _camera_motion_enabled
+	_camera_motion_enabled = false
+	_camera.current = true
+
+	for shot: Dictionary in _main_map_camera_shots():
+		_aim_main_map_camera(shot["position"] as Vector3, shot["target"] as Vector3)
+		await _yield_warmup_frames(_MAIN_MAP_PREWARM_RENDER_FRAMES)
+
+	_camera.global_transform = previous_camera_transform
+	_camera.current = previous_camera_current
+	_camera_motion_enabled = was_camera_motion_enabled
+	_schedule_free(probe, _WARMUP_PROBE_LIFETIME)
+	_probes_spawned += 1
+	_record_probe_time("real Main map/terrain sweep", Time.get_ticks_msec() - t)
+
+
+func _main_map_camera_shots() -> Array[Dictionary]:
+	return [
+		{
+			"position": Vector3(24.0, 24.0, 52.0),
+			"target": Vector3(18.0, 7.0, 20.0),
+		},
+		{
+			"position": Vector3(-34.0, 25.0, -104.0),
+			"target": Vector3(-24.0, 7.0, -70.0),
+		},
+		{
+			"position": Vector3(0.0, 42.0, -12.0),
+			"target": Vector3(-5.0, 5.0, -30.0),
+		},
+		{
+			"position": Vector3(58.0, 44.0, 36.0),
+			"target": Vector3(8.0, 8.0, -22.0),
+		},
+	]
+
+
+func _aim_main_map_camera(position: Vector3, target: Vector3) -> void:
+	if not is_instance_valid(_camera):
+		return
+	var direction: Vector3 = target - position
+	if direction.length_squared() <= 0.001:
+		return
+	_camera.global_position = position
+	var up: Vector3 = Vector3.UP
+	if absf(direction.normalized().dot(up)) > 0.98:
+		up = Vector3.RIGHT
+	_camera.look_at(target, up)
+
+
+func _prune_main_map_probe(root: Node) -> void:
+	for child: Node in root.get_children():
+		_prune_main_map_probe(child)
+		if _should_prune_main_map_node(child):
+			root.remove_child(child)
+			child.free()
+
+
+func _should_prune_main_map_node(node: Node) -> bool:
+	if _MAIN_MAP_PRUNE_NAMES.has(String(node.name)):
+		return true
+	var script_path: String = _script_path_for_node(node)
+	for needle: String in _MAIN_MAP_PRUNE_SCRIPT_NEEDLES:
+		if script_path.contains(needle):
+			return true
+	return false
+
+
+func _script_path_for_node(node: Node) -> String:
+	var script: Script = node.get_script() as Script
+	if script == null:
+		return ""
+	return script.resource_path.to_lower()
+
+
+func _deactivate_main_map_probe_runtime(root: Node) -> void:
+	if root is Camera3D and root != _camera:
+		(root as Camera3D).current = false
+	if root.has_method("set_active"):
+		root.call("set_active", false)
+	var script_path: String = _script_path_for_node(root)
+	if script_path.contains("tank_controller") \
+			or script_path.contains("helicopter_controller") \
+			or script_path.contains("drone_controller") \
+			or script_path.contains("red_zone"):
+		root.set_physics_process(false)
+	for child: Node in root.get_children():
+		_deactivate_main_map_probe_runtime(child)
+
+
+func _prepare_warmup_vehicle_instance(inst: Node) -> void:
+	_set_node_property_if_exists(inst, "rebuild_collision_from_visual_mesh", false)
+	_set_node_property_if_exists(inst, "rebuild_collision_on_web", false)
+
+
+func _set_node_property_if_exists(node: Object, property_name: String, value: Variant) -> void:
+	if node == null:
+		return
+	for property: Dictionary in node.get_property_list():
+		if String(property.get("name", "")) == property_name:
+			node.set(property_name, value)
+			return
+
+
+func _spawn_world_material_probes() -> void:
+	var t: int = Time.get_ticks_msec()
+	if not ResourceLoader.exists(_RED_ZONE_SCENE_PATH):
+		push_warning("[warmup] red zone scene missing: %s" % _RED_ZONE_SCENE_PATH)
+		return
+	var packed: PackedScene = _load_packed_scene(_RED_ZONE_SCENE_PATH, "capture zone materials")
+	if packed == null:
+		return
+
+	var owners: Array[String] = ["", "red", "blue"]
+	for i: int in range(owners.size()):
+		var zone: Node = packed.instantiate()
+		zone.name = "CaptureZoneWarmup%s" % i
+		_warmup_root.add_child(zone)
+		if zone is Node3D:
+			var n: Node3D = zone as Node3D
+			n.position = Vector3(-0.95 + 0.95 * float(i), -0.55, -1.15)
+			n.scale = Vector3(0.12, 0.12, 0.12)
+		if zone.has_method("_apply_server_flag_owner"):
+			zone.call("_apply_server_flag_owner", owners[i])
+		await _yield_warmup_frames(1)
+		if zone.has_method("_apply_server_zone_state"):
+			var next_team: String = "blue" if owners[i] == "red" else "red"
+			zone.call("_apply_server_zone_state", owners[i], next_team, 0.5)
+			await _yield_warmup_frames(1)
+		_schedule_free(zone, _WARMUP_PROBE_LIFETIME)
+
+	_spawn_grass_probe()
+	await _yield_warmup_frames()
+	_record_probe_time("capture zones + grass materials", Time.get_ticks_msec() - t)
+
+
+func _spawn_vehicle_material_probes() -> void:
+	var t: int = Time.get_ticks_msec()
+	_spawn_vehicle_material_probe(
+		"tank static materials",
+		_TANK_SCENE_PATH,
+		Vector3(-4.8, -2.2, _VEHICLE_PROBE_Z + 5.0),
+		{
+			"turret_path": NodePath("Model/Armature/Skeleton3D/TankBody_001"),
+			"barrel_path": NodePath("Model/Armature/Skeleton3D/TankBody_002"),
+		},
+		_MAIN_TANK_SCALE,
+	)
+	await _yield_warmup_frames()
+	_spawn_vehicle_material_probe(
+		"helicopter static materials",
+		_HELICOPTER_SCENE_PATH,
+		Vector3(0.0, -2.0, _VEHICLE_PROBE_Z + 5.0),
+		{},
+		_MAIN_HELICOPTER_SCALE,
+	)
+	await _yield_warmup_frames()
+	_spawn_vehicle_material_probe(
+		"drone static materials",
+		_DRONE_SCENE_PATH,
+		Vector3(4.8, -2.0, _VEHICLE_PROBE_Z + 5.0),
+		{},
+		_MAIN_DRONE_SCALE,
+	)
+	await _yield_warmup_frames()
+	_record_probe_time("vehicle static materials bundle", Time.get_ticks_msec() - t)
 
 
 ## Compile each vehicle type's STATIC materials by briefly instantiating its
@@ -377,7 +808,7 @@ func _spawn_actual_vehicle_destruction_probes() -> void:
 	var cases: Array[Dictionary] = [
 		{
 			"label": "tank actual destruction",
-			"path": "res://scenes/tank/tank.tscn",
+			"path": _TANK_SCENE_PATH,
 			"pos": Vector3(8.0, -2.2, _VEHICLE_PROBE_Z - 8.0),
 			"scale": _MAIN_TANK_SCALE,
 			"props": {
@@ -387,9 +818,16 @@ func _spawn_actual_vehicle_destruction_probes() -> void:
 		},
 		{
 			"label": "helicopter actual destruction",
-			"path": "res://scenes/helicopter/helicopter.tscn",
+			"path": _HELICOPTER_SCENE_PATH,
 			"pos": Vector3(-8.0, -2.0, _VEHICLE_PROBE_Z - 8.0),
 			"scale": _MAIN_HELICOPTER_SCALE,
+			"props": {},
+		},
+		{
+			"label": "drone actual destruction",
+			"path": _DRONE_SCENE_PATH,
+			"pos": Vector3(0.0, -1.6, _VEHICLE_PROBE_Z - 10.0),
+			"scale": _MAIN_DRONE_SCALE,
 			"props": {},
 		},
 	]
@@ -399,14 +837,14 @@ func _spawn_actual_vehicle_destruction_probes() -> void:
 			if not ResourceLoader.exists(scene_path):
 				push_warning("[warmup] actual destruction scene missing: %s" % scene_path)
 				continue
-			var packed: PackedScene = load(scene_path) as PackedScene
+			var packed: PackedScene = _load_packed_scene(scene_path, String(data["label"]))
 			if packed == null:
-				push_warning("[warmup] failed to load actual destruction scene: %s" % scene_path)
 				continue
 			var inst: Node = packed.instantiate()
 			var props: Dictionary = data["props"]
 			for key: Variant in props.keys():
 				inst.set(String(key), props[key])
+			_prepare_warmup_vehicle_instance(inst)
 			_warmup_root.add_child(inst)
 			if inst is Node3D:
 				var n: Node3D = inst as Node3D
@@ -616,17 +1054,17 @@ func _spawn_vehicle_fire_probes() -> void:
 
 
 func _spawn_tank_fire_probe() -> void:
-	var path: String = "res://scenes/tank/tank.tscn"
+	var path: String = _TANK_SCENE_PATH
 	if not ResourceLoader.exists(path):
 		push_warning("[warmup] tank fire scene missing: %s" % path)
 		return
-	var packed: PackedScene = load(path) as PackedScene
+	var packed: PackedScene = _load_packed_scene(path, "tank fire")
 	if packed == null:
-		push_warning("[warmup] failed to load tank fire scene: %s" % path)
 		return
 	var tank: Node = packed.instantiate()
 	tank.set("turret_path", NodePath("Model/Armature/Skeleton3D/TankBody_001"))
 	tank.set("barrel_path", NodePath("Model/Armature/Skeleton3D/TankBody_002"))
+	_prepare_warmup_vehicle_instance(tank)
 	_warmup_root.add_child(tank)
 	if tank is Node3D:
 		var n: Node3D = tank as Node3D
@@ -649,15 +1087,15 @@ func _run_tank_fire_probe(tank: Node) -> void:
 
 
 func _spawn_helicopter_fire_probe() -> void:
-	var path: String = "res://scenes/helicopter/helicopter.tscn"
+	var path: String = _HELICOPTER_SCENE_PATH
 	if not ResourceLoader.exists(path):
 		push_warning("[warmup] helicopter fire scene missing: %s" % path)
 		return
-	var packed: PackedScene = load(path) as PackedScene
+	var packed: PackedScene = _load_packed_scene(path, "helicopter fire")
 	if packed == null:
-		push_warning("[warmup] failed to load helicopter fire scene: %s" % path)
 		return
 	var heli: Node = packed.instantiate()
+	_prepare_warmup_vehicle_instance(heli)
 	_warmup_root.add_child(heli)
 	if heli is Node3D:
 		var n: Node3D = heli as Node3D
@@ -687,7 +1125,7 @@ func _spawn_canvas_shader_probe() -> void:
 	layer.layer = 99
 	add_child(layer)
 
-	var fpv_shader: Shader = load("res://src/gameplay/camera/fpv_post_process.gdshader") as Shader
+	var fpv_shader: Shader = _get_threaded_resource("res://src/gameplay/camera/fpv_post_process.gdshader") as Shader
 	if fpv_shader != null:
 		var mat: ShaderMaterial = ShaderMaterial.new()
 		mat.shader = fpv_shader
@@ -856,22 +1294,15 @@ func _spawn_projectile_scene_probes() -> void:
 	# pipelines compile. Position spread keeps them from colliding with each
 	# other at spawn — collisions during warmup are fine, we just don't want
 	# them to overlap visually in the React loading frame.
-	var paths: Array[String] = [
-		"res://scenes/projectile/tank_shell.tscn",
-		"res://scenes/projectile/rpg_rocket.tscn",
-		"res://scenes/projectile/shell_impact.tscn",
-		"res://scenes/projectile/smoke_volume.tscn",
-		"res://scenes/projectile/muzzle_flash.tscn",
-	]
+	var paths: Array[String] = _projectile_scene_paths()
 	var x: float = -0.6
 	for p: String in paths:
 		var t: int = Time.get_ticks_msec()
 		if not ResourceLoader.exists(p):
 			push_warning("[warmup] projectile scene missing: %s" % p)
 			continue
-		var packed: PackedScene = load(p) as PackedScene
+		var packed: PackedScene = _load_packed_scene(p, p.get_file())
 		if packed == null:
-			push_warning("[warmup] failed to load projectile scene: %s" % p)
 			continue
 		for i: int in range(_WARMUP_PROJECTILE_REPETITIONS):
 			_stage_projectile_probe(packed, x, i, 0.0)
@@ -913,13 +1344,14 @@ func _spawn_vehicle_material_probe(
 	if not ResourceLoader.exists(scene_path):
 		push_warning("[warmup] %s missing — skipping vehicle material prewarm" % scene_path)
 		return
-	var packed: PackedScene = load(scene_path) as PackedScene
+	var packed: PackedScene = _load_packed_scene(scene_path, label)
 	if packed == null:
 		push_warning("[warmup] %s failed to load — skipping vehicle material prewarm" % scene_path)
 		return
 	var inst: Node = packed.instantiate()
 	for key: Variant in prop_overrides.keys():
 		inst.set(String(key), prop_overrides[key])
+	_prepare_warmup_vehicle_instance(inst)
 	_warmup_root.add_child(inst)
 	if inst is Node3D:
 		var n: Node3D = inst as Node3D
@@ -1021,11 +1453,11 @@ func _spawn_turret_debris_synthetic_probe() -> void:
 ## gets queue_freed at probe lifetime end.
 func _spawn_real_tank_debris_probe() -> void:
 	var t: int = Time.get_ticks_msec()
-	var path: String = "res://scenes/tank/tank.tscn"
+	var path: String = _TANK_SCENE_PATH
 	if not ResourceLoader.exists(path):
 		push_warning("[warmup] %s missing — skipping real-tank debris prewarm" % path)
 		return
-	var packed: PackedScene = load(path) as PackedScene
+	var packed: PackedScene = _load_packed_scene(path, "real tank debris")
 	if packed == null:
 		return
 	var tank: Node = packed.instantiate()
@@ -1034,6 +1466,7 @@ func _spawn_real_tank_debris_probe() -> void:
 	# deferred-capture chain resolves the right meshes.
 	tank.set("turret_path", NodePath("Model/Armature/Skeleton3D/TankBody_001"))
 	tank.set("barrel_path", NodePath("Model/Armature/Skeleton3D/TankBody_002"))
+	_prepare_warmup_vehicle_instance(tank)
 	_warmup_root.add_child(tank)
 	if tank is Node3D:
 		var n: Node3D = tank as Node3D
@@ -1092,11 +1525,11 @@ func _spawn_grass_probe() -> void:
 	# Grass GLB has its own custom material from gameready_grass_*.png — instance
 	# once so its shader compiles before Terrain3D scatters dozens of clones.
 	var t: int = Time.get_ticks_msec()
-	var path: String = "res://Model/Grass/gameready_grass.glb"
+	var path: String = _GRASS_SCENE_PATH
 	if not ResourceLoader.exists(path):
 		print("[warmup] grass GLB missing at %s — skipped" % path)
 		return
-	var packed: PackedScene = load(path) as PackedScene
+	var packed: PackedScene = _load_packed_scene(path, "grass GLB")
 	if packed == null:
 		push_warning("[warmup] failed to load grass GLB at %s" % path)
 		return

@@ -24,6 +24,7 @@ docs/MULTI-STAGE-DOCUMENT-WORKFLOW.md
 
 # === Imported Reference Projects ===
 ai-studio-main (1)/
+_reference/
 
 # === Godot Web Export Output (regenerated; .pck > 100 MB exceeds GitHub limit) ===
 # Each `Project → Export → Web` overwrites these. Run the export locally and
@@ -32,6 +33,7 @@ web/godot-export/*.pck
 web/godot-export/*.wasm
 web/godot-export/*.js
 web/godot-export/*.html
+web/godot-export/_manifest.json
 web/godot-export/*.br
 web/godot-export/*.gz
 

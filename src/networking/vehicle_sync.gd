@@ -47,6 +47,8 @@ var _spawn_sync_sent: bool = false
 
 
 func _ready() -> void:
+	if OS.has_feature("web"):
+		send_rate_hz = minf(send_rate_hz, 20.0)
 	_controller = get_node_or_null(controller_path)
 	_body = get_node_or_null(body_path) as Node3D
 	if _body == null:

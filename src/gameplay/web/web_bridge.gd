@@ -21,6 +21,11 @@ extends Node
 signal js_event(name: String, payload: Dictionary)
 
 const _BRIDGE_GLOBAL: String = "GodotBridge"
+const _WEB_IDLE_MAX_FPS: int = 30
+const _WEB_ACTIVE_MAX_FPS: int = 60
+const _WEB_HIDDEN_MAX_FPS: int = 10
+const _WEB_PHYSICS_TICKS: int = 60
+const _WEB_MAX_PHYSICS_STEPS_PER_FRAME: int = 2
 
 var _is_web: bool = false
 var _js_window: JavaScriptObject = null
@@ -29,6 +34,9 @@ var _js_bridge: JavaScriptObject = null
 ## or the JS side loses the function pointer (Godot frees the JS proxy).
 var _dispatch_callback: JavaScriptObject = null
 var _ready_callback: JavaScriptObject = null
+var _visibility_callback: JavaScriptObject = null
+var _web_game_active: bool = false
+var _web_page_hidden: bool = false
 ## name → Array[Callable]. Multiple GDScript handlers can subscribe to one
 ## event; all fire in registration order.
 var _handlers: Dictionary = {}
@@ -38,10 +46,12 @@ func _ready() -> void:
 	_is_web = OS.has_feature("web")
 	if not _is_web:
 		return
+	_apply_web_runtime_budget(false)
 	_js_window = JavaScriptBridge.get_interface("window")
 	if _js_window == null:
 		push_warning("WebBridge: window interface unavailable — JS bridge disabled")
 		return
+	_install_visibility_budget_hook()
 	# Reuse an existing GodotBridge if React already created one (script load
 	# order between the engine boot and the React bundle is not guaranteed).
 	_js_bridge = _js_window[_BRIDGE_GLOBAL]
@@ -87,6 +97,42 @@ func is_available() -> bool:
 # Internals
 # ---------------------------------------------------------------------------
 
+func _apply_web_runtime_budget(page_hidden: bool) -> void:
+	_web_page_hidden = page_hidden
+	# Browser rAF follows the display refresh rate. On 120/144 Hz screens this
+	# can double render work versus the editor, so web gets an explicit budget.
+	if page_hidden:
+		Engine.max_fps = _WEB_HIDDEN_MAX_FPS
+	else:
+		Engine.max_fps = _WEB_ACTIVE_MAX_FPS if _web_game_active else _WEB_IDLE_MAX_FPS
+	Engine.physics_ticks_per_second = _WEB_PHYSICS_TICKS
+	Engine.max_physics_steps_per_frame = _WEB_MAX_PHYSICS_STEPS_PER_FRAME
+
+
+func _install_visibility_budget_hook() -> void:
+	_visibility_callback = JavaScriptBridge.create_callback(_on_visibility_change)
+	_js_window["_ironclashVisibilityChanged"] = _visibility_callback
+	JavaScriptBridge.eval("""
+		(function() {
+			if (window.__ironclashVisibilityBudgetInstalled) return;
+			window.__ironclashVisibilityBudgetInstalled = true;
+			document.addEventListener('visibilitychange', function() {
+				if (window._ironclashVisibilityChanged) {
+					window._ironclashVisibilityChanged(document.hidden ? 1 : 0);
+				}
+			});
+			if (window._ironclashVisibilityChanged) {
+				window._ironclashVisibilityChanged(document.hidden ? 1 : 0);
+			}
+		})();
+	""", true)
+
+
+func _on_visibility_change(args: Array) -> void:
+	var hidden: bool = args.size() > 0 and int(args[0]) != 0
+	_apply_web_runtime_budget(hidden)
+
+
 func _emit_to_js(event_name: String, payload: Dictionary) -> void:
 	# JSON-stringify in GDScript and parse on the JS side — round-trips Vector
 	# / Color / nested dicts as plain JS objects without surprises from Godot's
@@ -113,6 +159,10 @@ func _receive_from_js(args: Array) -> void:
 			var parsed: Variant = JSON.parse_string(raw)
 			if parsed is Dictionary:
 				payload = parsed
+	if event_name == "ui_play":
+		_web_game_active = true
+		if _is_web:
+			_apply_web_runtime_budget(_web_page_hidden)
 	js_event.emit(event_name, payload)
 	if _handlers.has(event_name):
 		for handler: Callable in _handlers[event_name]:
