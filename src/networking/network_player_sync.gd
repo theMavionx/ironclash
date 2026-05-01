@@ -45,8 +45,6 @@ var _weapon_controller: Node = null
 
 
 func _ready() -> void:
-	if OS.has_feature("web"):
-		send_rate_hz = minf(send_rate_hz, 20.0)
 	_player = get_parent() as Node3D
 	if _player == null:
 		push_error("[net-sync] parent is not a Node3D — must be child of the Player root")

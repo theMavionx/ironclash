@@ -6,9 +6,6 @@ import { godotBridge } from "@/bridge/godotBridge";
 // runtime via the synthetic /godot/_manifest.json endpoint, so we don't have
 // to keep this file in lockstep with the project's name.
 const GODOT_DIR: string = "/godot";
-const GODOT_CACHE_SW_PATH: string = "/godot-cache-sw.js";
-const GODOT_PIXEL_RATIO_CAP: number = 1.0;
-const GODOT_LOW_END_PIXEL_RATIO_CAP: number = 1.0;
 let lastRunDependencyNoticeAt: number = 0;
 
 // Godot 4 web export exposes a global `Engine` constructor on window. The
@@ -86,14 +83,9 @@ export default function GameCanvas({ onProgress, onReady, onError }: GameCanvasP
 
 		let cancelled: boolean = false;
 		let scriptEl: HTMLScriptElement | null = null;
-		let resizeCanvas: (() => void) | null = null;
 
 		const boot = async (): Promise<void> => {
 			try {
-				resizeCanvas = () => syncCanvasBackingStore(canvas);
-				resizeCanvas();
-				window.addEventListener("resize", resizeCanvas, { passive: true });
-
 				const manifest: GodotManifest = await fetchManifest();
 				if (cancelled) return;
 				if (manifest.base === null || manifest.base.length === 0) {
@@ -103,7 +95,6 @@ export default function GameCanvas({ onProgress, onReady, onError }: GameCanvasP
 				}
 				const base: string = `${GODOT_DIR}/${manifest.base}`;
 				const cacheVersion: string | null = manifest.version ?? null;
-				await syncGodotCacheVersion(cacheVersion);
 				preloadGodotResources(manifest, base, cacheVersion);
 				await loadScriptOnce(cacheBustGodotUrl(`${base}.js`, cacheVersion)).then((el) => {
 					scriptEl = el;
@@ -134,10 +125,15 @@ export default function GameCanvas({ onProgress, onReady, onError }: GameCanvasP
 					executable: base,
 					mainPack: cacheBustGodotUrl(`${base}.pck`, cacheVersion),
 					gdextensionLibs,
-					// Keep resize under React control so we can cap HiDPI render cost.
-					// Godot's automatic window policy is convenient, but on dense
-					// displays it can allocate a larger backing store than this game needs.
-					canvasResizePolicy: 0,
+					// canvasResizePolicy values per Godot 4.3 source:
+					//   0 = no resize (use canvas.width/height as-is)
+					//   1 = use project's viewport_width/height (1280x720 default → letterboxed!)
+					//   2 = fill window (sets canvas.style position=absolute, top/left=0,
+					//       width/height = window.inner*). This is the default and the only
+					//       value that actually fills the browser window.
+					// React's HUD overlay sits in a sibling div with pointer-events-none and
+					// z-order above the canvas, so making the canvas absolute doesn't break it.
+					canvasResizePolicy: 2,
 					// React already serves the page with COOP/COEP headers via Vite —
 					// disable the engine's own service-worker fallback that tries to
 					// inject them and reloads the tab.
@@ -157,8 +153,6 @@ export default function GameCanvas({ onProgress, onReady, onError }: GameCanvasP
 				patchEngineLocateFile(engine, cacheVersion);
 				engineRef.current = engine;
 				await engine.startGame();
-				resizeCanvas();
-				warmGodotCache(manifest, cacheVersion);
 				// Wait for the GDScript autoload to install the bridge so React
 				// can show PLAY and dispatch ui_play once the user clicks it.
 				// Bounded so a silent autoload failure surfaces an error.
@@ -184,9 +178,6 @@ export default function GameCanvas({ onProgress, onReady, onError }: GameCanvasP
 
 		return () => {
 			cancelled = true;
-			if (resizeCanvas !== null) {
-				window.removeEventListener("resize", resizeCanvas);
-			}
 			engineRef.current?.requestQuit?.();
 			engineRef.current = null;
 			// Leave the script tag in place — Godot's engine module is not designed
@@ -289,26 +280,6 @@ function isRunDependencyProgressLine(text: string): boolean {
 	);
 }
 
-function syncCanvasBackingStore(canvas: HTMLCanvasElement): void {
-	const cssWidth: number = canvas.clientWidth > 0 ? canvas.clientWidth : window.innerWidth;
-	const cssHeight: number = canvas.clientHeight > 0 ? canvas.clientHeight : window.innerHeight;
-	const ratio: number = getGodotPixelRatio();
-	const width: number = Math.max(1, Math.round(cssWidth * ratio));
-	const height: number = Math.max(1, Math.round(cssHeight * ratio));
-	if (canvas.width !== width) canvas.width = width;
-	if (canvas.height !== height) canvas.height = height;
-}
-
-function getGodotPixelRatio(): number {
-	const raw: number = Math.max(1, window.devicePixelRatio || 1);
-	const nav = navigator as Navigator & { deviceMemory?: number };
-	const memoryGb: number = typeof nav.deviceMemory === "number" ? nav.deviceMemory : 4;
-	const narrow: boolean = Math.min(window.innerWidth, window.innerHeight) <= 700;
-	const cap: number =
-		memoryGb <= 4 || narrow ? GODOT_LOW_END_PIXEL_RATIO_CAP : GODOT_PIXEL_RATIO_CAP;
-	return Math.min(raw, cap);
-}
-
 /** Hit the synthetic manifest endpoint that vite.config.ts serves to discover
  *  the actual base name of the Godot export (Godot uses config/name → e.g.
  *  "Ironclash4.3.pck", not "index.pck") plus the full GODOT_CONFIG block
@@ -316,78 +287,11 @@ function getGodotPixelRatio(): number {
  *  where `gdextensionLibs` lives and the engine refuses to load addons
  *  like terrain_3d without it. */
 async function fetchManifest(): Promise<GodotManifest> {
-	const res = await fetch(`${GODOT_DIR}/_manifest.json`, { cache: "no-store" });
+	const res = await fetch(`${GODOT_DIR}/_manifest.json`, { cache: "no-cache" });
 	if (!res.ok) {
 		throw new Error(`Manifest fetch failed (${res.status})`);
 	}
 	return (await res.json()) as GodotManifest;
-}
-
-async function syncGodotCacheVersion(cacheVersion: string | null): Promise<void> {
-	const version: string | undefined = cacheVersion?.trim();
-	if (version === undefined || version.length === 0) return;
-	if (!("serviceWorker" in navigator) || !("indexedDB" in window)) return;
-
-	try {
-		const registration: ServiceWorkerRegistration = await navigator.serviceWorker.register(
-			GODOT_CACHE_SW_PATH,
-			{ scope: "/" },
-		);
-		await waitForServiceWorkerControl(registration);
-		postGodotCacheWorkerMessage({
-			type: "IRONCLASH_GODOT_CACHE_VERSION",
-			version,
-		});
-	} catch (err: unknown) {
-		console.warn("[GameCanvas] Godot IndexedDB cache setup skipped:", err);
-	}
-}
-
-function warmGodotCache(manifest: GodotManifest, cacheVersion: string | null): void {
-	const version: string | undefined = cacheVersion?.trim();
-	if (version === undefined || version.length === 0) return;
-	if (!("serviceWorker" in navigator) || !("indexedDB" in window)) return;
-	if ((manifest.files ?? []).length === 0) return;
-	// The service worker stores Godot files as the engine fetches them. Avoid a
-	// second background sweep: writing a huge .pck/.wasm blob while gameplay is
-	// running creates the exact browser-side CPU spike this wrapper is avoiding.
-}
-
-function postGodotCacheWorkerMessage(message: Record<string, unknown>): void {
-	const controller: ServiceWorker | null = navigator.serviceWorker.controller;
-	if (controller !== null) {
-		controller.postMessage(message);
-		return;
-	}
-	void navigator.serviceWorker.ready.then((registration) => {
-		const worker: ServiceWorker | null =
-			registration.active ?? registration.waiting ?? registration.installing;
-		worker?.postMessage(message);
-	});
-}
-
-async function waitForServiceWorkerControl(
-	registration: ServiceWorkerRegistration,
-): Promise<void> {
-	if (navigator.serviceWorker.controller !== null) return;
-
-	await navigator.serviceWorker.ready.then(() => undefined);
-	if (navigator.serviceWorker.controller !== null) return;
-
-	await Promise.race([
-		new Promise<void>((resolve) => {
-			const onControllerChange = (): void => {
-				navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
-				resolve();
-			};
-			navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
-		}),
-		new Promise<void>((resolve) => setTimeout(resolve, 1800)),
-	]);
-
-	if (navigator.serviceWorker.controller === null && registration.active !== null) {
-		console.info("[GameCanvas] Godot cache worker active; current boot may use network once");
-	}
 }
 
 const _scriptCache: Map<string, Promise<HTMLScriptElement>> = new Map();
@@ -428,9 +332,7 @@ function preloadGodotResources(
 	add(`${baseName}.wasm`, "fetch", "application/wasm");
 	add(`${baseName}.side.wasm`, "fetch", "application/wasm");
 	add(`${baseName}.pck`, "fetch", "application/octet-stream");
-	// The Web export keeps a tiny worker file around even when thread support is
-	// disabled. Preloading it makes Chrome warn because Godot does not consume it
-	// during boot. The IndexedDB warmer still caches it from manifest.files.
+	add(`${baseName}.worker.js`, "script");
 	add(`${baseName}.audio.worklet.js`, "script");
 
 	for (const lib of manifest.godotConfig?.gdextensionLibs ?? []) {

@@ -10,9 +10,6 @@ extends WorldEnvironment
 
 @export var disable_glow_on_web: bool = true
 @export var disable_volumetric_fog_on_web: bool = true
-@export var disable_light_shadows_on_web: bool = true
-@export var web_ambient_light_energy: float = 1.35
-@export var web_directional_light_multiplier: float = 1.15
 
 
 func _ready() -> void:
@@ -29,24 +26,3 @@ func _ready() -> void:
 		environment.glow_enabled = false
 	if disable_volumetric_fog_on_web:
 		environment.volumetric_fog_enabled = false
-	environment.set("ssao_enabled", false)
-	environment.set("ssil_enabled", false)
-	environment.ambient_light_energy = maxf(environment.ambient_light_energy, web_ambient_light_energy)
-	_apply_web_light_budget(get_tree().current_scene)
-
-
-func _apply_web_light_budget(root: Node) -> void:
-	if root == null:
-		return
-	_apply_web_light_budget_to_node(root)
-
-
-func _apply_web_light_budget_to_node(node: Node) -> void:
-	if node is Light3D:
-		var light: Light3D = node as Light3D
-		if disable_light_shadows_on_web:
-			light.shadow_enabled = false
-		if light is DirectionalLight3D:
-			light.light_energy *= web_directional_light_multiplier
-	for child: Node in node.get_children():
-		_apply_web_light_budget_to_node(child)

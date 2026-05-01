@@ -338,8 +338,10 @@ func _start_crash_burn(_impact_speed: float) -> void:
 	velocity = Vector3.ZERO
 	_wreck_tumble_velocity = Vector3.ZERO
 	DestructionVFX.spawn_explosion(get_tree().current_scene, global_position + Vector3(0.0, 1.0, 0.0))
-	# Keep the helicopter as one readable wreck. Detached rotor/tail debris made
-	# kills look noisy and also left the destroyed model with missing pieces.
+	# Spawn/hide detachable parts before applying the charred overlay. The
+	# Apache rotor uses broad transparent planes; copying it after charred would
+	# turn those planes into giant black cards.
+	_spawn_crash_debris()
 	DestructionVFX.apply_charred(self)
 	DestructionVFX.spawn_smoke_fire(self, 1.1, false, wreck_burn_seconds)
 	_schedule_wreck_hide()
