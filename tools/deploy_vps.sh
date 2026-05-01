@@ -361,9 +361,27 @@ nginx_supports_gzip_static() {
 	nginx -V 2>&1 | grep -q -- '--with-http_gzip_static_module'
 }
 
+nginx_loads_dynamic_modules() {
+	grep -Eq '^[[:space:]]*include[[:space:]]+/etc/nginx/modules-enabled/\*\.conf;' /etc/nginx/nginx.conf
+}
+
+ensure_nginx_dynamic_modules_loaded() {
+	local nginx_conf="/etc/nginx/nginx.conf"
+	[[ -d /etc/nginx/modules-enabled ]] || return
+	find /etc/nginx/modules-enabled -maxdepth 1 -name '*.conf' -print -quit 2>/dev/null | grep -q . || return
+	if nginx_loads_dynamic_modules; then
+		return
+	fi
+
+	log "Enabling nginx dynamic modules include"
+	cp -a "$nginx_conf" "${nginx_conf}.bak.$(date +%Y%m%d%H%M%S)"
+	sed -i '1i include /etc/nginx/modules-enabled/*.conf;' "$nginx_conf"
+}
+
 nginx_supports_brotli_static() {
 	nginx -V 2>&1 | grep -qi 'brotli' && return 0
-	find /etc/nginx/modules-enabled -maxdepth 1 -name '*brotli*.conf' -print -quit 2>/dev/null | grep -q .
+	nginx_loads_dynamic_modules && \
+		find /etc/nginx/modules-enabled -maxdepth 1 -name '*brotli*.conf' -print -quit 2>/dev/null | grep -q .
 }
 
 nginx_locations() {
@@ -647,6 +665,7 @@ main() {
 	compress_godot_export
 	install_node_deps_and_build_ui
 	write_systemd_service
+	ensure_nginx_dynamic_modules_loaded
 	configure_ssl
 	configure_firewall
 	verify_deploy
