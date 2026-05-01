@@ -36,6 +36,21 @@
     user-select: none;
     -webkit-user-select: none;
   }
+
+  /* The event widget injects inline styles, so keep it clear of the ammo HUD. */
+  body > a[href="https://vibej.am/"] {
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 96px) !important;
+    right: -1px !important;
+    border-radius: 12px 0 0 12px !important;
+  }
+
+  @media (max-height: 520px) {
+    body > a[href="https://vibej.am/"] {
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 76px) !important;
+      padding: 6px 10px !important;
+      font-size: 12px !important;
+    }
+  }
 }
 
 @layer components {
