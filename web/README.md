@@ -62,6 +62,9 @@ Serve `web/ui/dist/` plus `web/godot-export/` together from any static host
 that can return the COOP/COEP headers Godot's WASM needs:
 
 ```
-Cross-Origin-Embedder-Policy: require-corp
+Cross-Origin-Embedder-Policy: credentialless
 Cross-Origin-Opener-Policy:  same-origin
 ```
+
+`credentialless` keeps the page cross-origin isolated while allowing no-cors
+third-party scripts (for example event widgets) to load without cookies.

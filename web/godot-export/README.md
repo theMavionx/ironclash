@@ -35,6 +35,8 @@ contributors who clone the repo.
 
 - **CORS / SharedArrayBuffer errors**: Vite is configured with COOP/COEP
   headers in `web/ui/vite.config.ts` so the WASM threads can run. If you
-  serve the build elsewhere, replicate those headers.
+  serve the build elsewhere, replicate those headers. The current COEP value
+  is `credentialless` so third-party no-cors scripts can load without breaking
+  cross-origin isolation.
 - **Missing `index.pck`**: re-export. The export name must match what
   `GameCanvas.tsx` expects (default: `index`).

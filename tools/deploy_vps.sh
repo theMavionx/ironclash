@@ -303,7 +303,7 @@ nginx_locations() {
 	client_max_body_size 256m;
 
 	add_header Cross-Origin-Opener-Policy "same-origin" always;
-	add_header Cross-Origin-Embedder-Policy "require-corp" always;
+	add_header Cross-Origin-Embedder-Policy "credentialless" always;
 	add_header Cross-Origin-Resource-Policy "cross-origin" always;
 
 	location /ws {
@@ -333,7 +333,7 @@ nginx_locations() {
 			text/plain txt;
 		}
 		add_header Cross-Origin-Opener-Policy "same-origin" always;
-		add_header Cross-Origin-Embedder-Policy "require-corp" always;
+		add_header Cross-Origin-Embedder-Policy "credentialless" always;
 		add_header Cross-Origin-Resource-Policy "cross-origin" always;
 		add_header Cache-Control "no-store, max-age=0" always;
 	}

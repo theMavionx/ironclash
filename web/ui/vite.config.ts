@@ -7,9 +7,12 @@ import fs from "node:fs";
 // virtual URL /godot/* — that way Godot writes once and React picks up
 // without a copy step. SharedArrayBuffer needs the cross-origin isolation
 // headers on every request (Godot's WASM threads will fail to start otherwise).
+// `credentialless` keeps the page isolated like `require-corp`, but it allows
+// no-cors third-party scripts such as the Vibe Jam widget to load without
+// cookies instead of being blocked by COEP.
 const GODOT_EXPORT_DIR: string = path.resolve(__dirname, "..", "godot-export");
 const COOP_COEP_HEADERS: Record<string, string> = {
-	"Cross-Origin-Embedder-Policy": "require-corp",
+	"Cross-Origin-Embedder-Policy": "credentialless",
 	"Cross-Origin-Opener-Policy": "same-origin",
 	"Cross-Origin-Resource-Policy": "cross-origin",
 };
