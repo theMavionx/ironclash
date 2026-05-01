@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 
 // During dev we serve the Godot export sitting in ../godot-export/ at the
 // virtual URL /godot/* — that way Godot writes once and React picks up
@@ -25,6 +26,28 @@ const CONTENT_TYPES: Record<string, string> = {
 	".png": "image/png",
 };
 
+function getGodotExportFiles(): string[] {
+	if (!fs.existsSync(GODOT_EXPORT_DIR)) return [];
+	return fs
+		.readdirSync(GODOT_EXPORT_DIR)
+		.filter((fileName) => {
+			const filePath: string = path.join(GODOT_EXPORT_DIR, fileName);
+			return fs.statSync(filePath).isFile() && !/\.(br|gz)$/i.test(fileName);
+		})
+		.sort();
+}
+
+function getGodotExportVersion(files: string[]): string | null {
+	if (files.length === 0) return null;
+	const hash = crypto.createHash("sha256");
+	for (const fileName of files) {
+		const filePath: string = path.join(GODOT_EXPORT_DIR, fileName);
+		const stat = fs.statSync(filePath);
+		hash.update(`${fileName}:${stat.size}:${Math.floor(stat.mtimeMs)}\n`);
+	}
+	return hash.digest("hex").slice(0, 16);
+}
+
 export default defineConfig({
 	plugins: [
 		react(),
@@ -42,13 +65,15 @@ export default defineConfig({
 					// without hardcoding any addon names.
 					if (safe === "/_manifest.json") {
 						res.setHeader("Content-Type", "application/json; charset=utf-8");
-						res.setHeader("Cache-Control", "no-store");
+						res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
 						let base: string | null = null;
 						let godotConfig: Record<string, unknown> | null = null;
-						if (fs.existsSync(GODOT_EXPORT_DIR)) {
-							const pck: string | undefined = fs
-								.readdirSync(GODOT_EXPORT_DIR)
-								.find((f) => f.toLowerCase().endsWith(".pck"));
+						const files: string[] = getGodotExportFiles();
+						const version: string | null = getGodotExportVersion(files);
+						if (files.length > 0) {
+							const pck: string | undefined = files.find((f) =>
+								f.toLowerCase().endsWith(".pck"),
+							);
 							if (pck !== undefined) {
 								base = pck.slice(0, -".pck".length);
 								const htmlPath: string = path.join(GODOT_EXPORT_DIR, `${base}.html`);
@@ -68,7 +93,7 @@ export default defineConfig({
 								}
 							}
 						}
-						res.end(JSON.stringify({ base, godotConfig }));
+						res.end(JSON.stringify({ base, files, godotConfig, version }));
 						return;
 					}
 
@@ -90,9 +115,7 @@ export default defineConfig({
 						"Content-Type",
 						CONTENT_TYPES[ext] ?? "application/octet-stream",
 					);
-					res.setHeader("Cache-Control", "no-store, max-age=0");
-					res.setHeader("Pragma", "no-cache");
-					res.setHeader("Expires", "0");
+					res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
 					for (const [k, v] of Object.entries(COOP_COEP_HEADERS)) {
 						res.setHeader(k, v);
 					}

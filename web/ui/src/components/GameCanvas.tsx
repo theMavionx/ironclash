@@ -38,7 +38,9 @@ interface GodotEngineConfig {
 
 interface GodotManifest {
 	base: string | null;
+	files?: string[];
 	godotConfig: GodotEngineConfig | null;
+	version?: string | null;
 }
 
 interface GodotEngine {
@@ -84,8 +86,6 @@ export default function GameCanvas({ onProgress, onReady, onError }: GameCanvasP
 
 		const boot = async (): Promise<void> => {
 			try {
-				await clearGodotWebExportCaches();
-				if (cancelled) return;
 				const manifest: GodotManifest = await fetchManifest();
 				if (cancelled) return;
 				if (manifest.base === null || manifest.base.length === 0) {
@@ -94,7 +94,9 @@ export default function GameCanvas({ onProgress, onReady, onError }: GameCanvasP
 					);
 				}
 				const base: string = `${GODOT_DIR}/${manifest.base}`;
-				await loadScriptOnce(`${base}.js`).then((el) => {
+				const cacheVersion: string | null = manifest.version ?? null;
+				preloadGodotResources(manifest, base, cacheVersion);
+				await loadScriptOnce(cacheBustGodotUrl(`${base}.js`, cacheVersion)).then((el) => {
 					scriptEl = el;
 				});
 				if (cancelled) return;
@@ -121,7 +123,7 @@ export default function GameCanvas({ onProgress, onReady, onError }: GameCanvasP
 					...fromGodot,
 					canvas,
 					executable: base,
-					mainPack: `${base}.pck`,
+					mainPack: cacheBustGodotUrl(`${base}.pck`, cacheVersion),
 					gdextensionLibs,
 					// canvasResizePolicy values per Godot 4.3 source:
 					//   0 = no resize (use canvas.width/height as-is)
@@ -148,7 +150,7 @@ export default function GameCanvas({ onProgress, onReady, onError }: GameCanvasP
 				// the browser resolves them against the React page URL ('/') and
 				// 404s on every GDExtension WASM. Wrap getModuleConfig to rewrite
 				// any relative path under /godot/ before Emscripten fetches it.
-				patchEngineLocateFile(engine);
+				patchEngineLocateFile(engine, cacheVersion);
 				engineRef.current = engine;
 				await engine.startGame();
 				// Wait for the GDScript autoload to install the bridge so React
@@ -232,7 +234,7 @@ interface PatchableEngine {
 	};
 }
 
-function patchEngineLocateFile(engine: GodotEngine): void {
+function patchEngineLocateFile(engine: GodotEngine, cacheVersion: string | null): void {
 	const e = engine as unknown as PatchableEngine;
 	const cfg = e.config;
 	if (cfg === undefined || typeof cfg.getModuleConfig !== "function") {
@@ -246,10 +248,11 @@ function patchEngineLocateFile(engine: GodotEngine): void {
 		moduleCfg.locateFile = (path: string): string => {
 			const resolved: string =
 				typeof stockLocate === "function" ? stockLocate(path) : path;
-			if (resolved.startsWith("/") || /^https?:/i.test(resolved)) {
+			if (/^(https?:|data:|blob:)/i.test(resolved)) {
 				return resolved;
 			}
-			return `${GODOT_DIR}/${resolved}`;
+			const localUrl: string = resolved.startsWith("/") ? resolved : `${GODOT_DIR}/${resolved}`;
+			return cacheBustGodotUrl(localUrl, cacheVersion);
 		};
 		return moduleCfg;
 	};
@@ -284,41 +287,58 @@ function isRunDependencyProgressLine(text: string): boolean {
  *  where `gdextensionLibs` lives and the engine refuses to load addons
  *  like terrain_3d without it. */
 async function fetchManifest(): Promise<GodotManifest> {
-	const res = await fetch(`${GODOT_DIR}/_manifest.json`, { cache: "no-store" });
+	const res = await fetch(`${GODOT_DIR}/_manifest.json`, { cache: "no-cache" });
 	if (!res.ok) {
 		throw new Error(`Manifest fetch failed (${res.status})`);
 	}
 	return (await res.json()) as GodotManifest;
 }
 
-async function clearGodotWebExportCaches(): Promise<void> {
-	if ("serviceWorker" in navigator) {
-		const registrations = await navigator.serviceWorker.getRegistrations();
-		await Promise.all(
-			registrations
-				.filter((registration) => {
-					const scriptURL =
-						registration.active?.scriptURL ??
-						registration.waiting?.scriptURL ??
-						registration.installing?.scriptURL ??
-						"";
-					return /Ironclash|\/godot\//i.test(scriptURL);
-				})
-				.map((registration) => registration.unregister()),
-		);
-	}
+const _scriptCache: Map<string, Promise<HTMLScriptElement>> = new Map();
+const _preloadedGodotUrls: Set<string> = new Set();
 
-	if ("caches" in window) {
-		const keys = await caches.keys();
-		await Promise.all(
-			keys
-				.filter((key) => /Ironclash|godot/i.test(key))
-				.map((key) => caches.delete(key)),
-		);
-	}
+function cacheBustGodotUrl(url: string, version: string | null | undefined): string {
+	const cleanVersion: string | undefined = version?.trim();
+	if (cleanVersion === undefined || cleanVersion.length === 0) return url;
+	if (/^(https?:|data:|blob:)/i.test(url)) return url;
+	const separator: string = url.includes("?") ? "&" : "?";
+	return `${url}${separator}v=${encodeURIComponent(cleanVersion)}`;
 }
 
-const _scriptCache: Map<string, Promise<HTMLScriptElement>> = new Map();
+function preloadGodotResources(
+	manifest: GodotManifest,
+	base: string,
+	cacheVersion: string | null,
+): void {
+	const files: Set<string> | null =
+		manifest.files === undefined ? null : new Set(manifest.files);
+
+	const add = (fileName: string, as: "script" | "fetch", type?: string): void => {
+		if (files !== null && !files.has(fileName)) return;
+		const href: string = cacheBustGodotUrl(`${GODOT_DIR}/${fileName}`, cacheVersion);
+		if (_preloadedGodotUrls.has(href)) return;
+		const link: HTMLLinkElement = document.createElement("link");
+		link.rel = "preload";
+		link.href = href;
+		link.as = as;
+		if (type !== undefined) link.type = type;
+		if (as === "fetch") link.crossOrigin = "anonymous";
+		document.head.appendChild(link);
+		_preloadedGodotUrls.add(href);
+	};
+
+	const baseName: string = base.slice(GODOT_DIR.length + 1);
+	add(`${baseName}.js`, "script");
+	add(`${baseName}.wasm`, "fetch", "application/wasm");
+	add(`${baseName}.side.wasm`, "fetch", "application/wasm");
+	add(`${baseName}.pck`, "fetch", "application/octet-stream");
+	add(`${baseName}.worker.js`, "script");
+	add(`${baseName}.audio.worklet.js`, "script");
+
+	for (const lib of manifest.godotConfig?.gdextensionLibs ?? []) {
+		add(lib, "fetch", "application/wasm");
+	}
+}
 
 /** Inject a <script> tag once; subsequent calls return the same Promise. */
 function loadScriptOnce(src: string): Promise<HTMLScriptElement> {

@@ -245,10 +245,26 @@ generate_godot_manifest() {
 	out="$godot_dir/_manifest.json"
 	MANIFEST_BASE="$base" MANIFEST_HTML="$html" MANIFEST_OUT="$out" node --input-type=module <<'NODE'
 import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
 
 const base = process.env.MANIFEST_BASE;
 const htmlPath = process.env.MANIFEST_HTML;
 const out = process.env.MANIFEST_OUT;
+const godotDir = path.dirname(out);
+const files = fs.readdirSync(godotDir)
+	.filter((fileName) => {
+		if (fileName === "_manifest.json") return false;
+		if (/\.(br|gz)$/i.test(fileName)) return false;
+		return fs.statSync(path.join(godotDir, fileName)).isFile();
+	})
+	.sort();
+const versionHash = crypto.createHash("sha256");
+for (const fileName of files) {
+	const stat = fs.statSync(path.join(godotDir, fileName));
+	versionHash.update(`${fileName}:${stat.size}:${Math.floor(stat.mtimeMs)}\n`);
+}
+const version = versionHash.digest("hex").slice(0, 16);
 let godotConfig = null;
 
 if (htmlPath && fs.existsSync(htmlPath)) {
@@ -263,7 +279,7 @@ if (htmlPath && fs.existsSync(htmlPath)) {
 	}
 }
 
-fs.writeFileSync(out, JSON.stringify({ base, godotConfig }, null, 2) + "\n");
+fs.writeFileSync(out, JSON.stringify({ base, files, godotConfig, version }, null, 2) + "\n");
 NODE
 }
 
@@ -400,6 +416,10 @@ nginx_locations() {
 	client_max_body_size 256m;
 	sendfile on;
 	tcp_nopush on;
+	open_file_cache max=10000 inactive=60s;
+	open_file_cache_valid 120s;
+	open_file_cache_min_uses 2;
+	open_file_cache_errors on;
 	gzip_vary on;
 	${gzip_static_conf}
 	${brotli_static_conf}
@@ -428,7 +448,7 @@ nginx_locations() {
 		add_header Cross-Origin-Opener-Policy "same-origin" always;
 		add_header Cross-Origin-Embedder-Policy "credentialless" always;
 		add_header Cross-Origin-Resource-Policy "cross-origin" always;
-		add_header Cache-Control "no-store, max-age=0" always;
+		add_header Cache-Control "public, max-age=0, must-revalidate" always;
 	}
 
 	location /godot/ {
@@ -446,7 +466,15 @@ nginx_locations() {
 		add_header Cross-Origin-Opener-Policy "same-origin" always;
 		add_header Cross-Origin-Embedder-Policy "credentialless" always;
 		add_header Cross-Origin-Resource-Policy "cross-origin" always;
-		add_header Cache-Control "public, no-cache" always;
+		add_header Cache-Control "public, max-age=31536000, immutable" always;
+	}
+
+	location /assets/ {
+		try_files \$uri =404;
+		add_header Cross-Origin-Opener-Policy "same-origin" always;
+		add_header Cross-Origin-Embedder-Policy "credentialless" always;
+		add_header Cross-Origin-Resource-Policy "cross-origin" always;
+		add_header Cache-Control "public, max-age=31536000, immutable" always;
 	}
 
 	location ^~ /.well-known/acme-challenge/ {
@@ -456,6 +484,10 @@ nginx_locations() {
 
 	location / {
 		try_files \$uri \$uri/ /index.html;
+		add_header Cross-Origin-Opener-Policy "same-origin" always;
+		add_header Cross-Origin-Embedder-Policy "credentialless" always;
+		add_header Cross-Origin-Resource-Policy "cross-origin" always;
+		add_header Cache-Control "public, max-age=0, must-revalidate" always;
 	}
 EOF
 }
