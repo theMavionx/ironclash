@@ -37,6 +37,10 @@ extends Node3D
 ## and let the gameplay scene finish loading on its own. Prevents a soft hang
 ## if threaded loading deadlocks.
 @export var max_hold_seconds: float = 12.0
+## Extra budget for already-loaded assets when the probe coroutine is in its
+## last awaited frames. This avoids a noisy forced-switch warning when no async
+## probes are pending but the staging flag has not flipped yet.
+@export var probe_finish_grace_seconds: float = 3.0
 
 ## How far ahead of the camera the warmup root sits. Far enough that the
 ## whole probe spread remains in-frustum even on narrow browser canvases.
@@ -231,12 +235,17 @@ func _process(_delta: float) -> void:
 	var assets_ready: bool = (status == ResourceLoader.THREAD_LOAD_LOADED)
 	var probes_ready: bool = _probe_staging_complete and _pending_async_probes <= 0
 	var hold_satisfied: bool = _elapsed >= min_hold_seconds and probes_ready
-	var force_switch: bool = _elapsed >= max_hold_seconds
+	var load_force_switch: bool = _elapsed >= max_hold_seconds and not assets_ready and not _main_scene_load_failed
+	var probe_force_switch: bool = _elapsed >= (max_hold_seconds + probe_finish_grace_seconds)
+	var force_switch: bool = load_force_switch or probe_force_switch
 	if ((assets_ready or _main_scene_load_failed) and hold_satisfied) or force_switch:
-		if force_switch and not assets_ready and not _main_scene_load_failed:
+		if load_force_switch:
 			push_warning("[warmup] FORCED SWITCH after %.2fs — Main.tscn still %s (asset_progress=%.2f). Game may hitch on first frame." % [_elapsed, _status_label(status), asset_progress])
-		elif force_switch and not probes_ready:
-			push_warning("[warmup] FORCED SWITCH after %.2fs - warmup probes still pending=%d staged=%s. Game may hitch on first combat VFX." % [_elapsed, _pending_async_probes, str(_probe_staging_complete)])
+		elif probe_force_switch and not probes_ready:
+			if _pending_async_probes > 0:
+				push_warning("[warmup] FORCED SWITCH after %.2fs - warmup probes still pending=%d staged=%s. Game may hitch on first combat VFX." % [_elapsed, _pending_async_probes, str(_probe_staging_complete)])
+			else:
+				print("[warmup] time cap after %.2fs - probe coroutine still finalizing with no async probes pending; swapping without warning." % _elapsed)
 		else:
 			print("[warmup] ready to switch: elapsed=%.2fs asset=100%% status=LOADED" % _elapsed)
 		_switch_to_main()

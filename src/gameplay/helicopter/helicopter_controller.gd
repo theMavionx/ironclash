@@ -44,6 +44,8 @@ const _VISUAL_CONVEX_COLLIDERS := preload("res://src/gameplay/vehicle/visual_con
 @export var ground_probe_up: float = 12.0
 @export var ground_probe_down: float = 90.0
 @export_flags_3d_physics var ground_probe_collision_mask: int = 1
+@export var ground_guard_forward_extent: float = 4.0
+@export var ground_guard_side_extent: float = 2.4
 @export var wreck_ground_clearance: float = 1.1
 @export_node_path("Node3D") var ground_terrain_path: NodePath
 
@@ -701,6 +703,16 @@ func _prevent_ground_sink(min_clearance: float) -> bool:
 
 func _ground_height_under(pos: Vector3) -> float:
 	var result: float = NAN
+	for sample: Vector3 in _ground_guard_sample_points(pos):
+		var sample_y: float = _ground_height_at(sample)
+		if is_nan(sample_y):
+			continue
+		result = sample_y if is_nan(result) else maxf(result, sample_y)
+	return result
+
+
+func _ground_height_at(pos: Vector3) -> float:
+	var result: float = NAN
 	var hit: Dictionary = _ground_probe_hit(pos)
 	if not hit.is_empty():
 		var hit_pos: Vector3 = hit.get("position", pos)
@@ -709,6 +721,32 @@ func _ground_height_under(pos: Vector3) -> float:
 	if not is_nan(terrain_y):
 		result = terrain_y if is_nan(result) else maxf(result, terrain_y)
 	return result
+
+
+func _ground_guard_sample_points(pos: Vector3) -> Array[Vector3]:
+	var forward: Vector3 = -global_transform.basis.z
+	forward.y = 0.0
+	if forward.length_squared() < 0.0001:
+		forward = Vector3.FORWARD
+	else:
+		forward = forward.normalized()
+
+	var right: Vector3 = global_transform.basis.x
+	right.y = 0.0
+	if right.length_squared() < 0.0001:
+		right = forward.cross(Vector3.UP)
+	if right.length_squared() < 0.0001:
+		right = Vector3.RIGHT
+	else:
+		right = right.normalized()
+
+	return [
+		pos,
+		pos + forward * ground_guard_forward_extent - right * ground_guard_side_extent,
+		pos + forward * ground_guard_forward_extent + right * ground_guard_side_extent,
+		pos - forward * ground_guard_forward_extent - right * ground_guard_side_extent,
+		pos - forward * ground_guard_forward_extent + right * ground_guard_side_extent,
+	]
 
 
 func _ground_probe_hit(pos: Vector3) -> Dictionary:

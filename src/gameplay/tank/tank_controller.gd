@@ -66,6 +66,15 @@ signal fired_with_aim(spawn_origin: Vector3, aim_dir: Vector3)
 @export var tank_floor_snap_length: float = 0.55
 @export_range(0.0, 89.0, 1.0, "degrees") var tank_floor_max_angle_deg: float = 62.0
 @export var tank_safe_margin: float = 0.025
+## Last-resort guard against Terrain3D/CharacterBody floor contact dropping
+## for one frame on steep slopes or region seams.
+@export var terrain_height_guard_enabled: bool = true
+@export var tank_ground_clearance: float = 0.08
+@export var tank_ground_probe_up: float = 2.5
+@export var tank_ground_probe_down: float = 8.0
+@export var tank_ground_guard_forward_extent: float = 3.8
+@export var tank_ground_guard_side_extent: float = 1.8
+@export_node_path("Node3D") var ground_terrain_path: NodePath
 @export_group("Slope Alignment")
 @export var align_hull_to_ground: bool = true
 @export var slope_probe_forward_extent: float = 1.08
@@ -208,6 +217,7 @@ var _body_scale: Vector3 = Vector3.ONE
 var _gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity", 9.8)
 var _active: bool = true
 var _fire_timer: float = 0.0
+var _terrain_node: Node = null
 var _spawn_collision_layer: int = 0
 var _spawn_collision_mask: int = 0
 ## Flag set by _unhandled_input, consumed at end of _physics_process so the
@@ -348,6 +358,7 @@ func _ready() -> void:
 	_spawn_collision_mask = collision_mask
 	_apply_slope_contact_settings()
 	_rebuild_visual_mesh_collision()
+	_terrain_node = _resolve_terrain_node()
 	_collect_wheels()
 	_setup_tread_materials()
 	_setup_tread_dust()
@@ -560,6 +571,7 @@ func _physics_process(delta: float) -> void:
 		velocity.y = 0.0
 
 	move_and_slide()
+	_prevent_terrain_sink(tank_ground_clearance)
 	_update_slope_alignment(delta)
 
 	_update_tread_marks()
@@ -694,6 +706,103 @@ func _dust_ground_position(world_pos: Vector3) -> Vector3:
 	var hit_pos: Vector3 = hit.get("position", world_pos)
 	var hit_normal: Vector3 = hit.get("normal", Vector3.UP)
 	return hit_pos + hit_normal.normalized() * tread_dust_ground_offset
+
+
+func _prevent_terrain_sink(min_clearance: float) -> bool:
+	if not terrain_height_guard_enabled or min_clearance <= 0.0:
+		return false
+	var ground_y: float = _tank_ground_height()
+	if is_nan(ground_y):
+		return false
+	var min_y: float = ground_y + min_clearance
+	if global_position.y >= min_y:
+		return false
+	var pos: Vector3 = global_position
+	pos.y = min_y
+	global_position = pos
+	if velocity.y < 0.0:
+		velocity.y = 0.0
+	return true
+
+
+func _tank_ground_height() -> float:
+	var forward: Vector3 = _get_flat_forward_from_yaw()
+	var right: Vector3 = forward.cross(Vector3.UP)
+	if right.length_squared() < 0.0001:
+		right = Vector3.RIGHT
+	else:
+		right = right.normalized()
+
+	var samples: Array[Vector3] = [
+		global_position,
+		global_position + forward * tank_ground_guard_forward_extent - right * tank_ground_guard_side_extent,
+		global_position + forward * tank_ground_guard_forward_extent + right * tank_ground_guard_side_extent,
+		global_position - forward * tank_ground_guard_forward_extent - right * tank_ground_guard_side_extent,
+		global_position - forward * tank_ground_guard_forward_extent + right * tank_ground_guard_side_extent,
+	]
+	var best_y: float = NAN
+	for sample: Vector3 in samples:
+		var sample_y: float = _ground_height_at(sample)
+		if is_nan(sample_y):
+			continue
+		best_y = sample_y if is_nan(best_y) else maxf(best_y, sample_y)
+	return best_y
+
+
+func _ground_height_at(pos: Vector3) -> float:
+	var result: float = NAN
+	var hit: Dictionary = _ground_probe_hit(pos)
+	if not hit.is_empty():
+		var hit_pos: Vector3 = hit.get("position", pos)
+		result = hit_pos.y
+	var terrain_y: float = _terrain_height_at(pos)
+	if not is_nan(terrain_y):
+		result = terrain_y if is_nan(result) else maxf(result, terrain_y)
+	return result
+
+
+func _ground_probe_hit(pos: Vector3) -> Dictionary:
+	var world: World3D = get_world_3d()
+	if world == null:
+		return {}
+	var space: PhysicsDirectSpaceState3D = world.direct_space_state
+	if space == null:
+		return {}
+	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+		pos + Vector3.UP * tank_ground_probe_up,
+		pos - Vector3.UP * tank_ground_probe_down,
+		slope_probe_collision_mask
+	)
+	query.collide_with_areas = false
+	query.exclude = [get_rid()]
+	return space.intersect_ray(query)
+
+
+func _terrain_height_at(pos: Vector3) -> float:
+	if _terrain_node == null or not is_instance_valid(_terrain_node):
+		_terrain_node = _resolve_terrain_node()
+	if _terrain_node == null:
+		return NAN
+	var terrain_data: Object = _terrain_node.get("data") as Object
+	if terrain_data == null or not terrain_data.has_method("get_height"):
+		return NAN
+	var height_value: Variant = terrain_data.call("get_height", pos)
+	if height_value is float or height_value is int:
+		return float(height_value)
+	return NAN
+
+
+func _resolve_terrain_node() -> Node:
+	if not ground_terrain_path.is_empty():
+		var explicit: Node = get_node_or_null(ground_terrain_path)
+		if explicit != null:
+			return explicit
+	var root: Node = get_tree().current_scene
+	if root == null:
+		root = get_tree().root
+	if root == null:
+		return null
+	return root.find_child("Terrain3D", true, false)
 
 
 func _set_tread_dust_emitting(is_emitting: bool) -> void:
