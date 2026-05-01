@@ -6,6 +6,7 @@ import { godotBridge } from "@/bridge/godotBridge";
 // runtime via the synthetic /godot/_manifest.json endpoint, so we don't have
 // to keep this file in lockstep with the project's name.
 const GODOT_DIR: string = "/godot";
+let lastRunDependencyNoticeAt: number = 0;
 
 // Godot 4 web export exposes a global `Engine` constructor on window. The
 // shape below covers the surface we actually call — extend as needed.
@@ -140,7 +141,7 @@ export default function GameCanvas({ onProgress, onReady, onError }: GameCanvasP
 						if (cancelled) return;
 						onProgress?.(current, total);
 					},
-					onPrintError: (...args) => console.error("[Godot]", ...args),
+					onPrintError: logGodotStderr,
 				});
 				// The engine's hardcoded Config.prototype.getModuleConfig builds an
 				// internal `locateFile` that returns relative basenames as-is, so
@@ -252,6 +253,28 @@ function patchEngineLocateFile(engine: GodotEngine): void {
 		};
 		return moduleCfg;
 	};
+}
+
+function logGodotStderr(...args: unknown[]): void {
+	const text: string = args.map(String).join(" ");
+	if (isRunDependencyProgressLine(text)) {
+		const now: number = Date.now();
+		if (now - lastRunDependencyNoticeAt > 15000) {
+			lastRunDependencyNoticeAt = now;
+			console.info("[Godot] loading WebAssembly side modules...");
+		}
+		return;
+	}
+	console.error("[Godot]", ...args);
+}
+
+function isRunDependencyProgressLine(text: string): boolean {
+	return (
+		text.includes("still waiting on run dependencies") ||
+		text.includes("dependency: loadDylibs") ||
+		text.includes("dependency: al /godot/") ||
+		text === "(end of list)"
+	);
 }
 
 /** Hit the synthetic manifest endpoint that vite.config.ts serves to discover
