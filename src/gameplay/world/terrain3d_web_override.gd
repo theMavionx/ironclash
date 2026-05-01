@@ -1,7 +1,7 @@
 extends Terrain3D
 
 @export var web_shader: Shader
-@export var enable_web_shader_override: bool = true
+@export var enable_web_shader_override: bool = false
 
 func _ready() -> void:
 	if not OS.has_feature("web"):
