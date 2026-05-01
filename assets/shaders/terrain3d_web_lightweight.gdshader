@@ -10,15 +10,12 @@ const int WEB_REGION_LIMIT = 96;
 
 uniform vec3 _camera_pos = vec3(0.0);
 uniform float _mesh_size = 48.0;
-uniform uint _background_mode = 1u;
-uniform uint _mouse_layer = 0x80000000u;
 uniform float _vertex_spacing = 1.0;
 uniform float _vertex_density = 1.0;
 uniform float _region_size = 1024.0;
 uniform float _region_texel_size = 0.0009765625;
 uniform vec2 _region_locations[WEB_REGION_LIMIT];
 uniform highp sampler2DArray _height_maps : repeat_disable;
-uniform highp usampler2DArray _control_maps : repeat_disable;
 
 varying vec3 v_world_vertex;
 varying vec3 v_world_normal;
@@ -49,15 +46,6 @@ float height_at(vec2 uv, float fallback_height) {
 	return texelFetch(_height_maps, index, 0).r;
 }
 
-bool is_hole(vec2 uv) {
-	ivec3 index = get_index_coord(uv);
-	if (index.z < 0) {
-		return _background_mode == 0u;
-	}
-	uint control = texelFetch(_control_maps, index, 0).r;
-	return bool((control >> 2u) & 0x1u);
-}
-
 void vertex() {
 	v_world_vertex = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 
@@ -81,17 +69,13 @@ void vertex() {
 	UV = v_world_vertex.xz * _vertex_density;
 	UV2 = UV * vec2(_region_texel_size) + vec2(0.5 * _region_texel_size);
 
-	if (!(CAMERA_VISIBLE_LAYERS == _mouse_layer) && is_hole(start_pos)) {
-		v_world_vertex.x = 0.0 / 0.0;
-	} else {
-		float h_start = height_at(start_pos, v_world_vertex.y);
-		float h_end = height_at(end_pos, h_start);
-		float h = mix(h_start, h_end, vertex_lerp);
-		float h_x = height_at(start_pos + vec2(1.0, 0.0), h);
-		float h_z = height_at(start_pos + vec2(0.0, 1.0), h);
-		v_world_vertex.y = h;
-		v_world_normal = normalize(vec3(h - h_x, _vertex_spacing, h - h_z));
-	}
+	float h_start = height_at(start_pos, v_world_vertex.y);
+	float h_end = height_at(end_pos, h_start);
+	float h = mix(h_start, h_end, vertex_lerp);
+	float h_x = height_at(start_pos + vec2(1.0, 0.0), h);
+	float h_z = height_at(start_pos + vec2(0.0, 1.0), h);
+	v_world_vertex.y = h;
+	v_world_normal = normalize(vec3(h - h_x, _vertex_spacing, h - h_z));
 
 	VERTEX = (VIEW_MATRIX * vec4(v_world_vertex, 1.0)).xyz;
 	NORMAL = normalize((VIEW_MATRIX * vec4(v_world_normal, 0.0)).xyz);

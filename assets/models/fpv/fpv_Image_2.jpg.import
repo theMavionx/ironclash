@@ -2,19 +2,19 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://cw30o8mbku4fc"
-path="res://.godot/imported/fpv_Image_0.png-1f0a04b63194eee4df5adb3b68e90948.ctex"
+uid="uid://ch4a26b5h6280"
+path="res://.godot/imported/fpv_Image_2.jpg-25c54673fbae531a4ad9d0554836d3f3.ctex"
 metadata={
 "vram_texture": false
 }
 generator_parameters={
-"md5": "6fd9680489751a1ef3cd31887189c8c4"
+"md5": "31119841acd7e49a4c720c3b37a995a8"
 }
 
 [deps]
 
-source_file="res://assets/models/fpv/fpv_Image_0.png"
-dest_files=["res://.godot/imported/fpv_Image_0.png-1f0a04b63194eee4df5adb3b68e90948.ctex"]
+source_file="res://assets/models/fpv/fpv_Image_2.jpg"
+dest_files=["res://.godot/imported/fpv_Image_2.jpg-25c54673fbae531a4ad9d0554836d3f3.ctex"]
 
 [params]
 
@@ -22,12 +22,12 @@ compress/mode=0
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1
-compress/normal_map=0
+compress/normal_map=1
 compress/channel_pack=0
 mipmaps/generate=true
 mipmaps/limit=-1
-roughness/mode=0
-roughness/src_normal=""
+roughness/mode=1
+roughness/src_normal="res://assets/models/fpv/fpv_Image_2.jpg"
 process/fix_alpha_border=true
 process/premult_alpha=false
 process/normal_map_invert_y=false

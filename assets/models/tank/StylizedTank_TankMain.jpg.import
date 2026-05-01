@@ -2,19 +2,19 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://da1yird4kdfy0"
-path="res://.godot/imported/fpv_Image_2.png-ace544ee77e7b75af9d3f123e167c4de.ctex"
+uid="uid://dmay42kpdwp8o"
+path="res://.godot/imported/StylizedTank_TankMain.jpg-3eabd8b51a281f30d4cd229fa203cf90.ctex"
 metadata={
 "vram_texture": false
 }
 generator_parameters={
-"md5": "5b91276879a3241b610c3eda623371c1"
+"md5": "29130923881db9d91f57d516aaf4e53c"
 }
 
 [deps]
 
-source_file="res://assets/models/fpv/fpv_Image_2.png"
-dest_files=["res://.godot/imported/fpv_Image_2.png-ace544ee77e7b75af9d3f123e167c4de.ctex"]
+source_file="res://assets/models/tank/StylizedTank_TankMain.jpg"
+dest_files=["res://.godot/imported/StylizedTank_TankMain.jpg-3eabd8b51a281f30d4cd229fa203cf90.ctex"]
 
 [params]
 
@@ -22,12 +22,12 @@ compress/mode=0
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/hdr_compression=1
-compress/normal_map=1
+compress/normal_map=0
 compress/channel_pack=0
 mipmaps/generate=true
 mipmaps/limit=-1
-roughness/mode=1
-roughness/src_normal="res://assets/models/fpv/fpv_Image_2.png"
+roughness/mode=0
+roughness/src_normal=""
 process/fix_alpha_border=true
 process/premult_alpha=false
 process/normal_map_invert_y=false

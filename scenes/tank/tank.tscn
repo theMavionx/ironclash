@@ -2,7 +2,7 @@
 
 [ext_resource type="Script" path="res://src/gameplay/tank/tank_controller.gd" id="1_script"]
 [ext_resource type="PackedScene" uid="uid://t17abqlrttu7" path="res://assets/models/tank/StylizedTank.glb" id="2_model"]
-[ext_resource type="Texture2D" uid="uid://c1rseb6obl3u3" path="res://assets/models/tank/StylizedTank_Treads.png" id="3_treads"]
+[ext_resource type="Texture2D" uid="uid://conu8tgtdp75l" path="res://assets/models/tank/StylizedTank_Treads.jpg" id="3_treads"]
 [ext_resource type="Script" path="res://src/gameplay/health/health_component.gd" id="4_health"]
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_tank"]
