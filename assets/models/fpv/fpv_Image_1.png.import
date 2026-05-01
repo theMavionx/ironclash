@@ -2,19 +2,19 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://ddv4cnu8mwgbj"
-path="res://.godot/imported/StylizedTank_Wheels.jpg-0269af20d018d3391c029a8904d834a4.ctex"
+uid="uid://bqiv1cvl26blh"
+path="res://.godot/imported/fpv_Image_1.png-1712b500c10b53a9fa295dd94fd29161.ctex"
 metadata={
 "vram_texture": false
 }
 generator_parameters={
-"md5": "0477e02192e77c5d4ca8dd810d56ee00"
+"md5": "5c4fc3d198e6b6a7c3256f0856a66ecb"
 }
 
 [deps]
 
-source_file="res://assets/models/tank/StylizedTank_Wheels.jpg"
-dest_files=["res://.godot/imported/StylizedTank_Wheels.jpg-0269af20d018d3391c029a8904d834a4.ctex"]
+source_file="res://assets/models/fpv/fpv_Image_1.png"
+dest_files=["res://.godot/imported/fpv_Image_1.png-1712b500c10b53a9fa295dd94fd29161.ctex"]
 
 [params]
 
@@ -26,8 +26,8 @@ compress/normal_map=0
 compress/channel_pack=0
 mipmaps/generate=true
 mipmaps/limit=-1
-roughness/mode=0
-roughness/src_normal=""
+roughness/mode=8
+roughness/src_normal="res://assets/models/fpv/fpv_Image_2.png"
 process/fix_alpha_border=true
 process/premult_alpha=false
 process/normal_map_invert_y=false

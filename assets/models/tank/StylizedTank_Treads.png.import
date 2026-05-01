@@ -2,19 +2,19 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://bs6nc82uob4m1"
-path="res://.godot/imported/fpv_Image_0.jpg-6966b5feca1f3716d627e399be8c9f17.ctex"
+uid="uid://c1rseb6obl3u3"
+path="res://.godot/imported/StylizedTank_Treads.png-1041bcff691448d25296ed62f60a0fd3.ctex"
 metadata={
 "vram_texture": false
 }
 generator_parameters={
-"md5": "84a7ed2be3045051ea43b111a00a92d3"
+"md5": "69ce4c2e1ef44f843f344bd78c7bc707"
 }
 
 [deps]
 
-source_file="res://assets/models/fpv/fpv_Image_0.jpg"
-dest_files=["res://.godot/imported/fpv_Image_0.jpg-6966b5feca1f3716d627e399be8c9f17.ctex"]
+source_file="res://assets/models/tank/StylizedTank_Treads.png"
+dest_files=["res://.godot/imported/StylizedTank_Treads.png-1041bcff691448d25296ed62f60a0fd3.ctex"]
 
 [params]
 

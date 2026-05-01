@@ -25,7 +25,7 @@ uniform float _region_texel_size = 0.0009765625;
 uniform vec2 _region_locations[WEB_REGION_LIMIT];
 
 uniform highp sampler2DArray _height_maps : repeat_disable;
-uniform highp sampler2DArray _control_maps : repeat_disable;
+uniform highp usampler2DArray _control_maps : repeat_disable;
 uniform highp sampler2DArray _color_maps : source_color, filter_linear_mipmap, repeat_disable;
 uniform highp sampler2DArray _texture_array_albedo : source_color, filter_linear_mipmap, repeat_enable;
 
@@ -74,9 +74,25 @@ float height_at(vec2 uv, float fallback_height) {
 	return texelFetch(_height_maps, index, 0).r;
 }
 
-uint unpack_control(vec4 rgba) {
-	uvec4 bytes = uvec4(round(clamp(rgba, vec4(0.0), vec4(1.0)) * 255.0));
-	return bytes.r | (bytes.g << 8u) | (bytes.b << 16u) | (bytes.a << 24u);
+int safe_texture_id(int layer) {
+	return clamp(layer, 0, TEX_COBBLE);
+}
+
+uint sanitize_control(uint raw_control) {
+	uint control = raw_control & CONTROL_MASK;
+	if (control == 0u) {
+		return 0u;
+	}
+
+	bool auto_shader = bool(control & 0x1u);
+	if (!auto_shader) {
+		uint base_layer = (control >> 27u) & 0x1Fu;
+		uint overlay_layer = (control >> 22u) & 0x1Fu;
+		if (base_layer > uint(TEX_COBBLE) || overlay_layer > uint(TEX_COBBLE)) {
+			return 0u;
+		}
+	}
+	return control;
 }
 
 uint control_at(vec2 uv) {
@@ -84,11 +100,7 @@ uint control_at(vec2 uv) {
 	if (index.z < 0) {
 		return 0x1u;
 	}
-	return unpack_control(texelFetch(_control_maps, index, 0)) & CONTROL_MASK;
-}
-
-int safe_texture_id(int layer) {
-	return clamp(layer, 0, TEX_COBBLE);
+	return sanitize_control(texelFetch(_control_maps, index, 0).r);
 }
 
 float texture_scale_for_layer(int layer) {
@@ -140,6 +152,23 @@ float segment_distance(vec2 p, vec2 a, vec2 b) {
 	return length(pa - ba * h);
 }
 
+float hash21(vec2 p) {
+	p = fract(p * vec2(123.34, 345.45));
+	p += dot(p, p + 34.345);
+	return fract(p.x * p.y);
+}
+
+float value_noise(vec2 p) {
+	vec2 i = floor(p);
+	vec2 f = fract(p);
+	vec2 u = f * f * (3.0 - 2.0 * f);
+	float a = hash21(i);
+	float b = hash21(i + vec2(1.0, 0.0));
+	float c = hash21(i + vec2(0.0, 1.0));
+	float d = hash21(i + vec2(1.0, 1.0));
+	return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
 float road_mask(vec2 p) {
 	float d = min(
 		segment_distance(p, vec2(12.0, 24.0), vec2(-8.0, -25.0)),
@@ -154,7 +183,8 @@ float base_cobble_mask(vec2 p) {
 	return max(red_base, blue_base);
 }
 
-int procedural_base_layer(float slope, float height_value, float base_mask_value, float road_mask_value) {
+int procedural_base_layer(float slope, float height_value, float base_mask_value, float road_mask_value, vec2 world_xz) {
+	float patch = value_noise(world_xz * 0.035);
 	if (base_mask_value > 0.45) {
 		return TEX_COBBLE;
 	}
@@ -167,39 +197,53 @@ int procedural_base_layer(float slope, float height_value, float base_mask_value
 	if (slope > 0.52) {
 		return TEX_ROCK;
 	}
+	if (slope > 0.34 || patch > 0.76) {
+		return TEX_MOUNTAIN;
+	}
+	if (patch < 0.18) {
+		return TEX_ROCK_ALT;
+	}
 	return TEX_GROUND;
 }
 
-int procedural_overlay_layer(float slope, float height_value, int base_layer) {
+int procedural_overlay_layer(float slope, float height_value, int base_layer, vec2 world_xz) {
+	float patch = value_noise(world_xz * 0.028 + vec2(19.3, 7.1));
 	if (height_value > 32.0) {
 		return TEX_SNOW;
 	}
 	if (slope > 0.32) {
 		return TEX_MOUNTAIN;
 	}
+	if (patch > 0.68 && base_layer == TEX_GROUND) {
+		return TEX_ROCK_ALT;
+	}
+	if (patch < 0.22 && base_layer == TEX_MOUNTAIN) {
+		return TEX_GROUND;
+	}
 	return base_layer;
 }
 
-float procedural_blend(float slope, float height_value, int base_layer, int overlay_layer) {
+float procedural_blend(float slope, float height_value, int base_layer, int overlay_layer, vec2 world_xz) {
 	if (base_layer == overlay_layer) {
 		return 0.0;
 	}
 	float snow_blend = smoothstep(30.0, 48.0, height_value);
 	float slope_blend = smoothstep(0.25, 0.70, slope);
+	float patch_blend = smoothstep(0.40, 0.86, value_noise(world_xz * 0.028 + vec2(19.3, 7.1)));
 	if (overlay_layer == TEX_SNOW) {
 		return snow_blend;
 	}
-	return slope_blend;
+	return max(slope_blend, patch_blend * 0.65);
 }
 
-void resolve_layers(uint control, float slope, float height_value, float base_mask_value, float road_mask_value, out int base_layer, out int overlay_layer, out float blend) {
+void resolve_layers(uint control, float slope, float height_value, float base_mask_value, float road_mask_value, vec2 world_xz, out int base_layer, out int overlay_layer, out float blend) {
 	bool has_decoded_control = control != 0u;
 	bool auto_shader = !has_decoded_control || bool(control & 0x1u);
 
 	if (auto_shader) {
-		base_layer = procedural_base_layer(slope, height_value, base_mask_value, road_mask_value);
-		overlay_layer = procedural_overlay_layer(slope, height_value, base_layer);
-		blend = procedural_blend(slope, height_value, base_layer, overlay_layer);
+		base_layer = procedural_base_layer(slope, height_value, base_mask_value, road_mask_value, world_xz);
+		overlay_layer = procedural_overlay_layer(slope, height_value, base_layer, world_xz);
+		blend = procedural_blend(slope, height_value, base_layer, overlay_layer, world_xz);
 		return;
 	}
 
@@ -274,7 +318,7 @@ void fragment() {
 	int base_layer;
 	int overlay_layer;
 	float blend;
-	resolve_layers(control, slope, v_world_vertex.y, cobble_mask, road_value, base_layer, overlay_layer, blend);
+	resolve_layers(control, slope, v_world_vertex.y, cobble_mask, road_value, v_world_vertex.xz, base_layer, overlay_layer, blend);
 
 	vec4 base_albedo = sample_albedo_layer(base_layer, v_world_vertex.xz, ddxy);
 	vec4 overlay_albedo = sample_albedo_layer(overlay_layer, v_world_vertex.xz, ddxy);

@@ -2,19 +2,19 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://conu8tgtdp75l"
-path="res://.godot/imported/StylizedTank_Treads.jpg-590379aaea8210203ce71ceb566f778c.ctex"
+uid="uid://dwrjdo2i0poil"
+path="res://.godot/imported/StylizedTank_Wheels.png-39f2fe1f5cbeba097c38352ef419a6c3.ctex"
 metadata={
 "vram_texture": false
 }
 generator_parameters={
-"md5": "119e46067bebcc59f82807449f6e2286"
+"md5": "4ad79f4218fe2cbf38bafc1d37610397"
 }
 
 [deps]
 
-source_file="res://assets/models/tank/StylizedTank_Treads.jpg"
-dest_files=["res://.godot/imported/StylizedTank_Treads.jpg-590379aaea8210203ce71ceb566f778c.ctex"]
+source_file="res://assets/models/tank/StylizedTank_Wheels.png"
+dest_files=["res://.godot/imported/StylizedTank_Wheels.png-39f2fe1f5cbeba097c38352ef419a6c3.ctex"]
 
 [params]
 

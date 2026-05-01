@@ -2,19 +2,19 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://nle3vbxgyell"
-path="res://.godot/imported/ApacheLowPoly_Image_0_3.jpg-cae77230102cd08d17b707ba634cd540.ctex"
+uid="uid://dm20snpwr3f0q"
+path="res://.godot/imported/ApacheLowPoly_Image_1.png-f36fcd462acef76b7e1904dbc6f662b2.ctex"
 metadata={
 "vram_texture": false
 }
 generator_parameters={
-"md5": "615e9622182b449bf39c7f6558733b3e"
+"md5": "23a292ee24892cb64d22a2e9dc198ed8"
 }
 
 [deps]
 
-source_file="res://assets/models/helicopter/ApacheLowPoly_Image_0_3.jpg"
-dest_files=["res://.godot/imported/ApacheLowPoly_Image_0_3.jpg-cae77230102cd08d17b707ba634cd540.ctex"]
+source_file="res://assets/models/helicopter/ApacheLowPoly_Image_1.png"
+dest_files=["res://.godot/imported/ApacheLowPoly_Image_1.png-f36fcd462acef76b7e1904dbc6f662b2.ctex"]
 
 [params]
 
@@ -26,8 +26,8 @@ compress/normal_map=0
 compress/channel_pack=0
 mipmaps/generate=true
 mipmaps/limit=-1
-roughness/mode=0
-roughness/src_normal=""
+roughness/mode=8
+roughness/src_normal="res://assets/models/helicopter/ApacheLowPoly_Image_2.png"
 process/fix_alpha_border=true
 process/premult_alpha=false
 process/normal_map_invert_y=false
