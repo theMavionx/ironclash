@@ -319,9 +319,9 @@ func _spawn_warmup_actors() -> void:
 	await _spawn_explosion_probe()
 	await _yield_warmup_frames()
 	await _spawn_actual_vehicle_destruction_probes()
+	_probe_staging_complete = true
 	await _yield_warmup_frames()
 	await _wait_for_async_probes("critical staged probes", 0.1)
-	_probe_staging_complete = true
 	print("[warmup] all %d probes staged in %d ms (async scheduled=%d pending=%d)" % [_probes_spawned, Time.get_ticks_msec() - _start_msec, _async_probes_scheduled, _pending_async_probes])
 
 

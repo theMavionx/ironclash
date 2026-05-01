@@ -14,8 +14,6 @@ const int TEX_ROCK_ALT = 4;
 const int TEX_SNOW = 5;
 const int TEX_COBBLE = 6;
 
-const uint CONTROL_MASK = 0xFFFFC07Du;
-
 uniform vec3 _camera_pos = vec3(0.0);
 uniform float _mesh_size = 48.0;
 uniform float _vertex_spacing = 1.0;
@@ -25,7 +23,6 @@ uniform float _region_texel_size = 0.0009765625;
 uniform vec2 _region_locations[WEB_REGION_LIMIT];
 
 uniform highp sampler2DArray _height_maps : repeat_disable;
-uniform highp usampler2DArray _control_maps : repeat_disable;
 uniform highp sampler2DArray _color_maps : source_color, filter_linear_mipmap, repeat_disable;
 uniform highp sampler2DArray _texture_array_albedo : source_color, filter_linear_mipmap, repeat_enable;
 
@@ -76,31 +73,6 @@ float height_at(vec2 uv, float fallback_height) {
 
 int safe_texture_id(int layer) {
 	return clamp(layer, 0, TEX_COBBLE);
-}
-
-uint sanitize_control(uint raw_control) {
-	uint control = raw_control & CONTROL_MASK;
-	if (control == 0u) {
-		return 0u;
-	}
-
-	bool auto_shader = bool(control & 0x1u);
-	if (!auto_shader) {
-		uint base_layer = (control >> 27u) & 0x1Fu;
-		uint overlay_layer = (control >> 22u) & 0x1Fu;
-		if (base_layer > uint(TEX_COBBLE) || overlay_layer > uint(TEX_COBBLE)) {
-			return 0u;
-		}
-	}
-	return control;
-}
-
-uint control_at(vec2 uv) {
-	ivec3 index = get_index_coord(uv);
-	if (index.z < 0) {
-		return 0x1u;
-	}
-	return sanitize_control(texelFetch(_control_maps, index, 0).r);
 }
 
 float texture_scale_for_layer(int layer) {
@@ -306,7 +278,12 @@ void fragment() {
 	vec4 ddxy = vec4(dx.xz, dy.xz);
 	float region_mip = log2(max(length(dx.xz), length(dy.xz)) * _vertex_density);
 
-	uint control = control_at(floor(UV));
+	// Terrain3D control maps are integer textures on native renderers, but some
+	// WebGL/Compatibility paths bind them as normalized textures. Sampling them
+	// from a custom shader can trigger signed/unsigned sampler mismatches and
+	// make the whole terrain disappear. Keep web stable by using the same
+	// albedo texture array with procedural layer selection instead.
+	uint control = 0u;
 	if (control != 0u && bool((control >> 2u) & 0x1u)) {
 		discard;
 	}
