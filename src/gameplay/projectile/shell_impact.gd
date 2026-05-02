@@ -20,6 +20,10 @@ var _timer: float = 0.0
 var _pool_owner: Node = null
 var _pool_active: bool = true
 var _web_flash: MeshInstance3D = null
+## True while the deferred 2-frame prewarm timer is still in flight. Cleared
+## by play_at()/deactivate_for_pool() so a fallback-acquired impact during
+## the warmup window does not get hidden mid-effect.
+var _pool_warmup_pending: bool = false
 
 
 func set_pool_owner(pool_owner: Node) -> void:
@@ -34,6 +38,9 @@ func is_pool_idle() -> bool:
 
 
 func play_at(hit_point: Vector3, hit_normal: Vector3) -> void:
+	# Cancel any pending pool-warmup deactivate so a real impact acquired
+	# during the prewarm window stays visible through its effect.
+	_pool_warmup_pending = false
 	global_position = hit_point
 	if hit_normal.length_squared() > 0.001:
 		global_transform.basis = Basis(Quaternion(Vector3.UP, hit_normal.normalized()))
@@ -41,6 +48,7 @@ func play_at(hit_point: Vector3, hit_normal: Vector3) -> void:
 
 
 func deactivate_for_pool() -> void:
+	_pool_warmup_pending = false
 	_pool_active = false
 	visible = false
 	_timer = 0.0
@@ -57,9 +65,34 @@ func _ready() -> void:
 	if _pool_owner != null:
 		if _smoke != null:
 			_smoke.set_pool_owner(self)
-		deactivate_for_pool()
+		# Why: the additive BLEND_MODE_ADD + no_depth_test SphereMesh used for
+		# the web flash compiles its pipeline only on first draw. Hiding the
+		# pool entry immediately means the first real impact in match stalls
+		# the frame on inline shader compile. Force a brief visible render
+		# (web flash sphere on web, normal flash particles otherwise) for two
+		# frames, then deactivate.
+		_pool_active = true
+		_pool_warmup_pending = true
+		visible = true
+		set_process(false)
+		if OS.has_feature("web"):
+			_show_web_flash()
+		call_deferred("_finish_pool_warmup_render")
 	else:
 		_start_effect()
+
+
+func _finish_pool_warmup_render() -> void:
+	if not is_inside_tree() or not _pool_warmup_pending:
+		return
+	await get_tree().process_frame
+	if not is_inside_tree() or not _pool_warmup_pending:
+		return
+	await get_tree().process_frame
+	if not is_instance_valid(self) or not _pool_warmup_pending:
+		return
+	_pool_warmup_pending = false
+	deactivate_for_pool()
 
 
 func _process(delta: float) -> void:

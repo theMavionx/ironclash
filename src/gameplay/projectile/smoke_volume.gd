@@ -65,6 +65,9 @@ var _pool_active: bool = true
 var _age: float = 0.0
 var _web_vfx: WebShaderBillboardVFX = null
 var _web_stopped_looping: bool = false
+## True while the deferred 2-frame prewarm timer is in flight. Cleared by
+## play()/deactivate_for_pool() so a smoke acquired mid-prewarm stays alive.
+var _pool_warmup_pending: bool = false
 
 
 func set_pool_owner(pool_owner: Node) -> void:
@@ -76,6 +79,9 @@ func is_pool_idle() -> bool:
 
 
 func play() -> void:
+	# Cancel any pending pool-warmup deactivate so a smoke acquired during
+	# the prewarm window stays alive for its full effect.
+	_pool_warmup_pending = false
 	_age = 0.0
 	_web_stopped_looping = false
 	_pool_active = true
@@ -92,6 +98,7 @@ func play() -> void:
 
 
 func deactivate_for_pool() -> void:
+	_pool_warmup_pending = false
 	_pool_active = false
 	visible = false
 	_age = 0.0
@@ -133,7 +140,16 @@ func _ready() -> void:
 		emitting = false
 		_build_web_smoke_particles()
 		if _pool_owner != null:
-			deactivate_for_pool()
+			# Why: web billboard shader pipeline compiles on first DRAW. Hiding
+			# all cards in the same frame as add_child means first real impact
+			# stalls inline. Hold cards visible for two frames, then deactivate.
+			_pool_active = true
+			_pool_warmup_pending = true
+			visible = true
+			set_process(false)
+			if _web_vfx != null:
+				_web_vfx.restart(true)
+			call_deferred("_finish_pool_warmup_render")
 		else:
 			play()
 		return
@@ -146,9 +162,31 @@ func _ready() -> void:
 	visibility_aabb = AABB(Vector3(-2.0, -1.0, -2.0), Vector3(4.0, 8.0, 4.0))
 	amount_ratio = 0.0
 	if _pool_owner != null:
-		deactivate_for_pool()
+		# Same pattern for native renderers: emit briefly so the particle pass
+		# compiles before pool deactivate. Otherwise first real impact spawns
+		# the GPUParticles3D shader inline.
+		_pool_active = true
+		_pool_warmup_pending = true
+		visible = true
+		amount_ratio = 0.4
+		emitting = true
+		set_process(false)
+		call_deferred("_finish_pool_warmup_render")
 	else:
 		play()
+
+
+func _finish_pool_warmup_render() -> void:
+	if not is_inside_tree() or not _pool_warmup_pending:
+		return
+	await get_tree().process_frame
+	if not is_inside_tree() or not _pool_warmup_pending:
+		return
+	await get_tree().process_frame
+	if not is_instance_valid(self) or not _pool_warmup_pending:
+		return
+	_pool_warmup_pending = false
+	deactivate_for_pool()
 
 
 func _process(delta: float) -> void:

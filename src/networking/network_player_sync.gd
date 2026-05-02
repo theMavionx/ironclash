@@ -75,6 +75,33 @@ func _ready() -> void:
 	NetworkManager.damage_received.connect(_on_damage_received)
 	NetworkManager.death_received.connect(_on_death_received)
 	NetworkManager.respawn_received.connect(_on_respawn_received)
+	# Initial team-based spawn. The Main.tscn Player node has a hardcoded
+	# transform near world origin (used as a fallback for solo / pre-connect).
+	# Once the server welcome lands and assigns a team, teleport the player
+	# to that team's spawn point so red and blue start on opposite bases
+	# instead of stacking on top of each other at (0, 20, 0).
+	NetworkManager.connected_to_server.connect(_on_connected_to_server)
+	# Cover the case where the autoload connected before this scene loaded —
+	# if a team is already assigned, teleport immediately.
+	if NetworkManager.local_team != "":
+		_teleport_to_team_spawn()
+
+
+func _on_connected_to_server(_peer_id: int, _team: String) -> void:
+	_teleport_to_team_spawn()
+
+
+func _teleport_to_team_spawn() -> void:
+	if _player == null or not _player.has_method("respawn_at"):
+		return
+	if not _player.has_method("_resolve_team_spawn"):
+		return
+	# Use the player's own team-spawn resolution (it already considers
+	# NetworkManager.local_team and falls back to the default position).
+	var spawn_v: Variant = _player.call("_resolve_team_spawn")
+	if not (spawn_v is Vector3):
+		return
+	_player.call("respawn_at", spawn_v, 0.0)
 
 
 func _has_network_manager() -> bool:
@@ -183,6 +210,42 @@ func _on_death_received(payload: Dictionary) -> void:
 		return
 	if _player != null and _player.has_method("set_active"):
 		_player.call("set_active", false)
+	# Killcam: hand the player's view to the killer's avatar while they wait
+	# out the respawn timer. exit_spectator() is called from respawn_at()
+	# when the timer elapses (or when the server sends a respawn message).
+	var killer_peer: int = int(payload.get("killer", -1))
+	if killer_peer < 0 or killer_peer == NetworkManager.local_peer_id:
+		return
+	var killer_node: Node3D = _resolve_remote_player_node(killer_peer)
+	if killer_node != null and _player != null and _player.has_method("enter_spectator"):
+		_player.call("enter_spectator", killer_node)
+
+
+## Look up the killer's BODY (CharacterBody3D) for [param peer_id]. Why the
+## body and not the RemotePlayer root: the root Node3D is parented to
+## WorldReplicator at world origin and never moves — only the child Body's
+## global_position is updated each snapshot. Pointing the killcam at the
+## root parks it at (0,0,0) while the actual killer is somewhere else on
+## the map. Returns null if the killer has disconnected.
+func _resolve_remote_player_node(peer_id: int) -> Node3D:
+	var tree: SceneTree = get_tree()
+	if tree == null:
+		return null
+	var root: Node = tree.current_scene
+	if root == null:
+		return null
+	var replicator: Node = root.find_child("WorldReplicator", true, false)
+	if replicator == null or not "_remote_players" in replicator:
+		return null
+	var remote_players: Dictionary = replicator.get("_remote_players")
+	var rp: Node3D = remote_players.get(peer_id) as Node3D
+	if rp == null:
+		return null
+	# Prefer the Body subnode (it's the one that follows snapshots). Fall back
+	# to the root if the scene shape ever changes — better an off-target cam
+	# than a null-ref crash.
+	var body: Node3D = rp.get_node_or_null("Body") as Node3D
+	return body if body != null else rp
 
 
 func _on_respawn_received(payload: Dictionary) -> void:

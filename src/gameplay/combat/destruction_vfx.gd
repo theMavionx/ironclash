@@ -390,14 +390,15 @@ static func spawn_turret_debris(
 	# refs and knows the donor vehicle's mesh hierarchy.
 
 	# Enable ground collision after 0.3s — debris is well clear of hull by then.
-	var enable_col_timer: SceneTreeTimer = world_root.get_tree().create_timer(0.3)
-	enable_col_timer.timeout.connect(
-		_set_instance_property.bind(debris.get_instance_id(), &"collision_mask", 0b001)
-	)
+	if world_root.is_inside_tree():
+		var enable_col_timer: SceneTreeTimer = world_root.get_tree().create_timer(0.3)
+		enable_col_timer.timeout.connect(
+			_set_instance_property.bind(debris.get_instance_id(), &"collision_mask", 0b001)
+		)
 
 	# self_destruct_after <= 0 → debris stays forever (wreck persists).
 	# Positive value schedules a queue_free after that many seconds.
-	if self_destruct_after > 0.0:
+	if self_destruct_after > 0.0 and world_root.is_inside_tree():
 		var timer: SceneTreeTimer = world_root.get_tree().create_timer(self_destruct_after)
 		timer.timeout.connect(_queue_free_instance.bind(debris.get_instance_id()))
 
@@ -1550,9 +1551,10 @@ static func _spawn_explosion_fireball(world_root: Node, position_world: Vector3)
 	var burst: Node3D = _build_explosion_fireball()
 	world_root.add_child(burst)
 	burst.global_position = position_world
-	world_root.get_tree().create_timer(0.9).timeout.connect(
-		_queue_free_instance.bind(burst.get_instance_id())
-	)
+	if world_root.is_inside_tree():
+		world_root.get_tree().create_timer(0.9).timeout.connect(
+			_queue_free_instance.bind(burst.get_instance_id())
+		)
 
 
 static func _build_explosion_fireball() -> Node3D:
@@ -1863,7 +1865,7 @@ static func spawn_static_mesh_debris(
 	if source_mesh != null:
 		mesh_copy.global_transform = source_mesh.global_transform
 	_launch_debris(body, upward_vel, h_drift_max, tumble_max)
-	if lifetime > 0.0:
+	if lifetime > 0.0 and world_root.is_inside_tree():
 		world_root.get_tree().create_timer(lifetime).timeout.connect(
 			_queue_free_instance.bind(body.get_instance_id())
 		)
@@ -1921,7 +1923,7 @@ static func spawn_subtree_debris(
 	if collision_exception != null:
 		body.add_collision_exception_with(collision_exception)
 	_launch_debris(body, upward_vel, h_drift_max, tumble_max)
-	if lifetime > 0.0:
+	if lifetime > 0.0 and world_root.is_inside_tree():
 		world_root.get_tree().create_timer(lifetime).timeout.connect(
 			_queue_free_instance.bind(body.get_instance_id())
 		)
@@ -2023,7 +2025,8 @@ static func _launch_debris(
 	# Defer ground-collision enable so the body escapes the spawn hull first.
 	# is_instance_valid guard: body may already be freed if the scene is torn
 	# down during the 0.3 s window (e.g. scene reload mid-game).
-	var tree: SceneTree = body.get_tree()
-	tree.create_timer(0.3).timeout.connect(
-		_set_instance_property.bind(body.get_instance_id(), &"collision_mask", 0b001)
-	)
+	if body.is_inside_tree():
+		var tree: SceneTree = body.get_tree()
+		tree.create_timer(0.3).timeout.connect(
+			_set_instance_property.bind(body.get_instance_id(), &"collision_mask", 0b001)
+		)

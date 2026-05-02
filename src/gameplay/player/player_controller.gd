@@ -88,6 +88,32 @@ signal active_changed(is_active: bool)
 ## SpringArm3D on the pivot then applies the shoulder X-offset and arm length.
 @export var camera_pivot_height: float = 1.5
 
+@export_group("Spectator")
+## External ChaseCamera (the same one used for tank/heli third-person view).
+## When the player dies, we point this camera at the killer and turn it on
+## until the local respawn fires. Leave empty in solo / non-networked builds.
+@export_node_path("Camera3D") var spectator_camera_path: NodePath
+## Killcam offset in the killer's yaw-aligned local frame
+## (positive X = behind, positive Y = above, Z = sideways). The default sits
+## the camera high up so it usually clears walls / interior ceilings instead
+## of poking through textures while watching infantry duck behind cover.
+@export var spectator_offset: Vector3 = Vector3(3.5, 11.0, 0.0)
+@export var spectator_look_offset: Vector3 = Vector3(0.0, 0.5, 0.0)
+
+@export_group("Respawn")
+## Why: server-side respawn message may not arrive (solo play, server bug,
+## packet loss). This local timer guarantees the player gets back to a
+## playable state at their team base instead of staying dead forever.
+## If the server DOES send a "respawn", network_player_sync routes it to
+## respawn_at(), which cancels this timer so we don't teleport twice.
+@export var respawn_delay_seconds: float = 5.0
+## Spawn position for "blue" team. Default sits next to base 1 vehicles.
+@export var respawn_position_blue: Vector3 = Vector3(5.0, 11.0, 25.0)
+## Spawn position for "red" team. Default sits next to base 2 vehicles.
+@export var respawn_position_red: Vector3 = Vector3(-12.0, 11.0, -82.0)
+## Fallback when no team is assigned (solo play / pre-connect / unknown team).
+@export var respawn_position_default: Vector3 = Vector3(0.0, 11.0, 0.0)
+
 @export_group("Strafe lean")
 ## Max roll angle (degrees) applied to the body when strafing A/D. Adds
 ## visual weight to sideways movement without rotating the body or camera.
@@ -123,6 +149,27 @@ var _sprint_locked_out: bool = false
 ## Dev-only: double-tap-Tab fast-travel toggle.
 var _dev_speed_boost_active: bool = false
 var _last_tab_press_msec: int = -1
+
+## Seconds remaining until local fallback respawn. -1 = no respawn pending.
+## Set by _on_self_destroyed(), cleared by respawn_at() when the server beats
+## us to it. Ticked in _process so it runs while _physics_process is suspended
+## (which it is while the player is in the dead/disabled state).
+var _respawn_timer: float = -1.0
+
+## True when the player is "inside" a tank or helicopter — body is hidden
+## and its collision is suppressed so projectiles/AOE pass through. Drone
+## piloting does NOT set this (player stays visible at their location while
+## remotely controlling the drone).
+var _embarked: bool = false
+## Body collision layer/mask captured in _ready so set_embarked(false) can
+## restore the originals (instead of hardcoding 2/1).
+var _saved_collision_layer: int = 0
+var _saved_collision_mask: int = 0
+
+## ChaseCamera used as the killcam target while we wait for respawn. Resolved
+## from spectator_camera_path in _ready.
+var _spectator_camera: Camera3D = null
+var _spectator_target: Node3D = null
 
 @onready var _body: CharacterBody3D = $Body
 @onready var _health: HealthComponent = $Body/HealthComponent
@@ -201,6 +248,15 @@ func set_active(is_active: bool) -> void:
 
 ## Respawn at a world position facing a yaw (radians). Called by Respawn system.
 func respawn_at(spawn_position: Vector3, facing_yaw: float = 0.0) -> void:
+	# Cancel pending local fallback so a server-driven respawn arriving while
+	# the timer is still ticking doesn't cause a second teleport.
+	_respawn_timer = -1.0
+	# Always exit "embarked" state on respawn — otherwise a player who died
+	# while inside a vehicle would respawn invisible / non-collidable.
+	set_embarked(false)
+	# Tear down killcam (if any) so the player's own first-person camera
+	# takes over the moment they're alive again.
+	exit_spectator()
 	if _body != null:
 		_body.global_position = spawn_position
 		_body.velocity = Vector3.ZERO
@@ -232,9 +288,69 @@ func _ready() -> void:
 		_health.destroyed.connect(_on_self_destroyed)
 	if _body != null:
 		_body.rotation.y = _yaw
+		_saved_collision_layer = _body.collision_layer
+		_saved_collision_mask = _body.collision_mask
+	if not spectator_camera_path.is_empty():
+		_spectator_camera = get_node_or_null(spectator_camera_path) as Camera3D
 	# Initial camera-pivot sync so the first frame is not snapped to world origin.
 	_sync_camera_pivot()
 	stamina_changed.emit(_stamina, stamina_max)
+
+
+## Switch the local view to a "killcam" that watches [param target] until
+## respawn. Called by network_player_sync when a death message arrives that
+## identifies the killer. Safe to call with target=null (no-op).
+func enter_spectator(target: Node3D) -> void:
+	if target == null or not is_instance_valid(target):
+		return
+	_spectator_target = target
+	if _camera != null:
+		_camera.current = false
+	if _spectator_camera != null and _spectator_camera.has_method("rebind"):
+		var path: NodePath = target.get_path()
+		# Pass pitch_look_scale = 0 so the killer's mouse pitch doesn't drag
+		# the killcam target up/down — we want a stable overhead view, not
+		# one that swings with the killer's vertical aim.
+		_spectator_camera.call(
+			"rebind",
+			path,
+			path,
+			spectator_offset,
+			spectator_look_offset,
+			true,
+			false,
+			1.0,
+			0.0
+		)
+		_spectator_camera.current = true
+
+
+## Tear down spectator view. Called from respawn_at() so the player's own
+## camera takes over again. Idempotent.
+func exit_spectator() -> void:
+	_spectator_target = null
+	if _spectator_camera != null:
+		_spectator_camera.current = false
+
+
+## Toggle "in vehicle" state. When true the player body becomes invisible and
+## stops colliding with anything (so bullets/AOE don't reach the soldier hiding
+## inside a tank/heli). The controller itself is also disabled — but use
+## [method set_active] for that, since the drone path needs set_active(false)
+## without set_embarked(true).
+func set_embarked(embarked: bool) -> void:
+	if _embarked == embarked:
+		return
+	_embarked = embarked
+	visible = not embarked
+	if _body != null:
+		if embarked:
+			_body.collision_layer = 0
+			_body.collision_mask = 0
+			_body.velocity = Vector3.ZERO
+		else:
+			_body.collision_layer = _saved_collision_layer
+			_body.collision_mask = _saved_collision_mask
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -521,3 +637,35 @@ func _get_move_input() -> Vector2:
 
 func _on_self_destroyed(_by_source: int) -> void:
 	set_active(false)
+	# Arm the local fallback respawn. The server-authoritative path
+	# (network_player_sync._on_respawn_received -> respawn_at) cancels this
+	# timer if it lands first; otherwise we teleport to the team base after
+	# respawn_delay_seconds so the player isn't stuck dead.
+	_respawn_timer = respawn_delay_seconds
+
+
+func _process(delta: float) -> void:
+	if _respawn_timer < 0.0:
+		return
+	_respawn_timer -= delta
+	if _respawn_timer <= 0.0:
+		_respawn_timer = -1.0
+		_do_local_respawn()
+
+
+func _do_local_respawn() -> void:
+	respawn_at(_resolve_team_spawn(), _yaw)
+
+
+## Resolve the spawn position for this player's team. NetworkManager populates
+## local_team on connect ("blue" / "red"). Falls back to respawn_position_default
+## for solo play or before the welcome message lands.
+func _resolve_team_spawn() -> Vector3:
+	var nm: Node = get_node_or_null(^"/root/NetworkManager")
+	if nm != null and "local_team" in nm:
+		var team: String = String(nm.get("local_team"))
+		if team == "blue":
+			return respawn_position_blue
+		if team == "red":
+			return respawn_position_red
+	return respawn_position_default

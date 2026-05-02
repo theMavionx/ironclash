@@ -17,7 +17,7 @@ extends RefCounted
 ##   If pools are null or unset the system falls back to the old allocating
 ##   path with a push_warning — the game never silently breaks.
 
-const _FLASH_TEXTURE_PATH: String = "res://Model/Player/FootageCrate-Four_Point_Muuzzle_Flash_With_Shell_Front/FootageCrate-Four_Point_Muuzzle_Flash_With_Shell_Front-00001.png"
+const _FLASH_TEXTURE_PATH: String = "res://assets/textures/muzzle_flash/ak_muzzle_flash.png"
 const _TRACER_SHADER_PATH: String = "res://src/vfx/tracer_bullet.gdshader"
 
 static var _flash_texture: Texture2D = null
@@ -175,7 +175,10 @@ static func prewarm(world_root: Node) -> void:
 		dummy_fallback.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		dummy_fallback.visible = true
 		world_root.add_child(dummy_fallback)
-		dummy_fallback.get_tree().create_timer(0.25).timeout.connect(dummy_fallback.queue_free)
+		if dummy_fallback.is_inside_tree():
+			dummy_fallback.get_tree().create_timer(0.25).timeout.connect(dummy_fallback.queue_free)
+		else:
+			dummy_fallback.queue_free()
 	# Shader pipeline (only if it built successfully).
 	if _tracer_shader_ready and _tracer_shader_material != null and _tracer_quad_mesh != null:
 		var dummy_shader: MeshInstance3D = MeshInstance3D.new()
@@ -185,7 +188,10 @@ static func prewarm(world_root: Node) -> void:
 		dummy_shader.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		dummy_shader.visible = true
 		world_root.add_child(dummy_shader)
-		dummy_shader.get_tree().create_timer(0.25).timeout.connect(dummy_shader.queue_free)
+		if dummy_shader.is_inside_tree():
+			dummy_shader.get_tree().create_timer(0.25).timeout.connect(dummy_shader.queue_free)
+		else:
+			dummy_shader.queue_free()
 
 
 ## Wire pool references. Call once from WeaponController._ready(). This loads
@@ -444,8 +450,11 @@ static func _spawn_muzzle_flash_at_world(world_root: Node, world_pos: Vector3) -
 	sprite.rotation.z = randf() * TAU
 	parent.add_child(sprite)
 	sprite.global_position = world_pos
-	var done_t: SceneTreeTimer = parent.get_tree().create_timer(0.05)
-	done_t.timeout.connect(sprite.queue_free)
+	if parent.is_inside_tree():
+		var done_t: SceneTreeTimer = parent.get_tree().create_timer(0.05)
+		done_t.timeout.connect(sprite.queue_free)
+	else:
+		sprite.queue_free()
 
 
 ## Pool-bypassed muzzle flash spawn — always allocates a fresh Sprite3D as a
@@ -462,8 +471,11 @@ static func _spawn_muzzle_flash_at_node(parent: Node3D) -> void:
 	sprite.rotation.z = randf() * TAU
 	parent.add_child(sprite)
 	sprite.position = Vector3.ZERO
-	var done_t: SceneTreeTimer = parent.get_tree().create_timer(0.05)
-	done_t.timeout.connect(sprite.queue_free)
+	if parent.is_inside_tree():
+		var done_t: SceneTreeTimer = parent.get_tree().create_timer(0.05)
+		done_t.timeout.connect(sprite.queue_free)
+	else:
+		sprite.queue_free()
 
 
 ## Spawn flash. Routes through pool if available; allocates otherwise.
@@ -494,8 +506,11 @@ static func _spawn_muzzle_flash(parent: Node3D) -> void:
 	sprite.rotation.z = randf() * TAU
 	parent.add_child(sprite)
 	sprite.position = Vector3.ZERO
-	var done_t: SceneTreeTimer = parent.get_tree().create_timer(0.05)
-	done_t.timeout.connect(sprite.queue_free)
+	if parent.is_inside_tree():
+		var done_t: SceneTreeTimer = parent.get_tree().create_timer(0.05)
+		done_t.timeout.connect(sprite.queue_free)
+	else:
+		sprite.queue_free()
 
 
 ## Spawn a thin round glowing tracer that travels from muzzle to hit point.

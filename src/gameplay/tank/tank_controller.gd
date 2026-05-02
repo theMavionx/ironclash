@@ -3,6 +3,13 @@ extends CharacterBody3D
 
 const _VISUAL_CONVEX_COLLIDERS := preload("res://src/gameplay/vehicle/visual_convex_colliders.gd")
 const _VEHICLE_DUST_VFX := preload("res://src/gameplay/vfx/vehicle_dust_vfx.gd")
+## Why: web/Compatibility renderer compiles shaders on first DRAW. Loading via
+## load() in _ready() pulled the shader off disk every spawn AND deferred its
+## first compile to the first time the tread MeshInstance3D entered the
+## warmup/play camera frustum — first tank-camera rotation in match stalled
+## the frame while the pipeline compiled inline. preload() pins it at module
+## load and lets the warmup compile the pipeline by drawing it once.
+const _TREAD_SHADER: Shader = preload("res://src/gameplay/tank/tread_scroll.gdshader")
 
 ## Basic tank drive controller.
 ## Reads forward/turn input, moves the body, rotates wheels, scrolls tread UVs,
@@ -119,9 +126,11 @@ signal fired_with_aim(spawn_origin: Vector3, aim_dir: Vector3)
 ## Extra world-space offset applied to the muzzle flash only (not the shell).
 ## Use to nudge the flash down/up to the visual barrel centreline.
 @export var muzzle_flash_extra_offset: Vector3 = Vector3(0.0, -0.6, 0.0)
-## Position for the muzzle flash in BARREL-local space. Keep closer to the
-## barrel bone than the shell spawn (shell flies out, flash stays at the muzzle).
-@export var muzzle_flash_local_offset: Vector3 = Vector3(0.0, 3.6, 0.0)
+## Position for the muzzle flash in BARREL-local space. Tuned for the scaled
+## Main.tscn tank so the flash sits on the visible muzzle tip instead of the
+## middle of the barrel. Y is along the barrel (forward), X is sideways
+## (positive = right from gunner's POV).
+@export var muzzle_flash_local_offset: Vector3 = Vector3(-0.06, 5.65, 0.0)
 ## Cooldown between shots in seconds.
 @export var fire_cooldown: float = 0.4
 ## Muzzle position in the BARREL BONE's local frame. For this model the bone's
@@ -183,10 +192,12 @@ signal fired_with_aim(spawn_origin: Vector3, aim_dir: Vector3)
 ## Build runtime convex mesh colliders from the visual mesh instead of using
 ## the old broad fallback box authored in the scene.
 @export var rebuild_collision_from_visual_mesh: bool = true
-## WebGL builds should not spend startup frames generating convex hulls from
-## GLB meshes. The authored fallback box scales with the vehicle and is enough
-## for hit/drive collision in browser.
-@export var rebuild_collision_on_web: bool = false
+## Was false to skip startup convex-hull generation on web, but the authored
+## fallback box was significantly larger than the visible mesh — projectiles
+## and players hit "phantom" volume around the tank. The convex rebuild runs
+## once in _ready (post-warmup), is cheap on this mesh count, and yields
+## colliders that hug the actual hull/turret.
+@export var rebuild_collision_on_web: bool = true
 @export var collision_mesh_min_size: Vector3 = Vector3(0.12, 0.10, 0.08)
 @export var collision_mesh_max_shapes: int = 8
 @export var collision_mesh_ignore_names: PackedStringArray = PackedStringArray([
@@ -261,6 +272,33 @@ static var _tread_decal_texture: Texture2D = null
 var _tread_dust_left: CPUParticles3D = null
 var _tread_dust_right: CPUParticles3D = null
 var _last_dust_pos: Vector3 = Vector3.ZERO
+
+# ---------------------------------------------------------------------------
+# Cached per-frame allocations
+# ---------------------------------------------------------------------------
+# Why: WASM/web has a single-threaded GC with no generational collection.
+# Per-frame Array/Object allocations inside _physics_process accumulate and
+# cause random micro-stutters when collected. Pre-allocating these once in
+# _ready() and mutating in place eliminates the GC pressure.
+var _ray_query_dust: PhysicsRayQueryParameters3D = null
+var _ray_query_ground: PhysicsRayQueryParameters3D = null
+var _ray_query_slope: PhysicsRayQueryParameters3D = null
+var _exclude_self: Array[RID] = []
+var _slope_offsets: Array[Vector3] = [Vector3.ZERO, Vector3.ZERO, Vector3.ZERO, Vector3.ZERO]
+var _slope_hit_positions: Array[Vector3] = []
+var _ground_samples: Array[Vector3] = [Vector3.ZERO, Vector3.ZERO, Vector3.ZERO, Vector3.ZERO, Vector3.ZERO]
+
+## Total muzzle flash offset in BARREL-BONE-LOCAL space, captured once at
+## _ready. Combines [member muzzle_flash_local_offset] (already bone-local)
+## with the bone-local equivalent of the WORLD-space
+## [member muzzle_flash_extra_offset], converted via the barrel's rest-pose
+## basis when the tank is in its spawn orientation. Why: recomputing this
+## conversion every shot using the CURRENT skeleton.global_transform is
+## algebraically equivalent to applying the world offset directly — which
+## means the offset stays world-axis-aligned and slides off the muzzle as
+## the turret pitches / yaws away from the spawn pose. Capturing once gives
+## us a true bone-local offset that follows the barrel through any rotation.
+var _flash_bone_local_total: Vector3 = Vector3.ZERO
 
 # ---------------------------------------------------------------------------
 # Public methods
@@ -382,10 +420,29 @@ func _ready() -> void:
 	_last_tread_pos = global_position
 	if _tread_decal_texture == null:
 		_tread_decal_texture = _build_white_texture()
+	_init_cached_physics_queries()
 	# Defer gauge resolution so the Skeleton3D has already pushed bone transforms
 	# into bone-driven wheel meshes — otherwise their global_position would still
 	# be at the tank origin and auto-derive returns ~0.
 	call_deferred("_resolve_tread_gauge")
+
+
+## Allocate per-frame physics query objects + exclude RID array once. They are
+## mutated in place by hot _physics_process paths instead of being reallocated.
+func _init_cached_physics_queries() -> void:
+	_exclude_self = [get_rid()]
+	_ray_query_dust = PhysicsRayQueryParameters3D.new()
+	_ray_query_dust.collide_with_areas = false
+	_ray_query_dust.collision_mask = slope_probe_collision_mask
+	_ray_query_dust.exclude = _exclude_self
+	_ray_query_ground = PhysicsRayQueryParameters3D.new()
+	_ray_query_ground.collide_with_areas = false
+	_ray_query_ground.collision_mask = slope_probe_collision_mask
+	_ray_query_ground.exclude = _exclude_self
+	_ray_query_slope = PhysicsRayQueryParameters3D.new()
+	_ray_query_slope.collide_with_areas = false
+	_ray_query_slope.collision_mask = slope_probe_collision_mask
+	_ray_query_slope.exclude = _exclude_self
 
 
 func _apply_slope_contact_settings() -> void:
@@ -481,6 +538,8 @@ func _spawn_cook_off_debris() -> void:
 func _schedule_wreck_hide() -> void:
 	if wreck_burn_seconds <= 0.0:
 		return
+	if not is_inside_tree():
+		return
 	get_tree().create_timer(wreck_burn_seconds).timeout.connect(
 		_hide_destroyed_wreck.bind(_destruction_generation)
 	)
@@ -531,10 +590,17 @@ func _unhandled_input(event: InputEvent) -> void:
 ## driving this tank (our `_physics_process` is suspended in that case).
 ## Tread marks are position-driven, so calling `_update_tread_marks` while
 ## VehicleSync lerps the body works without any extra plumbing.
+##
+## When locally driven, also re-applies turret/barrel bone aim every render
+## frame so mouse motion reaches the visible turret immediately instead of
+## waiting for the next physics tick. _physics_process still calls
+## _apply_aim_pose() so the muzzle pose used by _try_fire is fresh.
 func _process(_delta: float) -> void:
-	if _active or _is_destroyed:
-		if _is_destroyed:
-			_set_tread_dust_emitting(false)
+	if _active and not _is_destroyed:
+		_apply_aim_pose()
+		return
+	if _is_destroyed:
+		_set_tread_dust_emitting(false)
 		return
 	_update_tread_marks()
 	_update_tread_dust()
@@ -618,7 +684,27 @@ func _capture_turret_and_barrel() -> void:
 			push_warning("TankController: barrel bone '%s' not found" % barrel_bone_name)
 	else:
 		push_warning("TankController: skeleton not found at %s" % skeleton_path)
+	_capture_flash_bone_local_offset()
 	_apply_aim_pose()
+
+
+## Capture muzzle_flash_extra_offset (authored as world-space) into the
+## barrel bone's local frame, ONCE, while the tank is at its spawn pose.
+## This freezes the offset as a true bone-local correction so it follows
+## the bone through every later rotation (turret yaw, barrel pitch, hull
+## yaw / slope alignment) instead of staying world-axis-aligned.
+func _capture_flash_bone_local_offset() -> void:
+	if _skeleton == null or _barrel_bone == -1:
+		_flash_bone_local_total = muzzle_flash_local_offset
+		return
+	var rest_world: Transform3D = _skeleton.global_transform * _skeleton.get_bone_global_rest(_barrel_bone)
+	var scaled_world_offset: Vector3 = Vector3(
+		muzzle_flash_extra_offset.x * _body_scale.x,
+		muzzle_flash_extra_offset.y * _body_scale.y,
+		muzzle_flash_extra_offset.z * _body_scale.z
+	)
+	var bone_local_extra: Vector3 = rest_world.basis.inverse() * scaled_world_offset
+	_flash_bone_local_total = muzzle_flash_local_offset + bone_local_extra
 
 
 func _apply_aim_pose() -> void:
@@ -648,12 +734,11 @@ func _collect_wheels() -> void:
 
 
 func _setup_tread_materials() -> void:
-	var shader: Shader = load("res://src/gameplay/tank/tread_scroll.gdshader") as Shader
-	if shader == null:
+	if _TREAD_SHADER == null:
 		push_warning("TankController: tread shader missing")
 		return
-	_tread_material_left = _build_tread_material(shader)
-	_tread_material_right = _build_tread_material(shader)
+	_tread_material_left = _build_tread_material(_TREAD_SHADER)
+	_tread_material_right = _build_tread_material(_TREAD_SHADER)
 	_apply_material_to_first_mesh_under("TreadLeft", _tread_material_left)
 	_apply_material_to_first_mesh_under("TreadRight", _tread_material_right)
 
@@ -699,18 +784,11 @@ func _dust_ground_position(world_pos: Vector3) -> Vector3:
 	if world == null:
 		return world_pos
 	var space: PhysicsDirectSpaceState3D = world.direct_space_state
-	if space == null:
+	if space == null or _ray_query_dust == null:
 		return world_pos
-	var from_pos: Vector3 = world_pos + Vector3.UP * slope_probe_up
-	var to_pos: Vector3 = world_pos - Vector3.UP * slope_probe_down
-	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
-		from_pos,
-		to_pos,
-		slope_probe_collision_mask
-	)
-	query.collide_with_areas = false
-	query.exclude = [get_rid()]
-	var hit: Dictionary = space.intersect_ray(query)
+	_ray_query_dust.from = world_pos + Vector3.UP * slope_probe_up
+	_ray_query_dust.to = world_pos - Vector3.UP * slope_probe_down
+	var hit: Dictionary = space.intersect_ray(_ray_query_dust)
 	if hit.is_empty():
 		return world_pos
 	var hit_pos: Vector3 = hit.get("position", world_pos)
@@ -753,15 +831,14 @@ func _tank_ground_height() -> float:
 	else:
 		right = right.normalized()
 
-	var samples: Array[Vector3] = [
-		global_position,
-		global_position + forward * tank_ground_guard_forward_extent - right * tank_ground_guard_side_extent,
-		global_position + forward * tank_ground_guard_forward_extent + right * tank_ground_guard_side_extent,
-		global_position - forward * tank_ground_guard_forward_extent - right * tank_ground_guard_side_extent,
-		global_position - forward * tank_ground_guard_forward_extent + right * tank_ground_guard_side_extent,
-	]
+	# Mutate the cached array in place to avoid per-physics-frame allocations.
+	_ground_samples[0] = global_position
+	_ground_samples[1] = global_position + forward * tank_ground_guard_forward_extent - right * tank_ground_guard_side_extent
+	_ground_samples[2] = global_position + forward * tank_ground_guard_forward_extent + right * tank_ground_guard_side_extent
+	_ground_samples[3] = global_position - forward * tank_ground_guard_forward_extent - right * tank_ground_guard_side_extent
+	_ground_samples[4] = global_position - forward * tank_ground_guard_forward_extent + right * tank_ground_guard_side_extent
 	var best_y: float = NAN
-	for sample: Vector3 in samples:
+	for sample: Vector3 in _ground_samples:
 		var sample_y: float = _ground_height_at(sample)
 		if is_nan(sample_y):
 			continue
@@ -786,16 +863,11 @@ func _ground_probe_hit(pos: Vector3) -> Dictionary:
 	if world == null:
 		return {}
 	var space: PhysicsDirectSpaceState3D = world.direct_space_state
-	if space == null:
+	if space == null or _ray_query_ground == null:
 		return {}
-	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
-		pos + Vector3.UP * tank_ground_probe_up,
-		pos - Vector3.UP * tank_ground_probe_down,
-		slope_probe_collision_mask
-	)
-	query.collide_with_areas = false
-	query.exclude = [get_rid()]
-	return space.intersect_ray(query)
+	_ray_query_ground.from = pos + Vector3.UP * tank_ground_probe_up
+	_ray_query_ground.to = pos - Vector3.UP * tank_ground_probe_down
+	return space.intersect_ray(_ray_query_ground)
 
 
 func _terrain_height_at(pos: Vector3) -> float:
@@ -957,15 +1029,32 @@ func _try_fire() -> void:
 	# along -Z, so they burst in the firing direction). Transform set BEFORE
 	# add_child so _ready sees correct pose and particle direction is correct.
 	if muzzle_flash_scene:
-		# Flash position = closer to barrel than shell spawn.
-		var flash_pos: Vector3 = barrel_world * muzzle_flash_local_offset + muzzle_flash_extra_offset
+		# Use the bone-local offset captured at spawn. See
+		# _capture_flash_bone_local_offset() for why we don't recompute this
+		# every shot from the current skeleton.global_transform — doing so
+		# was algebraically equivalent to keeping the offset world-axis-
+		# aligned, so the flash drifted off the muzzle whenever the turret
+		# pitched / yawed away from spawn pose.
+		var flash_pos: Vector3 = barrel_world * _flash_bone_local_total
 		var flash_xform: Transform3D = Transform3D(Basis.IDENTITY, flash_pos)
 		flash_xform = flash_xform.looking_at(flash_pos + aim_dir, up_ref)
-		if hub == null or hub.spawn_world_muzzle_flash(flash_xform, muzzle_flash_scene) == null:
+		var pooled_flash: MuzzleFlash = null
+		if hub != null:
+			pooled_flash = hub.spawn_world_muzzle_flash(flash_xform, muzzle_flash_scene)
+		if pooled_flash != null:
+			# Glue the pooled flash to the barrel bone for its full lifetime so
+			# subsequent turret motion drags the flash along instead of leaving
+			# it behind in world space.
+			pooled_flash.set_follow_target(_skeleton, _barrel_bone, _flash_bone_local_total)
+		else:
 			var flash: Node3D = muzzle_flash_scene.instantiate() as Node3D
 			if flash != null:
-				flash.transform = flash_xform
 				parent.add_child(flash)
+				if flash is MuzzleFlash:
+					(flash as MuzzleFlash).play_at(flash_xform)
+					(flash as MuzzleFlash).set_follow_target(_skeleton, _barrel_bone, _flash_bone_local_total)
+				else:
+					flash.global_transform = flash_xform
 	fired.emit()
 	fired_with_aim.emit(spawn_origin, aim_dir)
 
@@ -1022,7 +1111,7 @@ func _sample_tread_ground_up() -> Vector3:
 	if world == null:
 		return Vector3.UP
 	var space: PhysicsDirectSpaceState3D = world.direct_space_state
-	if space == null:
+	if space == null or _ray_query_slope == null:
 		return Vector3.UP
 
 	var forward: Vector3 = _get_flat_forward_from_yaw()
@@ -1033,49 +1122,41 @@ func _sample_tread_ground_up() -> Vector3:
 		right = right.normalized()
 
 	var base: Vector3 = global_position
-	var offsets: Array[Vector3] = [
-		forward * slope_probe_forward_extent - right * slope_probe_side_extent,
-		forward * slope_probe_forward_extent + right * slope_probe_side_extent,
-		-forward * slope_probe_forward_extent - right * slope_probe_side_extent,
-		-forward * slope_probe_forward_extent + right * slope_probe_side_extent,
-	]
-	var hits: Array[Dictionary] = []
-	var hit_positions: Array[Vector3] = []
+	# Mutate cached array in place — avoids 4 Vector3 + 1 Array allocation/frame.
+	_slope_offsets[0] = forward * slope_probe_forward_extent - right * slope_probe_side_extent
+	_slope_offsets[1] = forward * slope_probe_forward_extent + right * slope_probe_side_extent
+	_slope_offsets[2] = -forward * slope_probe_forward_extent - right * slope_probe_side_extent
+	_slope_offsets[3] = -forward * slope_probe_forward_extent + right * slope_probe_side_extent
+	_slope_hit_positions.clear()
+	var hit_count: int = 0
 	var normal_sum: Vector3 = Vector3.ZERO
-	for offset: Vector3 in offsets:
-		var from_pos: Vector3 = base + offset + Vector3.UP * slope_probe_up
-		var to_pos: Vector3 = base + offset - Vector3.UP * slope_probe_down
-		var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
-			from_pos,
-			to_pos,
-			slope_probe_collision_mask
-		)
-		query.collide_with_areas = false
-		query.exclude = [get_rid()]
-		var hit: Dictionary = space.intersect_ray(query)
+	for offset: Vector3 in _slope_offsets:
+		_ray_query_slope.from = base + offset + Vector3.UP * slope_probe_up
+		_ray_query_slope.to = base + offset - Vector3.UP * slope_probe_down
+		var hit: Dictionary = space.intersect_ray(_ray_query_slope)
 		if hit.is_empty():
 			continue
-		hits.append(hit)
-		hit_positions.append(hit.get("position", base))
+		hit_count += 1
+		_slope_hit_positions.append(hit.get("position", base))
 		normal_sum += (hit.get("normal", Vector3.UP) as Vector3)
 
-	if hits.is_empty():
+	if hit_count == 0:
 		return Vector3.UP
 
 	var plane_up: Vector3 = Vector3.ZERO
-	if hits.size() >= 4:
-		var front_left: Vector3 = hit_positions[0]
-		var front_right: Vector3 = hit_positions[1]
-		var rear_left: Vector3 = hit_positions[2]
-		var rear_right: Vector3 = hit_positions[3]
+	if hit_count >= 4:
+		var front_left: Vector3 = _slope_hit_positions[0]
+		var front_right: Vector3 = _slope_hit_positions[1]
+		var rear_left: Vector3 = _slope_hit_positions[2]
+		var rear_right: Vector3 = _slope_hit_positions[3]
 		var across: Vector3 = ((front_right + rear_right) * 0.5) - ((front_left + rear_left) * 0.5)
 		var along: Vector3 = ((front_left + front_right) * 0.5) - ((rear_left + rear_right) * 0.5)
 		if across.length_squared() > 0.0001 and along.length_squared() > 0.0001:
 			plane_up = across.cross(along).normalized()
 			if plane_up.dot(Vector3.UP) < 0.0:
 				plane_up = -plane_up
-	elif hit_positions.size() >= 3:
-		plane_up = _plane_up_from_points(hit_positions)
+	elif _slope_hit_positions.size() >= 3:
+		plane_up = _plane_up_from_points(_slope_hit_positions)
 
 	var normal_up: Vector3 = normal_sum.normalized()
 	var target_up: Vector3 = normal_up

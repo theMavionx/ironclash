@@ -40,7 +40,12 @@ extends Node
 @export_group("Interaction")
 @export var tank_enter_radius: float = 5.5
 @export var helicopter_enter_radius: float = 6.5
-@export var drone_enter_radius: float = 3.5
+## Why: drone is small so the previous 3.5m radius required pixel-perfect
+## positioning to trigger E-interaction. Match tank/heli radius so the player
+## can walk up "next to" the drone and press E without snapping to the exact
+## centre. Drones spawn near the base now (in front of tanks), and the
+## interaction flow expects the player to glance at the drone and tap E.
+@export var drone_enter_radius: float = 5.5
 @export var exit_side_distance: float = 2.2
 @export var exit_ground_probe_up: float = 4.0
 @export var exit_ground_probe_down: float = 60.0
@@ -110,9 +115,26 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _handle_interact_pressed() -> void:
 	if _active_index == 0:
-		var vehicle_index: int = _nearest_enterable_vehicle_index()
-		if vehicle_index != 0:
-			_activate_by_index(vehicle_index)
+		# Search every TankController/HelicopterController/DroneController in the
+		# scene, not just the configured main slots. Without this, the player
+		# could only enter the FIRST vehicle of each type (e.g. Tank), and all
+		# other instances (Tank2/3/4, Helicopter2, Drone2) — including enemy
+		# base vehicles — were unreachable for local control even when
+		# standing right next to them.
+		var chosen: Node = _nearest_enterable_vehicle()
+		if chosen == null:
+			return
+		# Re-bind the appropriate slot to the chosen instance so the existing
+		# activate/camera-rebind code paths drive THIS vehicle.
+		if chosen is TankController:
+			_tank = chosen as TankController
+			_activate_by_index(1)
+		elif chosen is HelicopterController:
+			_helicopter = chosen as HelicopterController
+			_activate_by_index(2)
+		elif chosen is DroneController:
+			_drone = chosen as DroneController
+			_activate_by_index(3)
 	else:
 		_exit_vehicle_to_player()
 
@@ -161,6 +183,64 @@ func _nearest_enterable_vehicle_index() -> int:
 	return best_index
 
 
+## Find the closest TankController/HelicopterController/DroneController in the
+## scene that the player is within the appropriate enter radius of. Returns
+## null when nothing is in range. Searches the whole scene tree so secondary
+## base vehicles (Tank2/Tank3/Helicopter2/Drone2) are reachable too.
+func _nearest_enterable_vehicle() -> Node:
+	if _player == null:
+		return null
+	var player_pos: Vector3 = _player.get_interaction_position()
+	var best: Node = null
+	var best_dist: float = INF
+	for vehicle: Node in _all_vehicles_in_scene():
+		if not (vehicle is Node3D):
+			continue
+		if _is_vehicle_destroyed(vehicle):
+			continue
+		var dist: float = _planar_distance(player_pos, (vehicle as Node3D).global_position)
+		var radius: float = _enter_radius_for_vehicle(vehicle)
+		if dist <= radius and dist < best_dist:
+			best_dist = dist
+			best = vehicle
+	return best
+
+
+func _enter_radius_for_vehicle(vehicle: Node) -> float:
+	if vehicle is TankController:
+		return tank_enter_radius
+	if vehicle is HelicopterController:
+		return helicopter_enter_radius
+	if vehicle is DroneController:
+		return drone_enter_radius
+	return 0.0
+
+
+func _is_vehicle_destroyed(vehicle: Node) -> bool:
+	if vehicle == null:
+		return false
+	var health: HealthComponent = vehicle.get_node_or_null("HealthComponent") as HealthComponent
+	return health != null and health.is_destroyed()
+
+
+func _all_vehicles_in_scene() -> Array[Node]:
+	var result: Array[Node] = []
+	var root: Node = get_tree().current_scene
+	if root == null:
+		root = get_parent()
+	if root != null:
+		_collect_all_vehicles_recursive(root, result)
+	return result
+
+
+func _collect_all_vehicles_recursive(node: Node, out: Array[Node]) -> void:
+	if node is TankController or node is HelicopterController or node is DroneController:
+		if not out.has(node):
+			out.append(node)
+	for child: Node in node.get_children():
+		_collect_all_vehicles_recursive(child, out)
+
+
 func _enter_radius_for_index(index: int) -> float:
 	match index:
 		1: return tank_enter_radius
@@ -177,6 +257,15 @@ func _planar_distance(a: Vector3, b: Vector3) -> float:
 
 func _exit_vehicle_to_player() -> void:
 	if _player == null:
+		return
+	# Drone exit is special: the player was never physically in the drone, so
+	# we don't teleport them anywhere — they resume control wherever they
+	# were standing. Also disconnect the auto-exit signal so it doesn't fire
+	# next time someone else takes the drone.
+	if _active_index == 3:
+		if _drone != null and _drone.self_destructed.is_connected(_on_active_drone_self_destructed):
+			_drone.self_destructed.disconnect(_on_active_drone_self_destructed)
+		_activate_by_index(0)
 		return
 	var vehicle: Node3D = _get_vehicle_at(_active_index) as Node3D
 	if vehicle != null:
@@ -197,6 +286,13 @@ func _find_exit_position(vehicle: Node3D) -> Vector3:
 	return _snap_exit_position_to_ground(vehicle, candidate)
 
 
+## Distance threshold (m) below which we snap the player to the ground on
+## exit. If the ground is farther than this below the candidate, we leave
+## the player at the candidate's altitude and let PlayerController gravity
+## carry them down — that's how a helicopter eject in mid-air should feel.
+const _EXIT_AERIAL_DROP_THRESHOLD: float = 4.0
+
+
 func _snap_exit_position_to_ground(vehicle: Node3D, candidate: Vector3) -> Vector3:
 	var space: PhysicsDirectSpaceState3D = vehicle.get_world_3d().direct_space_state
 	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
@@ -211,6 +307,12 @@ func _snap_exit_position_to_ground(vehicle: Node3D, candidate: Vector3) -> Vecto
 	if hit.is_empty():
 		return candidate
 	var hit_pos: Vector3 = hit.get("position", candidate)
+	# Aerial eject: ground is too far below. Leave the player at vehicle
+	# altitude — gravity in PlayerController will carry them down. Without
+	# this, exiting a flying helicopter teleports the player straight to the
+	# ground, which feels like a glitch.
+	if candidate.y - hit_pos.y > _EXIT_AERIAL_DROP_THRESHOLD:
+		return candidate
 	return hit_pos + Vector3.UP * 0.08
 
 
@@ -238,6 +340,11 @@ func _is_index_destroyed(index: int) -> bool:
 func _activate_player() -> void:
 	_deactivate_all_scene_vehicles()
 	if _player:
+		# Restore visibility / collisions BEFORE re-enabling input, otherwise
+		# the first physics tick after set_active(true) runs against the
+		# disabled-collision body and the player can phase through walls.
+		if _player.has_method("set_embarked"):
+			_player.call("set_embarked", false)
 		_player.set_active(true)  # Player's embedded camera becomes current.
 	# Disable external chase camera — player's internal camera is current now.
 	if _camera != null:
@@ -252,19 +359,26 @@ func _activate_player() -> void:
 func _activate_tank() -> void:
 	if _player:
 		_player.set_active(false)
-	_deactivate_extra_scene_vehicles()
-	if _helicopter:
-		_helicopter.set_active(false)
-	if _drone:
-		_drone.set_active(false)  # Also sets _fpv_camera.current = false internally.
+		# Player is now "inside the tank" — hide the soldier model and remove
+		# its collision so projectiles/explosions can't hit the embarked
+		# soldier through the tank shell.
+		if _player.has_method("set_embarked"):
+			_player.call("set_embarked", true)
+	# Disable every vehicle except _tank (which may be a freshly chosen
+	# enemy/secondary tank, not the originally configured one).
+	_deactivate_all_vehicles_except(_tank)
 	if _tank:
 		_tank.set_active(true)
 	# Restore chase camera as the active renderer.
-	if _camera != null:
+	if _camera != null and _tank != null:
 		_camera.current = true
-		var yaw_path: NodePath = tank_yaw_source_path if not tank_yaw_source_path.is_empty() else tank_path
+		var tank_node_path: NodePath = _tank.get_path()
+		# tank_yaw_source_path is configured relative to the scene root pointing
+		# at the FIRST tank's turret. Translate that to the equivalent path
+		# inside the currently chosen tank by reusing the tail of the path.
+		var yaw_path: NodePath = _resolve_tank_yaw_path(_tank)
 		_camera.rebind(
-			tank_path,
+			tank_node_path,
 			yaw_path,
 			tank_camera_offset,
 			tank_camera_look_offset,
@@ -280,22 +394,33 @@ func _activate_tank() -> void:
 		_fpv_hud.visible = false
 
 
+## Resolve the turret yaw-source NodePath for an arbitrary tank instance by
+## reusing the well-known relative subpath inside the tank scene
+## (Model/Armature/Skeleton3D/TankBody_001).
+func _resolve_tank_yaw_path(tank: TankController) -> NodePath:
+	const TURRET_RELATIVE: String = "Model/Armature/Skeleton3D/TankBody_001"
+	var turret: Node = tank.get_node_or_null(TURRET_RELATIVE)
+	if turret != null:
+		return turret.get_path()
+	return tank.get_path()
+
+
 func _activate_helicopter() -> void:
 	if _player:
 		_player.set_active(false)
-	_deactivate_extra_scene_vehicles()
-	if _tank:
-		_tank.set_active(false)
-	if _drone:
-		_drone.set_active(false)  # Also sets _fpv_camera.current = false internally.
+		# Same reasoning as tank: hide the embarked soldier inside the heli.
+		if _player.has_method("set_embarked"):
+			_player.call("set_embarked", true)
+	_deactivate_all_vehicles_except(_helicopter)
 	if _helicopter:
 		_helicopter.set_active(true)
 	# Restore chase camera as the active renderer.
-	if _camera != null:
+	if _camera != null and _helicopter != null:
 		_camera.current = true
+		var heli_path: NodePath = _helicopter.get_path()
 		_camera.rebind(
-			helicopter_path,
-			helicopter_path,
+			heli_path,
+			heli_path,
 			helicopter_camera_offset,
 			helicopter_camera_look_offset,
 			true,
@@ -311,19 +436,24 @@ func _activate_helicopter() -> void:
 
 func _activate_drone() -> void:
 	if _player:
+		# Drone is REMOTE-PILOTED. The player stays standing wherever they
+		# were when they pressed E — they don't physically enter the drone.
+		# So we suspend their input/camera but keep the body visible and
+		# collidable. set_embarked stays FALSE for drone control.
 		_player.set_active(false)
-	_deactivate_extra_scene_vehicles()
-	if _tank:
-		_tank.set_active(false)
-	if _helicopter:
-		_helicopter.set_active(false)
+	_deactivate_all_vehicles_except(_drone)
 	if _drone:
 		_drone.set_active(true)  # Also sets _fpv_camera.current = true internally.
+		# Auto-exit player back to infantry when this drone crashes/is shot
+		# down, so the user isn't stranded staring at a dead wreck.
+		if _drone.has_signal("self_destructed") and not _drone.self_destructed.is_connected(_on_active_drone_self_destructed):
+			_drone.self_destructed.connect(_on_active_drone_self_destructed)
 	# Disable chase camera — FPV camera on drone takes over rendering.
-	if _camera != null:
+	if _camera != null and _drone != null:
 		_camera.current = false
 		# Still update target so it stays in sync if drone is deactivated.
-		_camera.rebind(drone_path, drone_path, drone_camera_offset, drone_camera_look_offset)
+		var drone_node_path: NodePath = _drone.get_path()
+		_camera.rebind(drone_node_path, drone_node_path, drone_camera_offset, drone_camera_look_offset)
 	# Show FPV overlays.
 	if _fpv_post_process != null:
 		_fpv_post_process.visible = true
@@ -331,14 +461,32 @@ func _activate_drone() -> void:
 		_fpv_hud.visible = true
 
 
+## Drone we are currently piloting blew up / crashed. Pop the player back to
+## infantry so they aren't stuck in FPV looking at a wreck. Drone scene
+## handles its own respawn timer separately.
+func _on_active_drone_self_destructed(_at_position: Vector3) -> void:
+	if _active_index != 3:
+		return
+	if _drone != null and _drone.self_destructed.is_connected(_on_active_drone_self_destructed):
+		_drone.self_destructed.disconnect(_on_active_drone_self_destructed)
+	_activate_by_index(0)
+
+
 func _deactivate_all_scene_vehicles() -> void:
-	if _tank:
-		_tank.set_active(false)
-	if _helicopter:
-		_helicopter.set_active(false)
-	if _drone:
-		_drone.set_active(false)
-	_deactivate_extra_scene_vehicles()
+	_deactivate_all_vehicles_except(null)
+
+
+## Deactivate every TankController / HelicopterController / DroneController in
+## the scene except [param except]. Replaces the older "main slots + extras"
+## split, which fell apart once the player could enter any vehicle in the
+## scene (the dynamic _tank/_helicopter/_drone re-binding broke the static
+## extras list).
+func _deactivate_all_vehicles_except(except: Node) -> void:
+	for vehicle: Node in _all_vehicles_in_scene():
+		if vehicle == except:
+			continue
+		if vehicle.has_method("set_active"):
+			vehicle.call("set_active", false)
 
 
 func _deactivate_extra_scene_vehicles() -> void:

@@ -71,6 +71,17 @@ signal self_destructed(at_position: Vector3)
 ## Vertical velocity drag (1/s). Bleeds vertical speed gently — does NOT counter
 ## gravity, so released Space still drifts down.
 @export var vertical_damping: float = 0.5
+## Maximum fall speed (m/s). Hard ceiling so the drone can't accelerate to
+## terminal velocity values that would tunnel through terrain colliders.
+@export var terminal_fall_speed: float = 12.0
+## Seconds after drone activation during which kamikaze detonation is
+## suppressed. Why: when the player presses E the drone activates with the
+## pilot's body literally next to it (collision_mask=3 picks the soldier
+## up immediately). Without this grace, the first physics tick instantly
+## detonates the drone on its own pilot. After this short window the rule
+## flips to "any contact with a damageable target = kamikaze" so an enemy
+## drone hovering down onto a player kills them even at near-zero speed.
+@export var activation_grace_seconds: float = 0.5
 
 # ---------------------------------------------------------------------------
 # Exports — Yaw (mouse X)
@@ -158,6 +169,11 @@ signal self_destructed(at_position: Vector3)
 
 @export_group("Collision Mesh")
 @export var rebuild_collision_from_visual_mesh: bool = true
+## Drone keeps web fallback box: the FPV mesh is small and irregular, and the
+## web convex rebuild was causing drones to spawn inside their own rebuilt
+## colliders / get displaced on game start. The authored 2x0.6x2 box is
+## already a tight fit for the airframe; tank/heli benefit from the rebuild
+## but drone does not.
 @export var rebuild_collision_on_web: bool = false
 @export var collision_mesh_min_size: Vector3 = Vector3(0.04, 0.04, 0.04)
 @export var collision_mesh_max_shapes: int = 8
@@ -190,6 +206,10 @@ var _current_rotor_speed: float = 0.0
 ## the impact speed for kamikaze detection (move_and_slide may zero velocity
 ## on collision, hiding the actual approach speed).
 var _pre_slide_velocity: Vector3 = Vector3.ZERO
+## Seconds remaining before the drone is allowed to detonate. Set in
+## set_active(true), decremented in _physics_process. See
+## [member activation_grace_seconds] for the why.
+var _activation_grace_remaining: float = 0.0
 ## Initial transform captured in _ready — drone respawns to this position.
 var _spawn_transform: Transform3D
 @onready var _health: HealthComponent = $HealthComponent
@@ -223,12 +243,18 @@ func set_active(is_active: bool) -> void:
 	set_physics_process(is_active)
 	if not is_active:
 		velocity = Vector3.ZERO
+		_activation_grace_remaining = 0.0
 		if _fpv_camera != null:
 			_fpv_camera.current = false
 	else:
 		WebPointerLock.capture_for_activation()
 		_yaw_target = global_rotation.y
 		_yaw_current = _yaw_target
+		# Block kamikaze detonation while the pilot is still standing next to
+		# the drone (collision_mask=3 picks up the soldier's body the same
+		# frame physics resumes). After this short window any contact with a
+		# damageable target = kamikaze, regardless of speed.
+		_activation_grace_remaining = activation_grace_seconds
 		if _fpv_camera != null:
 			_fpv_camera.current = true
 
@@ -404,6 +430,9 @@ func _physics_process(delta: float) -> void:
 	if not _active:
 		return
 
+	if _activation_grace_remaining > 0.0:
+		_activation_grace_remaining = maxf(_activation_grace_remaining - delta, 0.0)
+
 	_apply_yaw(delta)
 	_apply_camera_pitch()
 	_apply_lift_and_strafe(delta)
@@ -422,31 +451,42 @@ func _physics_process(delta: float) -> void:
 func _check_kamikaze_collisions() -> void:
 	if _is_destroyed:
 		return
-	var threshold_sq: float = kamikaze_speed_threshold * kamikaze_speed_threshold
-	var fast_enough: bool = _pre_slide_velocity.length_squared() >= threshold_sq
+	# Don't detonate during the activation grace window — see set_active().
+	if _activation_grace_remaining > 0.0:
+		return
 	for i: int in range(get_slide_collision_count()):
 		var col: KinematicCollision3D = get_slide_collision(i)
 		var collider: Node = col.get_collider() as Node
 		if collider == null or collider == self:
 			continue
+		# Don't blow up on the local pilot. Even after the activation grace
+		# expires, the pilot is still standing right next to the drone they
+		# just took control of (player keeps gravity-collision while drone-
+		# piloting unlike tank/heli where set_embarked hides the body).
+		# Without this exclusion the drone self-destructs the moment the
+		# grace ends if the pilot hasn't run out of the drone's box.
+		if _is_local_pilot_body(collider):
+			continue
 		var target_health: HealthComponent = _find_health_component(collider)
-		# Rule: ANY contact with a damageable target = kamikaze, regardless of speed.
-		# The threshold only applies to terrain so the drone can land softly on pads.
-		if target_health != null:
-			# Networked: damage to the target goes through the server via a
-			# vehicle_hit_claim. Locally we only blow up the drone itself
-			# (vehicle_self_destruct fires from the destroyed signal handler).
-			if _is_networked():
-				_send_kamikaze_claim(collider)
-			else:
-				target_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
-			if _health != null:
-				_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
-			return
-		# Terrain hit — only detonate when above threshold. Below = bounce/slide.
-		if fast_enough and _health != null:
+		# Only damageable targets trigger kamikaze. Terrain hits used to
+		# detonate the drone above a velocity threshold, but a drone falling
+		# from its spawn altitude reaches terminal fall speed (12 m/s)
+		# before it lands — past kamikaze threshold — so the drone self-
+		# destructed on every entry. Removing terrain kamikaze keeps the
+		# pilot-vs-target use case (an enemy drone touching you = death)
+		# while letting the drone bounce safely on the ground.
+		if target_health == null:
+			continue
+		# Networked: damage to the target goes through the server via a
+		# vehicle_hit_claim. Locally we only blow up the drone itself
+		# (vehicle_self_destruct fires from the destroyed signal handler).
+		if _is_networked():
+			_send_kamikaze_claim(collider)
+		else:
+			target_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
+		if _health != null:
 			_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
-			return
+		return
 
 
 func _is_networked() -> bool:
@@ -468,7 +508,12 @@ func _send_kamikaze_claim(collider: Node) -> void:
 	var msg: Dictionary = {
 		"t": "vehicle_hit_claim",
 		"projectile": "drone_kamikaze",
-		"vehicle_id": "drone",
+		# Why: server validates that the shooter is the registered driver of
+		# the claimed vehicle. With Drone+Drone2 in the scene, hardcoding
+		# "drone" causes Drone2 claims to be rejected as not_driver. Read the
+		# real vehicle_id from the child VehicleSync so each drone instance
+		# claims under its own id.
+		"vehicle_id": _resolve_self_vehicle_id(),
 		"client_t": Time.get_ticks_msec(),
 	}
 	while node != null:
@@ -484,6 +529,38 @@ func _send_kamikaze_claim(collider: Node) -> void:
 		node = node.get_parent()
 	if msg.has("target_peer_id") or msg.has("target_vehicle_id"):
 		nm.call("send_message", msg)
+
+
+## Returns true if [param collider] is the local PlayerController's Body —
+## the soldier that's currently piloting (or just piloted) this drone. Used
+## to suppress kamikaze self-destruct when the pilot is still standing next
+## to the drone hull. Walks the local scene root rather than caching to
+## stay correct across player respawns.
+func _is_local_pilot_body(collider: Node) -> bool:
+	if collider == null:
+		return false
+	var tree: SceneTree = get_tree()
+	if tree == null:
+		return false
+	var scene_root: Node = tree.current_scene
+	if scene_root == null:
+		return false
+	var local_player: Node = scene_root.get_node_or_null("Player")
+	if local_player == null:
+		return false
+	var local_body: Node = local_player.get_node_or_null("Body")
+	return collider == local_body
+
+
+## Read this drone instance's network vehicle_id from the sibling VehicleSync
+## node. Falls back to "drone" if no VehicleSync is attached (solo play).
+func _resolve_self_vehicle_id() -> String:
+	var sync: Node = get_node_or_null("VehicleSync")
+	if sync != null and "vehicle_id" in sync:
+		var raw: String = String(sync.get("vehicle_id"))
+		if raw != "":
+			return raw
+	return "drone"
 
 
 ## Locate a HealthComponent on the collider. Most vehicles parent it directly
@@ -547,6 +624,13 @@ func _apply_lift_and_strafe(delta: float) -> void:
 
 	# Vertical damping is gentle — does NOT counter gravity, just bleeds spikes.
 	velocity.y *= exp(-vertical_damping * delta)
+	# Why: at terminal velocity (~20 m/s with default gravity / vertical_damping
+	# settings) the drone moves ~0.33 m per 60-fps frame, which exceeds the
+	# CharacterBody3D safe_margin and lets the drone tunnel through terrain
+	# colliders. Cap fall speed so move_and_slide always resolves the floor
+	# contact properly. Climb speed is unrestricted — pilot can shoot up freely.
+	if velocity.y < -terminal_fall_speed:
+		velocity.y = -terminal_fall_speed
 
 
 func _apply_visual_tilt(delta: float) -> void:

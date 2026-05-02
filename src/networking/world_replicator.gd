@@ -24,6 +24,13 @@ const _REMOTE_FIRE_QUEUE_MAX_PER_PEER: int = 8
 
 var _remote_players: Dictionary = {}  # peer_id (int) -> RemotePlayer Node3D
 var _last_local_vehicle: String = ""  # tracks what we last reported to React
+## Last vehicle HP/max_hp/alive triple emitted to JS — used to suppress
+## redundant vehicle_hp bridge events. JavaScriptBridge.eval is synchronous
+## and parks the WASM thread per call; emitting at full snapshot rate (30 Hz)
+## while in a vehicle was the dominant per-frame web bridge cost.
+var _last_local_vehicle_hp: int = -1
+var _last_local_vehicle_max_hp: int = -1
+var _last_local_vehicle_alive: bool = true
 var _vehicle_alive: Dictionary = {}  # vehicle_id (String) -> bool
 var _vehicle_vfx_started: Dictionary = {}  # vehicle_id (String) -> bool
 var _network_smoke_anchors: Dictionary = {}  # vfx key (String) -> Node3D
@@ -88,6 +95,32 @@ func _on_snapshot(_tick: int, _server_t: int, players: Array, vehicles: Array) -
 
 	_sync_vehicle_vfx(vehicles)
 	_sync_local_vehicle_hud(vehicles)
+	_sync_remote_avatar_visibility(vehicles)
+
+
+## Hide remote-player avatars whose peer is currently driving a vehicle.
+## Why: my set_embarked() only hides the local soldier on the local client.
+## Without this, remote peers still see the driver's body trailing the tank
+## (and worse — its weapon animations still play, so it looks like a ghost
+## firing bullets next to the vehicle). The server's snapshot already tells
+## us each vehicle's driver_peer_id, so we can derive visibility purely
+## client-side without adding a new network message.
+func _sync_remote_avatar_visibility(vehicles: Array) -> void:
+	var driving_peers: Dictionary = {}
+	for raw in vehicles:
+		if not (raw is Dictionary):
+			continue
+		var v: Dictionary = raw
+		var driver: int = int(v.get("driver_peer_id", -1))
+		if driver < 0:
+			continue
+		driving_peers[driver] = true
+	for pid in _remote_players.keys():
+		var rp: Node = _remote_players[pid]
+		if rp == null or not is_instance_valid(rp):
+			continue
+		if rp is Node3D:
+			(rp as Node3D).visible = not driving_peers.has(pid)
 
 
 ## Tell the React HUD whether the local peer is driving a vehicle, and push
@@ -113,16 +146,34 @@ func _sync_local_vehicle_hud(vehicles: Array) -> void:
 		if _last_local_vehicle != "":
 			bridge.send_event("vehicle_drive_end", {})
 			_last_local_vehicle = ""
+			_last_local_vehicle_hp = -1
+			_last_local_vehicle_max_hp = -1
+			_last_local_vehicle_alive = true
 		return
 	var vid: String = String(driving.get("id", ""))
-	if vid != _last_local_vehicle:
+	var vehicle_changed: bool = vid != _last_local_vehicle
+	if vehicle_changed:
 		_last_local_vehicle = vid
+		_last_local_vehicle_hp = -1
+		_last_local_vehicle_max_hp = -1
+		_last_local_vehicle_alive = true
 		bridge.send_event("vehicle_drive_start", {"vehicle_id": vid})
+	var hp: int = int(driving.get("hp", 0))
+	var max_hp: int = int(driving.get("max_hp", 100))
+	var alive: bool = bool(driving.get("alive", true))
+	# Edge-trigger: only cross the JS bridge when something actually changed.
+	# vehicle_hp was firing every snapshot (30 Hz) → 30 synchronous
+	# JavaScriptBridge.eval calls/sec while driving, blocking the WASM thread.
+	if hp == _last_local_vehicle_hp and max_hp == _last_local_vehicle_max_hp and alive == _last_local_vehicle_alive:
+		return
+	_last_local_vehicle_hp = hp
+	_last_local_vehicle_max_hp = max_hp
+	_last_local_vehicle_alive = alive
 	bridge.send_event("vehicle_hp", {
 		"vehicle_id": vid,
-		"hp": int(driving.get("hp", 0)),
-		"max_hp": int(driving.get("max_hp", 100)),
-		"alive": bool(driving.get("alive", true)),
+		"hp": hp,
+		"max_hp": max_hp,
+		"alive": alive,
 	})
 
 
@@ -407,6 +458,12 @@ func _spawn_remote_rpg_rocket(rp: Node3D, dir: Vector3) -> void:
 	var normalized_dir: Vector3 = dir.normalized()
 	var hub: CombatPoolHub = CombatPoolHub.find_for(self)
 	var rocket: Node3D = null
+	# Why: on web the RPG pool is intentionally empty (CombatPoolHub skips
+	# rpg_pool build on OS.has_feature("web")), so hub.spawn_projectile(&"rpg")
+	# returns null even when hub itself exists. The original code only fell
+	# back to direct instantiate when hub was null — silent-failing on web
+	# made remote peers see the kill but not the rocket / smoke trail. Match
+	# the local fire path: try the pool first, then always fall back.
 	if hub != null:
 		rocket = hub.spawn_projectile(
 			&"rpg",
@@ -418,12 +475,17 @@ func _spawn_remote_rpg_rocket(rp: Node3D, dir: Vector3) -> void:
 			"",
 			false
 		)
-	else:
+	if rocket == null:
 		rocket = RPG_ROCKET_SCENE.instantiate()
 		if rocket == null:
 			return
 		if rocket.has_method("setup"):
 			rocket.call("setup", DamageTypes.Source.PLAYER_RPG, 0, body)
+		# Mark this remote rocket so it doesn't try to apply damage locally —
+		# server handles authoritative damage via vehicle_hit_claim, and the
+		# shooter's own client already runs the same projectile.
+		if rocket.has_method("setup_network"):
+			rocket.call("setup_network", "player_rpg", false)
 		get_tree().current_scene.add_child(rocket)
 		rocket.global_position = spawn_origin
 		rocket.look_at(spawn_origin + normalized_dir, Vector3.UP)

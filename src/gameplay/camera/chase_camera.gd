@@ -6,7 +6,13 @@ extends Camera3D
 ## yaw_source = the turret, so moving the mouse rotates the turret AND the
 ## camera together (the view is always behind where the gun points). The hull
 ## steers independently underneath.
-## Runs in physics tick to stay in sync with CharacterBody3D.
+##
+## Runs in render tick (_process) so mouse-driven aim updates show up at the
+## monitor's refresh rate. Driving the camera from _physics_process locks it
+## to 60 Hz physics, which on web/WASM is uneven and shows up as visible
+## camera stutter when rotating. The CharacterBody3D position only changes
+## per physics tick anyway — interpolation between ticks for the body itself
+## is handled by Godot when physics interpolation is enabled.
 
 @export_node_path("Node3D") var target_path: NodePath
 ## Node whose world-space Y rotation drives the camera's orbit direction.
@@ -79,7 +85,7 @@ func _resolve_targets() -> void:
 		_yaw_source = _target
 
 
-func _physics_process(delta: float) -> void:
+func _process(delta: float) -> void:
 	if _target == null:
 		return
 	_read_arrow_input(delta)

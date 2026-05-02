@@ -31,6 +31,12 @@ extends Node3D
 ## When false, skip the local take_damage call — used together with
 ## network_projectile_id so we don't double-apply damage on top of the server.
 @export var apply_local_damage: bool = true
+## Splash / area-of-effect radius (m). When > 0, on impact the shell sphere-
+## queries every CollisionObject3D within this radius and applies damage to
+## any HealthComponent it finds. 0 = single-target (raycast direct hit only).
+## Why: a raw raycast strike requires hitting the target dead-on; AOE makes
+## the RPG / shell feel like an explosion instead of a sniper bullet.
+@export var aoe_radius: float = 0.0
 
 var _remaining_life: float
 var _ray: RayCast3D
@@ -155,8 +161,11 @@ func _physics_process(delta: float) -> void:
 	# Check collision BEFORE moving so the ray sweeps the path we are about to cover.
 	if _ray.is_colliding():
 		var collider: Node = _ray.get_collider() as Node
+		var hit_point: Vector3 = _ray.get_collision_point()
 		_apply_damage_if_health(collider)
-		_spawn_impact(_ray.get_collision_point(), _ray.get_collision_normal())
+		if aoe_radius > 0.0:
+			_apply_aoe_damage(hit_point, collider)
+		_spawn_impact(hit_point, _ray.get_collision_normal())
 		_finish_projectile()
 		return
 
@@ -262,6 +271,42 @@ func _apply_damage_if_health(collider: Node) -> void:
 		health.take_damage(damage, damage_source)
 
 
+## Splash damage at the impact point. Sphere-queries every CollisionObject3D
+## within [member aoe_radius] and applies the same damage to any
+## HealthComponent it finds (or, in networked play, sends a hit_claim per
+## target). Skips [param primary_collider] (already damaged by the raycast).
+func _apply_aoe_damage(impact_point: Vector3, primary_collider: Node) -> void:
+	var world: World3D = get_world_3d()
+	if world == null:
+		return
+	var space: PhysicsDirectSpaceState3D = world.direct_space_state
+	if space == null:
+		return
+	var sphere: SphereShape3D = SphereShape3D.new()
+	sphere.radius = aoe_radius
+	var query: PhysicsShapeQueryParameters3D = PhysicsShapeQueryParameters3D.new()
+	query.shape = sphere
+	query.transform = Transform3D(Basis.IDENTITY, impact_point)
+	query.collide_with_areas = false
+	query.collision_mask = collision_mask
+	if _shooter != null and is_instance_valid(_shooter):
+		query.exclude = [_shooter.get_rid()]
+	var results: Array = space.intersect_shape(query, 32)
+	var seen: Dictionary = {}
+	var primary_id: int = primary_collider.get_instance_id() if primary_collider != null else 0
+	for hit: Dictionary in results:
+		var collider: Node = hit.get("collider", null) as Node
+		if collider == null:
+			continue
+		var instance_id: int = collider.get_instance_id()
+		if instance_id == primary_id:
+			continue
+		if seen.has(instance_id):
+			continue
+		seen[instance_id] = true
+		_apply_damage_if_health(collider)
+
+
 func _is_networked() -> bool:
 	var nm: Node = get_node_or_null("/root/NetworkManager")
 	if nm == null:
@@ -346,7 +391,14 @@ func _spawn_impact(hit_point: Vector3, hit_normal: Vector3) -> void:
 
 	# Place in world space via the scene root so the VFX is not parented to the
 	# shell (which will queue_free immediately).
-	var world_root: Node = get_tree().current_scene
+	if not is_inside_tree():
+		return
+	var tree: SceneTree = get_tree()
+	if tree == null:
+		return
+	var world_root: Node = tree.current_scene
+	if world_root == null:
+		return
 	world_root.add_child(impact)
 	impact.global_position = hit_point
 
@@ -359,9 +411,12 @@ func _spawn_impact(hit_point: Vector3, hit_normal: Vector3) -> void:
 
 
 func _find_combat_pool_hub() -> Node:
-	if get_tree() == null:
+	if not is_inside_tree():
 		return null
-	for node: Node in get_tree().get_nodes_in_group(&"combat_pool_hub"):
+	var tree: SceneTree = get_tree()
+	if tree == null:
+		return null
+	for node: Node in tree.get_nodes_in_group(&"combat_pool_hub"):
 		if node != null and is_instance_valid(node) and node.has_method("spawn_impact"):
 			return node
 	return null
@@ -375,7 +430,12 @@ func _broadcast_shake(hit_point: Vector3) -> void:
 	var base_trauma: float = _base_trauma_for_source()
 	if base_trauma <= 0.0:
 		return
-	for receiver: Node in get_tree().get_nodes_in_group("camera_shake_receivers"):
+	if not is_inside_tree():
+		return
+	var tree: SceneTree = get_tree()
+	if tree == null:
+		return
+	for receiver: Node in tree.get_nodes_in_group("camera_shake_receivers"):
 		if receiver.has_method("add_explosion_shake"):
 			receiver.call("add_explosion_shake", hit_point, base_trauma)
 

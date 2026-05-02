@@ -32,6 +32,7 @@ const _WEB_BRIDGE_PATH: NodePath = ^"/root/WebBridge"
 
 var _controller: Node = null
 var _body: Node3D = null
+var _body_scale: Vector3 = Vector3.ONE
 var _send_accumulator: float = 0.0
 var _last_was_driving: bool = false
 
@@ -56,6 +57,9 @@ func _ready() -> void:
 		push_warning("[veh-sync %s] body unresolved — disabling" % vehicle_id)
 		set_process(false)
 		return
+	_body_scale = _body.global_transform.basis.get_scale().abs()
+	if _body_scale.x <= 0.001 or _body_scale.y <= 0.001 or _body_scale.z <= 0.001:
+		_body_scale = Vector3.ONE
 	if not _has_network_manager():
 		set_process(false)
 		return
@@ -166,12 +170,13 @@ func _process(delta: float) -> void:
 	if _server_driver == NetworkManager.local_peer_id:
 		return
 	var t: float = clamp(interp_speed * delta, 0.0, 1.0)
-	_body.global_position = _body.global_position.lerp(_server_pos, t)
-	_body.rotation = Vector3(
+	var next_pos: Vector3 = _body.global_position.lerp(_server_pos, t)
+	var next_rot: Vector3 = Vector3(
 		lerp_angle(_body.rotation.x, _server_rot.x, t),
 		lerp_angle(_body.rotation.y, _server_rot.y, t),
 		lerp_angle(_body.rotation.z, _server_rot.z, t),
 	)
+	_apply_body_pose_preserving_scale(next_pos, next_rot)
 	if _controller != null and _controller.has_method("set_remote_aim"):
 		_controller.call("set_remote_aim", _server_aim_yaw, _server_aim_pitch)
 
@@ -245,8 +250,7 @@ func _on_snapshot(_tick: int, _server_t: int, _players: Array, vehicles: Array) 
 		_server_alive = bool(v.get("alive", true))
 		_has_server_state = true
 		if _server_alive and had_server_state and not was_alive:
-			_body.global_position = _server_pos
-			_body.rotation = _server_rot
+			_apply_body_pose_preserving_scale(_server_pos, _server_rot)
 			if _controller != null and _controller.has_method("apply_network_respawned"):
 				_controller.call("apply_network_respawned")
 			if _controller != null and _controller.has_method("set_remote_aim"):
@@ -258,3 +262,12 @@ func _on_snapshot(_tick: int, _server_t: int, _players: Array, vehicles: Array) 
 			var remote_drives: bool = _server_driver >= 0 and _server_driver != NetworkManager.local_peer_id
 			_controller.call("set_remote_driver_active", remote_drives)
 		return
+
+
+func _apply_body_pose_preserving_scale(pos: Vector3, rot: Vector3) -> void:
+	if _body == null:
+		return
+	var xform: Transform3D = _body.global_transform
+	xform.origin = pos
+	xform.basis = Basis.from_euler(rot).orthonormalized().scaled(_body_scale)
+	_body.global_transform = xform

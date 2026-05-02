@@ -369,7 +369,7 @@ async function fetchManifest(): Promise<GodotManifest> {
 }
 
 const _scriptCache: Map<string, Promise<HTMLScriptElement>> = new Map();
-const _preloadedGodotUrls: Set<string> = new Set();
+const _hintedGodotUrls: Set<string> = new Set();
 
 function cacheBustGodotUrl(url: string, version: string | null | undefined): string {
 	const cleanVersion: string | undefined = version?.trim();
@@ -387,30 +387,42 @@ function preloadGodotResources(
 	const files: Set<string> | null =
 		manifest.files === undefined ? null : new Set(manifest.files);
 
-	const add = (fileName: string, as: "script" | "fetch", type?: string): void => {
+	const addHint = (
+		fileName: string,
+		rel: "preload" | "prefetch",
+		as?: "script" | "fetch",
+		type?: string,
+	): void => {
 		if (files !== null && !files.has(fileName)) return;
 		const href: string = cacheBustGodotUrl(`${GODOT_DIR}/${fileName}`, cacheVersion);
-		if (_preloadedGodotUrls.has(href)) return;
+		const key: string = `${rel}:${href}`;
+		if (_hintedGodotUrls.has(key)) return;
 		const link: HTMLLinkElement = document.createElement("link");
-		link.rel = "preload";
+		link.rel = rel;
 		link.href = href;
-		link.as = as;
+		if (as !== undefined) link.as = as;
 		if (type !== undefined) link.type = type;
 		if (as === "fetch") link.crossOrigin = "anonymous";
 		document.head.appendChild(link);
-		_preloadedGodotUrls.add(href);
+		_hintedGodotUrls.add(key);
 	};
 
 	const baseName: string = base.slice(GODOT_DIR.length + 1);
-	add(`${baseName}.js`, "script");
-	add(`${baseName}.wasm`, "fetch", "application/wasm");
-	add(`${baseName}.side.wasm`, "fetch", "application/wasm");
-	add(`${baseName}.pck`, "fetch", "application/octet-stream");
-	add(`${baseName}.worker.js`, "script");
-	add(`${baseName}.audio.worklet.js`, "script");
+	addHint(`${baseName}.js`, "preload", "script");
+	addHint(`${baseName}.pck`, "preload", "fetch", "application/octet-stream");
+
+	// These are fetched by Emscripten/Godot as WebAssembly, Worker and
+	// AudioWorklet internals. Chrome often doesn't match those requests against
+	// a manual preload, so it reports noisy "preloaded but not used" warnings.
+	// Prefetch still warms the HTTP cache without pretending the resource must
+	// be consumed immediately during the page load event.
+	addHint(`${baseName}.wasm`, "prefetch", "fetch", "application/wasm");
+	addHint(`${baseName}.side.wasm`, "prefetch", "fetch", "application/wasm");
+	addHint(`${baseName}.worker.js`, "prefetch");
+	addHint(`${baseName}.audio.worklet.js`, "prefetch");
 
 	for (const lib of manifest.godotConfig?.gdextensionLibs ?? []) {
-		add(lib, "fetch", "application/wasm");
+		addHint(lib, "preload", "fetch", "application/wasm");
 	}
 }
 

@@ -69,6 +69,15 @@ const _MAIN_TANK_SCALE: float = 2.8
 const _MAIN_HELICOPTER_SCALE: float = 3.2
 const _MAIN_DRONE_SCALE: float = 1.0
 const _VEHICLE_PROBE_Z: float = -34.0
+const _TERRAIN_TEXTURE_PRELOADS: Array[String] = [
+	"res://textures/graund.png",
+	"res://textures/maountines.png",
+	"res://textures/road.png",
+	"res://textures/rockdown.png",
+	"res://textures/downdown.png",
+	"res://textures/snow.png",
+	"res://textures/cobblestone.png",
+]
 
 @onready var _camera: Camera3D = $Camera3D
 @onready var _warmup_root: Node3D = $WarmupRoot
@@ -354,6 +363,10 @@ func _spawn_warmup_actors() -> void:
 	await _spawn_player_shot_probe()
 	await _yield_warmup_frames(_WARMUP_COMPILE_FRAMES)
 	await _wait_for_main_load_before_scene_probes()
+	t = Time.get_ticks_msec()
+	var terrain_textures_loaded: int = _preload_terrain_texture_profile()
+	if terrain_textures_loaded > 0:
+		_record_probe_time("Terrain3D texture profile preload (%d)" % terrain_textures_loaded, Time.get_ticks_msec() - t)
 	await _yield_warmup_frames()
 	_spawn_charred_probe()
 	await _yield_warmup_frames()
@@ -368,6 +381,10 @@ func _spawn_warmup_actors() -> void:
 	await _yield_warmup_frames(_WARMUP_COMPILE_FRAMES)
 	await _spawn_projectile_scene_probes()
 	await _yield_warmup_frames(_WARMUP_COMPILE_FRAMES)
+	t = Time.get_ticks_msec()
+	await _spawn_tank_fire_probe()
+	_record_probe_time("tank controller fire + muzzle flash", Time.get_ticks_msec() - t)
+	await _yield_warmup_frames(_WARMUP_COMPILE_FRAMES)
 	_probe_staging_complete = true
 	await _yield_warmup_frames()
 	await _wait_for_async_probes("critical staged probes", 0.1)
@@ -375,8 +392,15 @@ func _spawn_warmup_actors() -> void:
 
 
 func _yield_warmup_frames(frames: int = _WARMUP_FRAME_GAP) -> void:
+	if not is_inside_tree():
+		return
 	for _i: int in range(maxi(frames, 1)):
-		await get_tree().process_frame
+		if not is_inside_tree():
+			return
+		var tree: SceneTree = get_tree()
+		if tree == null:
+			return
+		await tree.process_frame
 
 
 func _wait_for_main_load_before_scene_probes(_max_wait_seconds: float = 6.0) -> void:
@@ -393,6 +417,17 @@ func _wait_for_main_load_before_scene_probes(_max_wait_seconds: float = 6.0) -> 
 	else:
 		_main_scene_load_failed = true
 		push_warning("[warmup] synchronous Main load failed in %d ms; will fall back to change_scene_to_file" % (Time.get_ticks_msec() - t))
+
+
+func _preload_terrain_texture_profile() -> int:
+	if not OS.has_feature("web"):
+		return 0
+	var loaded: int = 0
+	for path: String in _TERRAIN_TEXTURE_PRELOADS:
+		var texture: Texture2D = load(path) as Texture2D
+		if texture != null:
+			loaded += 1
+	return loaded
 
 
 ## Compile each vehicle type's STATIC materials by briefly instantiating its
@@ -478,7 +513,9 @@ func _run_actual_vehicle_destruction_probe(inst: Node, label: String) -> void:
 		inst.call("_on_destroyed", DamageTypes.Source.TANK_SHELL)
 	elif inst is Node3D:
 		var n: Node3D = inst as Node3D
-		DestructionVFX.spawn_explosion(get_tree().current_scene, n.global_position + Vector3(0.0, 0.4, 0.0))
+		var tree: SceneTree = get_tree() if is_inside_tree() else null
+		var world_root: Node = tree.current_scene if tree != null else _warmup_root
+		DestructionVFX.spawn_explosion(world_root, n.global_position + Vector3(0.0, 0.4, 0.0))
 		DestructionVFX.apply_charred(n)
 		DestructionVFX.spawn_smoke_fire(n, 0.5, true, _WARMUP_PROBE_LIFETIME)
 	await _yield_warmup_frames(2)
@@ -501,6 +538,9 @@ func _record_probe_time(name: String, msec: int) -> void:
 func _schedule_async_probe(delay_seconds: float, callback: Callable, label: String) -> void:
 	_pending_async_probes += 1
 	_async_probes_scheduled += 1
+	if not is_inside_tree():
+		_run_async_probe(callback, label)
+		return
 	var timer: SceneTreeTimer = get_tree().create_timer(delay_seconds)
 	timer.timeout.connect(_run_async_probe.bind(callback, label))
 
@@ -525,6 +565,8 @@ func _wait_for_async_probes(label: String, max_wait_seconds: float) -> void:
 		if waited >= max_wait_seconds:
 			push_warning("[warmup] async barrier '%s' timed out with pending=%d" % [label, _pending_async_probes])
 			return
+		if not is_inside_tree():
+			return
 		await get_tree().process_frame
 	print("[warmup] async barrier '%s' clear" % label)
 
@@ -532,8 +574,16 @@ func _wait_for_async_probes(label: String, max_wait_seconds: float) -> void:
 func _update_camera_motion_probe() -> void:
 	if not _camera_motion_enabled or not is_instance_valid(_camera):
 		return
-	var yaw: float = sin(_elapsed * 2.1) * 0.12
-	var pitch: float = sin(_elapsed * 1.55) * 0.055
+	# Why: WebGL/Compatibility renderer compiles draw-call pipeline state
+	# per-mesh-per-material when geometry enters the frustum from a novel view
+	# angle. The chase camera in match sweeps a full 360° turret rotation, so
+	# the warmup must exercise the same range. Old amplitude (±7° yaw / ±3°
+	# pitch) only compiled pipelines for nearly-static angles → first in-game
+	# camera rotation triggered new compiles inline. ±45° yaw / ±11° pitch
+	# covers the meaningful frustum-entry permutations for tank, terrain
+	# chunks, and billboard VFX.
+	var yaw: float = sin(_elapsed * 2.1) * 0.8
+	var pitch: float = sin(_elapsed * 1.55) * 0.2
 	var offset: Vector3 = Vector3(
 		sin(_elapsed * 1.35) * 0.18,
 		sin(_elapsed * 1.10) * 0.055,
@@ -672,12 +722,26 @@ func _spawn_tank_fire_probe() -> void:
 		var n: Node3D = tank as Node3D
 		n.position = Vector3(8.0, -2.2, _VEHICLE_PROBE_Z + 8.0)
 		n.scale = Vector3(_MAIN_TANK_SCALE, _MAIN_TANK_SCALE, _MAIN_TANK_SCALE)
+	await _yield_warmup_frames(2)
 	if tank.has_method("set_active"):
 		tank.call("set_active", false)
+	await _warmup_tank_aim_motion(tank)
 	for i: int in range(_WARMUP_VEHICLE_FIRE_REPETITIONS):
 		_run_tank_fire_probe(tank)
 		await _yield_warmup_frames()
 	_schedule_free(tank, _WARMUP_PROBE_LIFETIME * 2.0)
+
+
+func _warmup_tank_aim_motion(tank: Node) -> void:
+	if tank == null or not is_instance_valid(tank):
+		return
+	for i: int in range(3):
+		tank.set("_hull_yaw", 0.0)
+		tank.set("_yaw_delta", lerpf(-0.35, 0.35, float(i) / 2.0))
+		tank.set("_pitch_delta", lerpf(deg_to_rad(-4.0), deg_to_rad(8.0), float(i) / 2.0))
+		if tank.has_method("_apply_aim_pose"):
+			tank.call("_apply_aim_pose")
+		await _yield_warmup_frames()
 
 
 func _run_tank_fire_probe(tank: Node) -> void:
@@ -900,7 +964,7 @@ func _spawn_projectile_scene_probes() -> void:
 	var probes: Array[Dictionary] = [
 		{
 			"path": "res://scenes/projectile/tank_shell.tscn",
-			"warm_particles": false,
+			"warm_particles": true,
 		},
 		{
 			"path": "res://scenes/projectile/rpg_rocket.tscn",
@@ -908,7 +972,7 @@ func _spawn_projectile_scene_probes() -> void:
 		},
 		{
 			"path": "res://scenes/projectile/shell_impact.tscn",
-			"warm_particles": false,
+			"warm_particles": true,
 		},
 		{
 			"path": "res://scenes/projectile/smoke_volume.tscn",
@@ -1218,6 +1282,9 @@ func _spawn_grass_probe() -> void:
 func _schedule_free(node: Node, after_seconds: float) -> void:
 	# Bind by instance id instead of a node Callable. Warmup probes can be freed
 	# as a subtree before their individual timers fire during scene transition.
+	if not is_inside_tree():
+		_queue_free_instance(node.get_instance_id())
+		return
 	var t: SceneTreeTimer = get_tree().create_timer(after_seconds)
 	t.timeout.connect(_queue_free_instance.bind(node.get_instance_id()))
 

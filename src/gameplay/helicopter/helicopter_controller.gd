@@ -80,7 +80,11 @@ const _VISUAL_CONVEX_COLLIDERS := preload("res://src/gameplay/vehicle/visual_con
 
 @export_group("Collision Mesh")
 @export var rebuild_collision_from_visual_mesh: bool = true
-@export var rebuild_collision_on_web: bool = false
+## Was false to skip startup convex-hull generation, but the authored fallback
+## box was much larger than the visible airframe — bullets/RPGs registered
+## hits in empty air around the helicopter. The rebuild runs once in _ready
+## and produces tight convex hulls per mesh.
+@export var rebuild_collision_on_web: bool = true
 @export var collision_mesh_min_size: Vector3 = Vector3(0.08, 0.08, 0.08)
 @export var collision_mesh_max_shapes: int = 10
 @export var collision_mesh_ignore_names: PackedStringArray = PackedStringArray([
@@ -191,6 +195,17 @@ var _missile_reload_timer: float = 0.0
 var _is_reloading: bool = false
 var _reload_label: Label
 
+# ---------------------------------------------------------------------------
+# Cached per-frame allocations
+# ---------------------------------------------------------------------------
+# Why: WASM/web is GC-sensitive. Per-frame Array/Object allocations inside
+# _physics_process cause random micro-stutters when collected. Pre-allocate
+# these once in _ready() and mutate in place.
+var _ray_query_rotor: PhysicsRayQueryParameters3D = null
+var _ray_query_ground: PhysicsRayQueryParameters3D = null
+var _exclude_self: Array[RID] = []
+var _ground_samples: Array[Vector3] = [Vector3.ZERO, Vector3.ZERO, Vector3.ZERO, Vector3.ZERO, Vector3.ZERO]
+
 signal missile_fired
 ## Same as [signal missile_fired] but carries the spawn pose so network sync
 ## can replicate the missile on remote clients.
@@ -244,6 +259,19 @@ func _ready() -> void:
 	if _health != null:
 		_health.destroyed.connect(_on_destroyed)
 	_terrain_node = _resolve_terrain_node()
+	_init_cached_physics_queries()
+
+
+func _init_cached_physics_queries() -> void:
+	_exclude_self = [get_rid()]
+	_ray_query_rotor = PhysicsRayQueryParameters3D.new()
+	_ray_query_rotor.collide_with_areas = false
+	_ray_query_rotor.collision_mask = rotor_dust_collision_mask
+	_ray_query_rotor.exclude = _exclude_self
+	_ray_query_ground = PhysicsRayQueryParameters3D.new()
+	_ray_query_ground.collide_with_areas = false
+	_ray_query_ground.collision_mask = ground_probe_collision_mask
+	_ray_query_ground.exclude = _exclude_self
 
 
 func _rebuild_visual_mesh_collision() -> void:
@@ -704,18 +732,11 @@ func _rotor_ground_hit() -> Dictionary:
 	if world == null:
 		return {}
 	var space: PhysicsDirectSpaceState3D = world.direct_space_state
-	if space == null:
+	if space == null or _ray_query_rotor == null:
 		return {}
-	var from_pos: Vector3 = global_position + Vector3.UP * 0.65
-	var to_pos: Vector3 = global_position - Vector3.UP * rotor_dust_max_ground_distance
-	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
-		from_pos,
-		to_pos,
-		rotor_dust_collision_mask
-	)
-	query.collide_with_areas = false
-	query.exclude = [get_rid()]
-	return space.intersect_ray(query)
+	_ray_query_rotor.from = global_position + Vector3.UP * 0.65
+	_ray_query_rotor.to = global_position - Vector3.UP * rotor_dust_max_ground_distance
+	return space.intersect_ray(_ray_query_rotor)
 
 
 func _prevent_ground_sink(min_clearance: float) -> bool:
@@ -736,8 +757,10 @@ func _prevent_ground_sink(min_clearance: float) -> bool:
 
 
 func _ground_height_under(pos: Vector3) -> float:
+	# Mutates _ground_samples in place — no per-frame allocation.
+	_fill_ground_guard_sample_points(pos)
 	var result: float = NAN
-	for sample: Vector3 in _ground_guard_sample_points(pos):
+	for sample: Vector3 in _ground_samples:
 		var sample_y: float = _ground_height_at(sample)
 		if is_nan(sample_y):
 			continue
@@ -757,7 +780,7 @@ func _ground_height_at(pos: Vector3) -> float:
 	return result
 
 
-func _ground_guard_sample_points(pos: Vector3) -> Array[Vector3]:
+func _fill_ground_guard_sample_points(pos: Vector3) -> void:
 	var forward: Vector3 = -global_transform.basis.z
 	forward.y = 0.0
 	if forward.length_squared() < 0.0001:
@@ -774,13 +797,11 @@ func _ground_guard_sample_points(pos: Vector3) -> Array[Vector3]:
 	else:
 		right = right.normalized()
 
-	return [
-		pos,
-		pos + forward * ground_guard_forward_extent - right * ground_guard_side_extent,
-		pos + forward * ground_guard_forward_extent + right * ground_guard_side_extent,
-		pos - forward * ground_guard_forward_extent - right * ground_guard_side_extent,
-		pos - forward * ground_guard_forward_extent + right * ground_guard_side_extent,
-	]
+	_ground_samples[0] = pos
+	_ground_samples[1] = pos + forward * ground_guard_forward_extent - right * ground_guard_side_extent
+	_ground_samples[2] = pos + forward * ground_guard_forward_extent + right * ground_guard_side_extent
+	_ground_samples[3] = pos - forward * ground_guard_forward_extent - right * ground_guard_side_extent
+	_ground_samples[4] = pos - forward * ground_guard_forward_extent + right * ground_guard_side_extent
 
 
 func _ground_probe_hit(pos: Vector3) -> Dictionary:
@@ -788,16 +809,11 @@ func _ground_probe_hit(pos: Vector3) -> Dictionary:
 	if world == null:
 		return {}
 	var space: PhysicsDirectSpaceState3D = world.direct_space_state
-	if space == null:
+	if space == null or _ray_query_ground == null:
 		return {}
-	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
-		pos + Vector3.UP * ground_probe_up,
-		pos - Vector3.UP * ground_probe_down,
-		ground_probe_collision_mask
-	)
-	query.collide_with_areas = false
-	query.exclude = [get_rid()]
-	return space.intersect_ray(query)
+	_ray_query_ground.from = pos + Vector3.UP * ground_probe_up
+	_ray_query_ground.to = pos - Vector3.UP * ground_probe_down
+	return space.intersect_ray(_ray_query_ground)
 
 
 func _terrain_height_at(pos: Vector3) -> float:
@@ -867,6 +883,8 @@ func _set_subtree_visible(root: Node, is_visible: bool) -> void:
 
 func _schedule_wreck_hide() -> void:
 	if wreck_burn_seconds <= 0.0:
+		return
+	if not is_inside_tree():
 		return
 	get_tree().create_timer(wreck_burn_seconds).timeout.connect(_hide_destroyed_wreck)
 

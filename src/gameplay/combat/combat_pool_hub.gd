@@ -29,9 +29,12 @@ var _muzzle_flash_cursor: int = 0
 
 
 static func find_for(context: Node) -> CombatPoolHub:
-	if context == null or context.get_tree() == null:
+	if context == null or not context.is_inside_tree():
 		return null
-	for node: Node in context.get_tree().get_nodes_in_group(GROUP_NAME):
+	var tree: SceneTree = context.get_tree()
+	if tree == null:
+		return null
+	for node: Node in tree.get_nodes_in_group(GROUP_NAME):
 		var hub: CombatPoolHub = node as CombatPoolHub
 		if hub != null and is_instance_valid(hub):
 			return hub
@@ -145,8 +148,13 @@ func _build_impact_pool() -> void:
 			push_warning("CombatPoolHub: impact scene root is not ShellImpact")
 			return
 		impact.set_pool_owner(self)
+		# Why: ShellImpact._ready handles its own pool warmup — keeps the web
+		# flash sphere + smoke billboard visible for two frames so the
+		# Compatibility renderer compiles their pipelines, then self-deactivates.
+		# Calling deactivate_for_pool() here would hide the impact in the same
+		# frame as add_child, defeating the warmup and forcing first-impact
+		# inline shader compile.
 		add_child(impact)
-		impact.deactivate_for_pool()
 		_impact_pool.append(impact)
 
 
@@ -159,8 +167,9 @@ func _build_muzzle_flash_pool() -> void:
 			push_warning("CombatPoolHub: muzzle flash scene root is not MuzzleFlash")
 			return
 		flash.set_pool_owner(self)
+		# See _build_impact_pool — MuzzleFlash._ready owns the prewarm window
+		# so the billboard+ALPHA_CUT pipeline compiles before pool deactivate.
 		add_child(flash)
-		flash.deactivate_for_pool()
 		_muzzle_flash_pool.append(flash)
 
 
