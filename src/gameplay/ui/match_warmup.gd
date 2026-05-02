@@ -5,7 +5,8 @@ extends Node3D
 ##
 ## Configured as the project's [code]run/main_scene[/code]. It boots into an
 ## idle black staging scene while React downloads Godot immediately on site
-## entry. The actual warmup starts only after React sends [code]ui_play[/code].
+## entry. The actual warmup starts as soon as the WebBridge is ready; React's
+## PLAY event only releases the final scene swap and networking.
 ## Two jobs:
 ##   1. Load Main.tscn while the React loading overlay is still up, so the
 ##      player's first visible gameplay frame doesn't pay that cost.
@@ -97,18 +98,24 @@ var _camera_base_transform: Transform3D = Transform3D.IDENTITY
 var _started: bool = false
 var _play_handler: Callable = Callable()
 var _play_handler_registered: bool = false
+var _play_requested: bool = false
+var _warmup_ready_to_switch: bool = false
+var _logged_waiting_for_play: bool = false
 
 
 func _ready() -> void:
-	print("[warmup] _ready - waiting for ui_play (Godot %s)" % Engine.get_version_info()["string"])
+	print("[warmup] _ready - auto prewarm armed (Godot %s)" % Engine.get_version_info()["string"])
 	_install_blackout_cover()
 	# Cursor visible while loading — pointer lock is captured by the player
 	# controller after Main.tscn spawns.
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_register_play_handler()
-	if not _play_handler_registered:
+	if _play_handler_registered:
+		call_deferred("_start_warmup")
+	else:
 		# Editor/native fallback: without the web bridge there is no React PLAY
 		# button, so start automatically to keep local smoke tests usable.
+		_play_requested = true
 		call_deferred("_start_warmup")
 
 
@@ -135,7 +142,13 @@ func _exit_tree() -> void:
 
 
 func _on_ui_play(_payload: Dictionary = {}) -> void:
-	_start_warmup()
+	_play_requested = true
+	if not _started:
+		_start_warmup()
+		return
+	if _warmup_ready_to_switch and not _switching:
+		print("[warmup] ui_play - prewarm already complete; switching now")
+		_switch_to_main()
 
 
 func _start_warmup() -> void:
@@ -157,14 +170,14 @@ func _start_warmup() -> void:
 	_main_scene_resource = null
 	_main_scene_load_done = false
 	_main_scene_load_failed = false
+	_warmup_ready_to_switch = false
+	_logged_waiting_for_play = false
 	_start_msec = Time.get_ticks_msec()
-	print("[warmup] ui_play - gl_compatibility prewarm start")
+	var trigger: String = "ui_play" if _play_requested else "auto"
+	print("[warmup] %s - gl_compatibility prewarm start" % trigger)
 	_emit_progress(0.02, _STAGE_LOADING)
-	# Kick off the websocket handshake in parallel with asset loading. The
-	# warmup scene is the user's first concrete contact with the engine (no
-	# more in-engine menu) so it must self-start networking. has_method guards
-	# protect editor smoke tests where the autoload isn't present.
-	_start_network_connection()
+	# Networking is intentionally not started here. NetworkManager also listens
+	# for ui_play, so it can connect with the display name the player typed.
 	print("[warmup] Main.tscn will be loaded synchronously inside warmup overlay")
 	# Spawn next frame so the camera transform is already current.
 	call_deferred("_spawn_warmup_actors")
@@ -244,6 +257,12 @@ func _process(_delta: float) -> void:
 	var probe_force_switch: bool = _elapsed >= (max_hold_seconds + probe_finish_grace_seconds)
 	var force_switch: bool = load_force_switch or probe_force_switch
 	if ((assets_ready or _main_scene_load_failed) and hold_satisfied) or force_switch:
+		_warmup_ready_to_switch = true
+		if not _play_requested:
+			if not _logged_waiting_for_play:
+				_logged_waiting_for_play = true
+				print("[warmup] prewarm ready in %.2fs - waiting for ui_play" % _elapsed)
+			return
 		if load_force_switch:
 			push_warning("[warmup] FORCED SWITCH after %.2fs — Main.tscn still %s (asset_progress=%.2f). Game may hitch on first frame." % [_elapsed, _status_label(status), asset_progress])
 		elif probe_force_switch and not probes_ready:
