@@ -101,6 +101,7 @@ var _play_handler_registered: bool = false
 var _play_requested: bool = false
 var _warmup_ready_to_switch: bool = false
 var _logged_waiting_for_play: bool = false
+var _prewarm_ready_msec: int = 0
 
 
 func _ready() -> void:
@@ -172,6 +173,7 @@ func _start_warmup() -> void:
 	_main_scene_load_failed = false
 	_warmup_ready_to_switch = false
 	_logged_waiting_for_play = false
+	_prewarm_ready_msec = 0
 	_start_msec = Time.get_ticks_msec()
 	var trigger: String = "ui_play" if _play_requested else "auto"
 	print("[warmup] %s - gl_compatibility prewarm start" % trigger)
@@ -257,7 +259,9 @@ func _process(_delta: float) -> void:
 	var probe_force_switch: bool = _elapsed >= (max_hold_seconds + probe_finish_grace_seconds)
 	var force_switch: bool = load_force_switch or probe_force_switch
 	if ((assets_ready or _main_scene_load_failed) and hold_satisfied) or force_switch:
-		_warmup_ready_to_switch = true
+		if not _warmup_ready_to_switch:
+			_warmup_ready_to_switch = true
+			_prewarm_ready_msec = Time.get_ticks_msec()
 		if not _play_requested:
 			if not _logged_waiting_for_play:
 				_logged_waiting_for_play = true
@@ -1239,8 +1243,14 @@ func _switch_to_main() -> void:
 	_switching = true
 	_emit_progress(1.0, _STAGE_READY)
 	var total_msec: int = Time.get_ticks_msec() - _start_msec
-	print("[warmup] ===== summary (total %.2fs, %d probes, async %d/%d) =====" % [
+	var prewarm_msec: int = total_msec
+	if _prewarm_ready_msec > 0:
+		prewarm_msec = _prewarm_ready_msec - _start_msec
+	var wait_for_play_msec: int = maxi(total_msec - prewarm_msec, 0)
+	print("[warmup] ===== summary (total %.2fs, prewarm %.2fs, wait_for_play %.2fs, %d probes, async %d/%d) =====" % [
 		total_msec / 1000.0,
+		prewarm_msec / 1000.0,
+		wait_for_play_msec / 1000.0,
 		_probes_spawned,
 		_completed_async_probes,
 		_async_probes_scheduled,

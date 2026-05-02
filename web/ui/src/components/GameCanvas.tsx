@@ -52,6 +52,9 @@ declare global {
 	interface Window {
 		Engine?: GodotEngineCtor;
 	}
+	interface Navigator {
+		deviceMemory?: number;
+	}
 }
 
 interface GameCanvasProps {
@@ -86,6 +89,7 @@ export default function GameCanvas({ onProgress, onReady, onError }: GameCanvasP
 
 		const boot = async (): Promise<void> => {
 			try {
+				logBrowserRenderDiagnostics();
 				const manifest: GodotManifest = await fetchManifest();
 				if (cancelled) return;
 				if (manifest.base === null || manifest.base.length === 0) {
@@ -269,6 +273,76 @@ function logGodotStderr(...args: unknown[]): void {
 		return;
 	}
 	console.error("[Godot]", ...args);
+}
+
+function logBrowserRenderDiagnostics(): void {
+	const canvas: HTMLCanvasElement = document.createElement("canvas");
+	const attrs: WebGLContextAttributes = {
+		alpha: false,
+		antialias: false,
+		depth: true,
+		failIfMajorPerformanceCaveat: false,
+		powerPreference: "high-performance",
+		stencil: false,
+	};
+	const gl2 = canvas.getContext("webgl2", attrs) as WebGL2RenderingContext | null;
+	const gl1 =
+		gl2 === null ? (canvas.getContext("webgl", attrs) as WebGLRenderingContext | null) : null;
+	const gl: WebGL2RenderingContext | WebGLRenderingContext | null = gl2 ?? gl1;
+
+	const baseInfo = {
+		userAgent: navigator.userAgent,
+		platform: navigator.platform,
+		language: navigator.language,
+		hardwareConcurrency: navigator.hardwareConcurrency,
+		deviceMemory: navigator.deviceMemory,
+		crossOriginIsolated: window.crossOriginIsolated,
+		webgl2: gl2 !== null,
+		webgl1: gl1 !== null,
+	};
+	console.info("[webgl-diagnostics] browser", baseInfo);
+
+	if (gl === null) {
+		console.error("[webgl-diagnostics] WebGL unavailable");
+		return;
+	}
+
+	const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+	const rendererInfo =
+		dbg !== null
+			? {
+					vendor: gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) as string,
+					renderer: gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) as string,
+				}
+			: {
+					vendor: gl.getParameter(gl.VENDOR) as string,
+					renderer: gl.getParameter(gl.RENDERER) as string,
+				};
+	console.info("[webgl-diagnostics] renderer", rendererInfo);
+
+	const caps: Record<string, number | string | boolean | null> = {
+		version: gl.getParameter(gl.VERSION) as string,
+		shadingLanguageVersion: gl.getParameter(gl.SHADING_LANGUAGE_VERSION) as string,
+		maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
+		maxRenderbufferSize: gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) as number,
+		maxVertexAttribs: gl.getParameter(gl.MAX_VERTEX_ATTRIBS) as number,
+		maxVertexUniformVectors: gl.getParameter(gl.MAX_VERTEX_UNIFORM_VECTORS) as number,
+		maxFragmentUniformVectors: gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) as number,
+		maxVaryingVectors: gl.getParameter(gl.MAX_VARYING_VECTORS) as number,
+		maxTextureImageUnits: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) as number,
+		maxVertexTextureImageUnits: gl.getParameter(gl.MAX_VERTEX_TEXTURE_IMAGE_UNITS) as number,
+		maxCombinedTextureImageUnits: gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS) as number,
+	};
+	if (gl2 !== null) {
+		caps.maxArrayTextureLayers = gl2.getParameter(gl2.MAX_ARRAY_TEXTURE_LAYERS) as number;
+		caps.max3DTextureSize = gl2.getParameter(gl2.MAX_3D_TEXTURE_SIZE) as number;
+	}
+	console.info("[webgl-diagnostics] caps", caps);
+
+	const terrainRisk = gl2 === null || Number(caps.maxVaryingVectors ?? 0) < 16;
+	if (terrainRisk) {
+		console.warn("[webgl-diagnostics] terrain risk: WebGL2 missing or low varying-vector budget");
+	}
 }
 
 function isRunDependencyProgressLine(text: string): boolean {
