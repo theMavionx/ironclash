@@ -37,6 +37,15 @@ var _ray: RayCast3D
 ## Body to ignore on the first frame (the firing vehicle). Set via [method setup]
 ## BEFORE add_child so _ready can apply the exception when constructing the ray.
 var _shooter: CollisionObject3D = null
+var _pool_owner: Node = null
+var _pool_active: bool = true
+var _base_lifetime: float = 0.0
+var _core_mesh: MeshInstance3D = null
+var _core_default_mesh: Mesh = null
+var _core_default_transform: Transform3D
+var _core_default_scale: Vector3 = Vector3.ONE
+var _core_default_material: Material = null
+var _warmup_skip_particles: bool = false
 
 
 ## Configure damage source/amount and the firing vehicle to ignore for self-hit.
@@ -57,34 +66,184 @@ func setup_network(projectile_id: String, apply_local: bool = false) -> void:
 	apply_local_damage = apply_local
 
 
-func _ready() -> void:
+func set_pool_owner(pool_owner: Node) -> void:
+	_pool_owner = pool_owner
+
+
+func is_pool_idle() -> bool:
+	return _pool_owner != null and not _pool_active
+
+
+func set_warmup_skip_particles(disabled: bool) -> void:
+	_warmup_skip_particles = disabled
+	if disabled:
+		_set_particle_emitters(false)
+
+
+func activate_from_pool(
+	source: int,
+	dmg: int,
+	shooter: CollisionObject3D,
+	projectile_id: String,
+	apply_local: bool,
+	origin: Vector3,
+	aim_dir: Vector3,
+	lifetime_override: float = -1.0
+) -> void:
+	_pool_active = true
+	_warmup_skip_particles = false
+	visible = true
+	setup(source, dmg, shooter)
+	setup_network(projectile_id, apply_local)
+	lifetime = lifetime_override if lifetime_override > 0.0 else _base_lifetime
+	_remaining_life = lifetime
+	_reset_core_visual()
+	global_position = origin
+	var dir: Vector3 = aim_dir.normalized()
+	if dir.length_squared() < 0.0001:
+		dir = Vector3.FORWARD
+	var up_ref: Vector3 = Vector3.UP
+	if absf(dir.dot(Vector3.UP)) > 0.95:
+		up_ref = Vector3.FORWARD
+	look_at(origin + dir, up_ref)
+	_ensure_ray()
+	_configure_ray()
+	_restart_particle_emitters()
+	set_physics_process(true)
+
+
+func deactivate_for_pool() -> void:
+	_pool_active = false
+	visible = false
+	_remaining_life = 0.0
+	_shooter = null
+	network_projectile_id = ""
+	apply_local_damage = true
+	lifetime = _base_lifetime if _base_lifetime > 0.0 else lifetime
+	_reset_core_visual()
+	if _ray != null and is_instance_valid(_ray):
+		_ray.enabled = false
+		_ray.clear_exceptions()
+	_set_particle_emitters(false)
+	set_physics_process(false)
+
+
+func set_lifetime_remaining(seconds: float) -> void:
+	lifetime = maxf(seconds, 0.01)
 	_remaining_life = lifetime
 
-	_ray = RayCast3D.new()
-	add_child(_ray)
+
+func _ready() -> void:
+	_base_lifetime = lifetime
+	_remaining_life = lifetime
+
+	_cache_core_visual()
+	_ensure_ray()
+	_configure_ray()
 	# Cast slightly ahead each frame — length matches one frame of travel at max speed.
 	# Using 1/30 s as a conservative frame floor so fast shells never tunnel.
-	_ray.target_position = Vector3(0.0, 0.0, -(speed / 30.0))
-	_ray.collision_mask = collision_mask
-	_ray.enabled = true
+	if _pool_owner != null:
+		deactivate_for_pool()
+	elif not _warmup_skip_particles:
+		_restart_particle_emitters()
 	# Physics-level filter so the shell never hits the vehicle that fired it.
-	if _shooter != null:
-		_ray.add_exception(_shooter)
 
 
 func _physics_process(delta: float) -> void:
+	if _pool_owner != null and not _pool_active:
+		return
 	# Check collision BEFORE moving so the ray sweeps the path we are about to cover.
 	if _ray.is_colliding():
 		var collider: Node = _ray.get_collider() as Node
 		_apply_damage_if_health(collider)
 		_spawn_impact(_ray.get_collision_point(), _ray.get_collision_normal())
-		queue_free()
+		_finish_projectile()
 		return
 
 	translate(Vector3(0.0, 0.0, -speed * delta))
 	_remaining_life -= delta
 	if _remaining_life <= 0.0:
-		queue_free()
+		_finish_projectile()
+
+
+func _ensure_ray() -> void:
+	if _ray != null and is_instance_valid(_ray):
+		return
+	_ray = get_node_or_null("ProjectileRay") as RayCast3D
+	if _ray == null:
+		_ray = RayCast3D.new()
+		_ray.name = "ProjectileRay"
+		add_child(_ray)
+
+
+func _configure_ray() -> void:
+	if _ray == null:
+		return
+	# Cast slightly ahead each frame - length matches one frame of travel at max speed.
+	# Using 1/30 s as a conservative frame floor so fast shells never tunnel.
+	_ray.target_position = Vector3(0.0, 0.0, -(speed / 30.0))
+	_ray.collision_mask = collision_mask
+	_ray.clear_exceptions()
+	_ray.enabled = _pool_owner == null or _pool_active
+	# Physics-level filter so the shell never hits the vehicle that fired it.
+	if _shooter != null and is_instance_valid(_shooter):
+		_ray.add_exception(_shooter)
+
+
+func _finish_projectile() -> void:
+	if _pool_owner != null and is_instance_valid(_pool_owner) and _pool_owner.has_method("release_projectile"):
+		_pool_owner.call("release_projectile", self)
+		return
+	queue_free()
+
+
+func _cache_core_visual() -> void:
+	_core_mesh = get_node_or_null("CoreMesh") as MeshInstance3D
+	if _core_mesh == null:
+		return
+	_core_default_mesh = _core_mesh.mesh
+	_core_default_transform = _core_mesh.transform
+	_core_default_scale = _core_mesh.scale
+	_core_default_material = _core_mesh.material_override
+
+
+func _reset_core_visual() -> void:
+	if _core_mesh == null or not is_instance_valid(_core_mesh):
+		return
+	_core_mesh.mesh = _core_default_mesh
+	_core_mesh.transform = _core_default_transform
+	_core_mesh.scale = _core_default_scale
+	_core_mesh.material_override = _core_default_material
+
+
+func _restart_particle_emitters() -> void:
+	if _warmup_skip_particles:
+		return
+	_set_particle_emitters(false)
+	_set_particle_emitters(true)
+
+
+func _set_particle_emitters(is_emitting: bool) -> void:
+	_set_particle_emitters_recursive(self, is_emitting)
+
+
+func _set_particle_emitters_recursive(root: Node, is_emitting: bool) -> void:
+	for child: Node in root.get_children():
+		if child is GPUParticles3D:
+			var gpu: GPUParticles3D = child as GPUParticles3D
+			gpu.visible = true
+			gpu.emitting = is_emitting
+			if is_emitting:
+				gpu.visible = true
+				gpu.restart()
+		elif child is CPUParticles3D:
+			var cpu: CPUParticles3D = child as CPUParticles3D
+			cpu.visible = true
+			cpu.emitting = is_emitting
+			if is_emitting:
+				cpu.visible = true
+				cpu.restart()
+		_set_particle_emitters_recursive(child, is_emitting)
 
 
 func _apply_damage_if_health(collider: Node) -> void:
@@ -175,6 +334,11 @@ func _spawn_impact(hit_point: Vector3, hit_normal: Vector3) -> void:
 	if impact_scene == null:
 		return
 
+	var hub: Node = _find_combat_pool_hub()
+	if hub != null and hub.has_method("spawn_impact"):
+		if hub.call("spawn_impact", hit_point, hit_normal, impact_scene) != null:
+			return
+
 	var impact: Node3D = impact_scene.instantiate() as Node3D
 	if impact == null:
 		push_error("TankShell: impact_scene did not instantiate as Node3D")
@@ -192,6 +356,15 @@ func _spawn_impact(hit_point: Vector3, hit_normal: Vector3) -> void:
 	# basis when hit_normal is parallel to FORWARD or RIGHT.
 	if hit_normal.length_squared() > 0.001:
 		impact.global_transform.basis = Basis(Quaternion(Vector3.UP, hit_normal.normalized()))
+
+
+func _find_combat_pool_hub() -> Node:
+	if get_tree() == null:
+		return null
+	for node: Node in get_tree().get_nodes_in_group(&"combat_pool_hub"):
+		if node != null and is_instance_valid(node) and node.has_method("spawn_impact"):
+			return node
+	return null
 
 
 ## Send an explosion shake event to every registered receiver (the player's

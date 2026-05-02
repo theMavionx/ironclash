@@ -1,3 +1,4 @@
+class_name SmokeVolume
 extends GPUParticles3D
 
 ## Web-compatible smoke "volume". Replaces the prior FogVolume implementation
@@ -9,12 +10,12 @@ extends GPUParticles3D
 ## visually as the wisp dispersing. Technique adapted from Lelu's "Smoke VFX"
 ## YouTube tutorial (the third / LOD-trick method).
 ##
-## Lifecycle (driven by a single Tween):
+## Lifecycle (driven by _process so pooled instances do not allocate Tweens):
 ##   amount_ratio: 0 → 1 over [member spawn_time]
 ##   hold for [member sustain_time]
 ##   amount_ratio: 1 → 0 over [member fade_time] (ease-in)
 ##   stop emitting, wait [member lifetime] more seconds for in-flight particles
-##   to finish, then queue_free.
+##   to finish, then release to pool or queue_free.
 ##
 ## Process material + draw mesh are built in [method _ready] from exports so
 ## designers can tune per-instance look without editing a sub-resource graph.
@@ -54,9 +55,52 @@ const _CIRCLE_MASK_PATH: String = "res://assets/textures/smoke_vfx/T_VFX_circle_
 # subsequent instances to avoid per-spawn file IO and texture allocation.
 # ---------------------------------------------------------------------------
 static var _shared_shader: Shader = null
+static var _shared_web_shader: Shader = null
 static var _shared_smoke_texture: Texture2D = null
 static var _shared_noise: Texture2D = null
 static var _shared_mask: Texture2D = null
+
+var _pool_owner: Node = null
+var _pool_active: bool = true
+var _age: float = 0.0
+var _web_vfx: WebShaderBillboardVFX = null
+var _web_stopped_looping: bool = false
+
+
+func set_pool_owner(pool_owner: Node) -> void:
+	_pool_owner = pool_owner
+
+
+func is_pool_idle() -> bool:
+	return _pool_owner != null and not _pool_active
+
+
+func play() -> void:
+	_age = 0.0
+	_web_stopped_looping = false
+	_pool_active = true
+	visible = true
+	amount_ratio = 0.0
+	emitting = false
+	if OS.has_feature("web"):
+		if _web_vfx != null:
+			_web_vfx.restart(true)
+	else:
+		emitting = true
+		restart()
+	set_process(true)
+
+
+func deactivate_for_pool() -> void:
+	_pool_active = false
+	visible = false
+	_age = 0.0
+	_web_stopped_looping = false
+	amount_ratio = 0.0
+	emitting = false
+	if _web_vfx != null:
+		_web_vfx.hide_all()
+	set_process(false)
 
 
 func _ready() -> void:
@@ -68,6 +112,10 @@ func _ready() -> void:
 		_shared_shader = load(_SHADER_PATH) as Shader
 		if _shared_shader == null:
 			push_warning("SmokeVolume: shader missing at %s" % _SHADER_PATH)
+	if _shared_web_shader == null:
+		_shared_web_shader = load(_WEB_SHADER_PATH) as Shader
+		if _shared_web_shader == null:
+			push_warning("SmokeVolume: web shader missing at %s" % _WEB_SHADER_PATH)
 	if _shared_smoke_texture == null:
 		_shared_smoke_texture = load(_SMOKE_TEXTURE_PATH) as Texture2D
 		if _shared_smoke_texture == null:
@@ -84,6 +132,10 @@ func _ready() -> void:
 	if web_build:
 		emitting = false
 		_build_web_smoke_particles()
+		if _pool_owner != null:
+			deactivate_for_pool()
+		else:
+			play()
 		return
 
 	process_material = _build_process_material()
@@ -93,22 +145,48 @@ func _ready() -> void:
 	# a tiny box and frustum-culls the column the moment its origin leaves view.
 	visibility_aabb = AABB(Vector3(-2.0, -1.0, -2.0), Vector3(4.0, 8.0, 4.0))
 	amount_ratio = 0.0
-	emitting = true
+	if _pool_owner != null:
+		deactivate_for_pool()
+	else:
+		play()
 
-	var tween: Tween = create_tween()
-	tween.tween_property(self, "amount_ratio", 1.0, spawn_time)
-	tween.tween_interval(sustain_time)
-	tween.tween_property(self, "amount_ratio", 0.0, fade_time).set_ease(Tween.EASE_IN)
-	# After fade, stop new emission and wait one full particle lifetime so
-	# the last in-flight particles finish their fade-out gradient before the
-	# node is freed (otherwise the cloud pops out instantly).
-	tween.tween_callback(_stop_emitting)
-	tween.tween_interval(lifetime)
-	tween.tween_callback(queue_free)
+
+func _process(delta: float) -> void:
+	if _pool_owner != null and not _pool_active:
+		return
+	_age += delta
+	var fade_start: float = spawn_time + sustain_time
+	var stop_time: float = fade_start + fade_time
+	var finish_time: float = stop_time + lifetime
+
+	if _age < spawn_time:
+		amount_ratio = clampf(_age / maxf(spawn_time, 0.001), 0.0, 1.0)
+	elif _age < fade_start:
+		amount_ratio = 1.0
+	elif _age < stop_time:
+		var fade_t: float = clampf((_age - fade_start) / maxf(fade_time, 0.001), 0.0, 1.0)
+		amount_ratio = 1.0 - fade_t * fade_t
+	else:
+		amount_ratio = 0.0
+		if not OS.has_feature("web"):
+			_stop_emitting()
+		elif _web_vfx != null and not _web_stopped_looping:
+			_web_vfx.stop_looping()
+			_web_stopped_looping = true
+
+	if _age >= finish_time:
+		_finish()
 
 
 func _stop_emitting() -> void:
 	emitting = false
+
+
+func _finish() -> void:
+	if _pool_owner != null:
+		deactivate_for_pool()
+		return
+	queue_free()
 
 
 # ---------------------------------------------------------------------------
@@ -197,13 +275,13 @@ func _build_web_billboard_material() -> StandardMaterial3D:
 func _build_web_smoke_particles() -> void:
 	var tint: Color = smoke_color
 	tint.a = 0.82
-	var vfx = _WEB_SHADER_BILLBOARD_VFX_SCRIPT.new()
-	vfx.name = "WebSmokeParticles"
-	add_child(vfx)
+	_web_vfx = _WEB_SHADER_BILLBOARD_VFX_SCRIPT.new() as WebShaderBillboardVFX
+	_web_vfx.name = "WebSmokeParticles"
+	add_child(_web_vfx)
 
-	var smoke_count: int = mini(amount, 24)
+	var smoke_count: int = mini(amount, 16)
 	for i: int in range(smoke_count):
-		vfx.add_card(
+		_web_vfx.add_card(
 			"Smoke%02d" % i,
 			_build_web_smoke_shader_material(tint, randf() * 20.0),
 			Vector2(1.5, 1.5),
@@ -222,11 +300,6 @@ func _build_web_smoke_particles() -> void:
 			randf() * lifetime
 		)
 
-	var stop_timer: SceneTreeTimer = get_tree().create_timer(spawn_time + sustain_time + fade_time)
-	stop_timer.timeout.connect(vfx.stop_looping)
-	var done_timer: SceneTreeTimer = get_tree().create_timer(spawn_time + sustain_time + fade_time + lifetime)
-	done_timer.timeout.connect(queue_free)
-
 
 func _build_smoke_lifetime_gradient() -> Gradient:
 	var grad: Gradient = Gradient.new()
@@ -239,7 +312,7 @@ func _build_smoke_lifetime_gradient() -> Gradient:
 
 
 func _build_web_smoke_shader_material(tint: Color, time_offset: float, particle_life_override: float = -1.0) -> Material:
-	var web_shader: Shader = load(_WEB_SHADER_PATH) as Shader
+	var web_shader: Shader = _shared_web_shader
 	if web_shader == null or _shared_smoke_texture == null:
 		var fallback: StandardMaterial3D = _build_web_billboard_material()
 		fallback.albedo_color = tint

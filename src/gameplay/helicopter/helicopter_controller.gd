@@ -577,15 +577,22 @@ func _spawn_missile(from_mesh: Node3D) -> void:
 	var cam: Camera3D = get_viewport().get_camera_3d()
 	if cam == null or missile_scene == null:
 		return
-	var shell: TankShell = missile_scene.instantiate() as TankShell
+	var hub: CombatPoolHub = CombatPoolHub.find_for(self)
+	var shell: Node3D = null
+	if hub == null:
+		shell = missile_scene.instantiate() as Node3D
 	# setup() before add_child so the raycast self-hit exception is wired in _ready.
-	shell.setup(DamageTypes.Source.HELI_MISSILE, 34, self)
+	if shell != null:
+		if shell.has_method("setup"):
+			shell.call("setup", DamageTypes.Source.HELI_MISSILE, 34, self)
 	# Network-authoritative damage — same pattern as the tank shell. Local
 	# missiles only do VFX; server applies damage via vehicle_hit_claim.
-	if shell.has_method("setup_network"):
-		shell.call("setup_network", "heli_missile", false)
-	get_tree().current_scene.add_child(shell)
-	shell.global_position = from_mesh.global_position
+		if shell.has_method("setup_network"):
+			shell.call("setup_network", "heli_missile", false)
+		get_tree().current_scene.add_child(shell)
+	var spawn_origin: Vector3 = from_mesh.global_position
+	if shell != null:
+		shell.global_position = spawn_origin
 	# Crosshair convergence: trace from camera to find crosshair target, then
 	# aim missile from the pod to that point — fixes parallax between the
 	# camera (above/behind) and the missile pods (below).
@@ -598,13 +605,37 @@ func _spawn_missile(from_mesh: Node3D) -> void:
 	var hit: Dictionary = space.intersect_ray(query)
 	if not hit.is_empty():
 		target_point = hit.get("position", target_point)
-	var aim_dir: Vector3 = (target_point - shell.global_position).normalized()
+	var aim_dir: Vector3 = (target_point - spawn_origin).normalized()
 	var up_ref: Vector3 = Vector3.UP
 	if absf(aim_dir.dot(Vector3.UP)) > 0.95:
 		up_ref = Vector3.FORWARD
-	shell.look_at(shell.global_position + aim_dir, up_ref)
+	if hub != null:
+		shell = hub.spawn_projectile(
+			&"heli_missile",
+			spawn_origin,
+			aim_dir,
+			DamageTypes.Source.HELI_MISSILE,
+			34,
+			self,
+			"heli_missile",
+			false
+		)
+		if shell == null:
+			shell = missile_scene.instantiate() as Node3D
+			if shell != null:
+				if shell.has_method("setup"):
+					shell.call("setup", DamageTypes.Source.HELI_MISSILE, 34, self)
+				if shell.has_method("setup_network"):
+					shell.call("setup_network", "heli_missile", false)
+				get_tree().current_scene.add_child(shell)
+				shell.global_position = spawn_origin
+				shell.look_at(spawn_origin + aim_dir, up_ref)
+	elif shell != null:
+		shell.look_at(spawn_origin + aim_dir, up_ref)
+	if shell == null:
+		return
 	# Notify any network sync wrapper riding alongside the local controller.
-	fired_with_aim.emit(shell.global_position, aim_dir)
+	fired_with_aim.emit(spawn_origin, aim_dir)
 
 
 func _start_reload() -> void:

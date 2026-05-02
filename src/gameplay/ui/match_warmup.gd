@@ -1,14 +1,14 @@
 class_name MatchWarmupScene
 extends Node3D
 
-## Pre-match shader/pipeline prewarm + threaded scene loader.
+## Pre-match shader/pipeline prewarm + staged scene loader.
 ##
 ## Configured as the project's [code]run/main_scene[/code]. It boots into an
 ## idle black staging scene while React downloads Godot immediately on site
 ## entry. The actual warmup starts only after React sends [code]ui_play[/code].
 ## Two jobs:
-##   1. Background-load Main.tscn through ResourceLoader.load_threaded_request
-##      so the player's main thread isn't blocked.
+##   1. Load Main.tscn while the React loading overlay is still up, so the
+##      player's first visible gameplay frame doesn't pay that cost.
 ##   2. Instance the critical first-combat prefabs in front of [member _camera]
 ##      for at least one frame so the Compatibility renderer (gl_compatibility,
 ##      OpenGL/WebGL2) compiles their pipelines BEFORE the first AK/RPG shot,
@@ -32,14 +32,14 @@ extends Node3D
 ## from cache. The Compatibility renderer needs at least one full frame per
 ## prefab to compile pipelines, and repeated shot probes need a little extra
 ## time so two visible frames land before the scene swap.
-@export var min_hold_seconds: float = 10.0
+@export var min_hold_seconds: float = 6.0
 ## Hard ceiling — if Main.tscn doesn't finish loading after this, swap anyway
 ## and let the gameplay scene finish loading on its own. Prevents a soft hang
-## if threaded loading deadlocks.
+## if the staged load stalls.
 @export var max_hold_seconds: float = 12.0
-## Extra budget for already-loaded assets when the probe coroutine is in its
-## last awaited frames. This avoids a noisy forced-switch warning when no async
-## probes are pending but the staging flag has not flipped yet.
+## Extra budget after the main scene is loaded while combat probes are still
+## compiling. Browser/WebGL shader compilation can be much slower than native,
+## and switching early defeats the whole point of the first-shot warmup.
 @export var probe_finish_grace_seconds: float = 3.0
 
 ## How far ahead of the camera the warmup root sits. Far enough that the
@@ -51,14 +51,19 @@ const _STAGE_COMPILING: String = "compiling_shaders"
 const _STAGE_READY: String = "ready"
 
 const _BLACKOUT_CANVAS_LAYER: int = 128
-const _WARMUP_PROBE_LIFETIME: float = 4.0
-const _WARMUP_SHOT_REPETITIONS: int = 4
+const _WARMUP_PROBE_LIFETIME: float = 1.25
+const _WARMUP_SHOT_REPETITIONS: int = 3
 const _WARMUP_PROJECTILE_REPETITIONS: int = 1
 const _WARMUP_DESTRUCTION_REPETITIONS: int = 1
-const _WARMUP_VEHICLE_FIRE_REPETITIONS: int = 1
+const _WARMUP_DESTRUCTION_VFX_REPETITIONS: int = 1
+const _WARMUP_VEHICLE_FIRE_REPETITIONS: int = 2
 const _WARMUP_DELAYED_SHOT_BURSTS: int = 1
 const _WARMUP_SHOTS_PER_DELAYED_BURST: int = 1
 const _WARMUP_FRAME_GAP: int = 1
+const _WARMUP_COMPILE_FRAMES: int = 2
+const _WARMUP_PROJECTILE_PARTICLE_AMOUNT: int = 4
+const _WARMUP_PROJECTILE_LIFETIME: float = 0.35
+const _WARMUP_SMOKE_LIFETIME: float = 0.18
 const _MAIN_TANK_SCALE: float = 2.8
 const _MAIN_HELICOPTER_SCALE: float = 3.2
 const _MAIN_DRONE_SCALE: float = 1.0
@@ -304,30 +309,42 @@ func _spawn_warmup_actors() -> void:
 	_camera_motion_enabled = true
 	print("[warmup] spawn_warmup_actors — camera=%v root=%v" % [cam_xform.origin, origin])
 
-	# Critical 10-second warmup: compile the pipelines a player actually hits
+	# Critical combat warmup: compile the pipelines a player actually hits
 	# in the first fight. Decorative variants are intentionally skipped here;
 	# they were making web startup longer without reducing combat hitches.
 	var t: int = Time.get_ticks_msec()
+	DestructionVFX.preload_resources()
+	_record_probe_time("DestructionVFX resource cache", Time.get_ticks_msec() - t)
+	await _yield_warmup_frames()
+	t = Time.get_ticks_msec()
+	var destruction_material_probes: Node3D = DestructionVFX.spawn_warmup_material_probes(_warmup_root)
+	if destruction_material_probes != null:
+		_schedule_free(destruction_material_probes, _WARMUP_PROBE_LIFETIME)
+	_record_probe_time("destruction material variants", Time.get_ticks_msec() - t)
+	await _yield_warmup_frames(_WARMUP_COMPILE_FRAMES)
+	t = Time.get_ticks_msec()
 	PlayerFireVFX.prewarm(_warmup_root)
 	_record_probe_time("PlayerFireVFX.prewarm", Time.get_ticks_msec() - t)
-	await _yield_warmup_frames()
+	await _yield_warmup_frames(_WARMUP_COMPILE_FRAMES)
 	_spawn_canvas_shader_probe()
 	await _yield_warmup_frames()
 	await _spawn_player_shot_probe()
-	await _yield_warmup_frames()
+	await _yield_warmup_frames(_WARMUP_COMPILE_FRAMES)
 	await _wait_for_main_load_before_scene_probes()
-	await _yield_warmup_frames()
-	await _spawn_projectile_scene_probes()
-	await _yield_warmup_frames()
-	await _spawn_vehicle_fire_probes()
 	await _yield_warmup_frames()
 	_spawn_charred_probe()
 	await _yield_warmup_frames()
+	# Full tank/heli destruction probes are intentionally not on the critical
+	# path: they warm more code, but on WebGL they can add ~10 seconds to the
+	# loading screen. Representative smoke/explosion/projectile probes cover the
+	# expensive material and pipeline variants; live destruction CPU work is
+	# handled by the hot-path caches in DestructionVFX.
 	await _spawn_smoke_fire_probe()
-	await _yield_warmup_frames()
+	await _yield_warmup_frames(_WARMUP_COMPILE_FRAMES)
 	await _spawn_explosion_probe()
-	await _yield_warmup_frames()
-	await _spawn_actual_vehicle_destruction_probes()
+	await _yield_warmup_frames(_WARMUP_COMPILE_FRAMES)
+	await _spawn_projectile_scene_probes()
+	await _yield_warmup_frames(_WARMUP_COMPILE_FRAMES)
 	_probe_staging_complete = true
 	await _yield_warmup_frames()
 	await _wait_for_async_probes("critical staged probes", 0.1)
@@ -785,7 +802,7 @@ func _spawn_charred_probe() -> void:
 
 func _spawn_smoke_fire_probe() -> void:
 	var t: int = Time.get_ticks_msec()
-	for i: int in range(_WARMUP_SHOT_REPETITIONS):
+	for i: int in range(_WARMUP_DESTRUCTION_VFX_REPETITIONS):
 		var probe: Node3D = Node3D.new()
 		probe.name = "SmokeProbe%02d" % i
 		_warmup_root.add_child(probe)
@@ -802,7 +819,7 @@ func _spawn_smoke_fire_probe() -> void:
 		DestructionVFX.spawn_smoke_fire(probe, 0.35, true, _WARMUP_PROBE_LIFETIME)
 		_schedule_free(probe, _WARMUP_PROBE_LIFETIME)
 		await _yield_warmup_frames()
-	_record_probe_time("smoke x%d" % _WARMUP_SHOT_REPETITIONS, Time.get_ticks_msec() - t)
+	_record_probe_time("smoke x%d" % _WARMUP_DESTRUCTION_VFX_REPETITIONS, Time.get_ticks_msec() - t)
 
 
 ## Vehicle-explosion probe. Compiles the spark-burst circle-mask billboard
@@ -813,11 +830,11 @@ func _spawn_explosion_probe() -> void:
 	var t: int = Time.get_ticks_msec()
 	# Offset slightly so the burst doesn't blow apart the smoke probe at the
 	# same world point (cosmetic only; React loading overlay covers all of it).
-	for i: int in range(_WARMUP_SHOT_REPETITIONS):
+	for i: int in range(_WARMUP_DESTRUCTION_VFX_REPETITIONS):
 		var pos: Vector3 = _warmup_root.global_transform.origin + Vector3(-0.15 + 0.3 * float(i), 0.1, 0.2)
 		DestructionVFX.spawn_explosion(_warmup_root, pos)
 		await _yield_warmup_frames()
-	_record_probe_time("vehicle explosion x%d" % _WARMUP_SHOT_REPETITIONS, Time.get_ticks_msec() - t)
+	_record_probe_time("vehicle explosion x%d" % _WARMUP_DESTRUCTION_VFX_REPETITIONS, Time.get_ticks_msec() - t)
 
 
 ## Generic debris-RigidBody3D probe. Drives _build_debris_body + _launch_debris
@@ -853,18 +870,37 @@ func _spawn_static_debris_probe() -> void:
 
 func _spawn_projectile_scene_probes() -> void:
 	# Briefly instance every projectile prefab so its materials + GPUParticles
-	# pipelines compile. Position spread keeps them from colliding with each
-	# other at spawn — collisions during warmup are fine, we just don't want
-	# them to overlap visually in the React loading frame.
-	var paths: Array[String] = [
-		"res://scenes/projectile/tank_shell.tscn",
-		"res://scenes/projectile/rpg_rocket.tscn",
-		"res://scenes/projectile/shell_impact.tscn",
-		"res://scenes/projectile/smoke_volume.tscn",
-		"res://scenes/projectile/muzzle_flash.tscn",
+	# pipelines compile. The expensive part on WebGL is the first rendered
+	# particle/material frame, so stage all probes first and yield once as a
+	# batch instead of serializing a multi-second compile frame per scene.
+	var batch_t: int = Time.get_ticks_msec()
+	var probes: Array[Dictionary] = [
+		{
+			"path": "res://scenes/projectile/tank_shell.tscn",
+			"warm_particles": false,
+		},
+		{
+			"path": "res://scenes/projectile/rpg_rocket.tscn",
+			"warm_particles": true,
+		},
+		{
+			"path": "res://scenes/projectile/shell_impact.tscn",
+			"warm_particles": false,
+		},
+		{
+			"path": "res://scenes/projectile/smoke_volume.tscn",
+			"warm_particles": false,
+		},
+		{
+			"path": "res://scenes/projectile/muzzle_flash.tscn",
+			"warm_particles": false,
+		},
 	]
 	var x: float = -0.6
-	for p: String in paths:
+	var staged: int = 0
+	for data: Dictionary in probes:
+		var p: String = String(data["path"])
+		var warm_particles: bool = bool(data.get("warm_particles", false))
 		var t: int = Time.get_ticks_msec()
 		if not ResourceLoader.exists(p):
 			push_warning("[warmup] projectile scene missing: %s" % p)
@@ -874,21 +910,67 @@ func _spawn_projectile_scene_probes() -> void:
 			push_warning("[warmup] failed to load projectile scene: %s" % p)
 			continue
 		for i: int in range(_WARMUP_PROJECTILE_REPETITIONS):
-			_stage_projectile_probe(packed, x, i, 0.0)
-			await _yield_warmup_frames()
+			_stage_projectile_probe(packed, x, i, 0.0, warm_particles)
+			staged += 1
 		x += 0.3
-		_record_probe_time("%s x%d" % [p.get_file(), _WARMUP_PROJECTILE_REPETITIONS], Time.get_ticks_msec() - t)
-		await _yield_warmup_frames()
+		_record_probe_time("%s load/stage x%d" % [p.get_file(), _WARMUP_PROJECTILE_REPETITIONS], Time.get_ticks_msec() - t)
+	await _yield_warmup_frames(_WARMUP_COMPILE_FRAMES)
+	_record_probe_time("projectile scenes render batch x%d" % staged, Time.get_ticks_msec() - batch_t)
 
 
-func _stage_projectile_probe(packed: PackedScene, x: float, index: int, y: float) -> void:
+func _stage_projectile_probe(packed: PackedScene, x: float, index: int, y: float, warm_particles: bool = false) -> void:
 	if packed == null or not is_instance_valid(_warmup_root):
 		return
 	var inst: Node = packed.instantiate()
+	_prepare_lightweight_projectile_probe(inst)
+	if OS.has_feature("web") and not warm_particles and inst.has_method("set_warmup_skip_particles"):
+		inst.call("set_warmup_skip_particles", true)
 	_warmup_root.add_child(inst)
 	if inst is Node3D:
 		(inst as Node3D).position = Vector3(x + 0.12 * float(index), -0.2 + y, -0.08 * float(index))
+	if warm_particles or not OS.has_feature("web"):
+		_kick_particle_emitters(inst)
 	_schedule_free(inst, _WARMUP_PROBE_LIFETIME)
+
+
+func _prepare_lightweight_projectile_probe(root: Node) -> void:
+	if root == null:
+		return
+	if "lifetime" in root:
+		root.set("lifetime", _WARMUP_PROJECTILE_LIFETIME)
+	if "total_lifetime" in root:
+		root.set("total_lifetime", _WARMUP_PROJECTILE_LIFETIME)
+	if "spawn_time" in root:
+		root.set("spawn_time", 0.04)
+	if "sustain_time" in root:
+		root.set("sustain_time", 0.04)
+	if "fade_time" in root:
+		root.set("fade_time", 0.06)
+	if root is GPUParticles3D:
+		var gpu: GPUParticles3D = root as GPUParticles3D
+		gpu.amount = mini(gpu.amount, _WARMUP_PROJECTILE_PARTICLE_AMOUNT)
+		gpu.lifetime = minf(gpu.lifetime, _WARMUP_SMOKE_LIFETIME)
+		gpu.preprocess = 0.0
+	elif root is CPUParticles3D:
+		var cpu: CPUParticles3D = root as CPUParticles3D
+		cpu.amount = mini(cpu.amount, _WARMUP_PROJECTILE_PARTICLE_AMOUNT)
+		cpu.lifetime = minf(cpu.lifetime, _WARMUP_SMOKE_LIFETIME)
+		cpu.preprocess = 0.0
+	for child: Node in root.get_children():
+		_prepare_lightweight_projectile_probe(child)
+
+
+func _kick_particle_emitters(root: Node) -> void:
+	if root is GPUParticles3D:
+		var gpu: GPUParticles3D = root as GPUParticles3D
+		gpu.emitting = true
+		gpu.restart()
+	elif root is CPUParticles3D:
+		var cpu: CPUParticles3D = root as CPUParticles3D
+		cpu.emitting = true
+		cpu.restart()
+	for child: Node in root.get_children():
+		_kick_particle_emitters(child)
 
 
 ## Briefly instance a vehicle scene so its static materials (tread shader,

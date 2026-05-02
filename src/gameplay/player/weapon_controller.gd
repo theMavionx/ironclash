@@ -90,6 +90,7 @@ var _rpg_ammo: int = 1
 ## AR fire does NOT set this (auto-fire must keep working while AR_Burst loops).
 var _is_busy: bool = false
 var _time_since_last_fire: float = 999.0
+var _cached_visual_rocket_source: MeshInstance3D = null
 
 
 func _ready() -> void:
@@ -307,21 +308,28 @@ func _spawn_rpg_projectile() -> void:
 		push_warning("WeaponController: camera not resolved — cannot aim RPG projectile")
 		return
 
-	var rocket: TankShell = rpg_scene.instantiate() as TankShell
-	if rocket == null:
+	var hub: CombatPoolHub = CombatPoolHub.find_for(self)
+	var rocket: Node3D = null
+	if hub == null:
+		rocket = rpg_scene.instantiate() as Node3D
+	if hub == null and rocket == null:
 		push_error("WeaponController: rpg_scene root is not a TankShell — check rpg_rocket.tscn")
 		return
 
 	# Configure damage source and self-hit exclusion before adding to tree.
-	rocket.setup(DamageTypes.Source.PLAYER_RPG, rpg_damage, _shooter)
+	if rocket != null:
+		if rocket.has_method("setup"):
+			rocket.call("setup", DamageTypes.Source.PLAYER_RPG, rpg_damage, _shooter)
 	# Server is authoritative for damage when networked — local impact sends
 	# a hit-claim, no local HP mutation. In solo mode the shell falls back to
 	# its own apply_local_damage path (default true).
-	if rocket.has_method("setup_network"):
-		rocket.call("setup_network", "player_rpg", false)
+		if rocket.has_method("setup_network"):
+			rocket.call("setup_network", "player_rpg", false)
 
 	# Cap lifetime so the rocket auto-expires at max range without a hit.
-	rocket.lifetime = rpg_max_range / rocket.speed
+	if rocket != null:
+		var rocket_speed: float = float(rocket.get("speed")) if "speed" in rocket else 55.0
+		rocket.set("lifetime", rpg_max_range / maxf(rocket_speed, 0.001))
 
 	# Spawn at the physical muzzle when available, fall back to camera origin.
 	# Using plain if/else rather than a ternary — Godot 4.3's type analyzer
@@ -339,6 +347,36 @@ func _spawn_rpg_projectile() -> void:
 	# side of the player, which reads like the rocket launching sideways.
 	var aim_dir: Vector3 = _resolve_rpg_aim_dir(spawn_origin)
 
+	if hub != null:
+		rocket = hub.spawn_projectile(
+			&"rpg",
+			spawn_origin,
+			aim_dir,
+			DamageTypes.Source.PLAYER_RPG,
+			rpg_damage,
+			_shooter,
+			"player_rpg",
+			false
+		)
+		if rocket != null:
+			var pooled_speed: float = float(rocket.get("speed")) if "speed" in rocket else 55.0
+			if rocket.has_method("set_lifetime_remaining"):
+				rocket.call("set_lifetime_remaining", rpg_max_range / maxf(pooled_speed, 0.001))
+			else:
+				rocket.set("lifetime", rpg_max_range / maxf(pooled_speed, 0.001))
+		else:
+			rocket = rpg_scene.instantiate() as Node3D
+			if rocket != null:
+				if rocket.has_method("setup"):
+					rocket.call("setup", DamageTypes.Source.PLAYER_RPG, rpg_damage, _shooter)
+				if rocket.has_method("setup_network"):
+					rocket.call("setup_network", "player_rpg", false)
+				var fallback_speed: float = float(rocket.get("speed")) if "speed" in rocket else 55.0
+				rocket.set("lifetime", rpg_max_range / maxf(fallback_speed, 0.001))
+				hub = null
+	if rocket == null:
+		return
+
 	# Replace the placeholder grey CapsuleMesh with the actual rocketbullet
 	# mesh from the launcher — the user mounts a visible rocket on the RPG
 	# model and expects THAT mesh to fly out, not a generic capsule. Falls
@@ -346,12 +384,13 @@ func _spawn_rpg_projectile() -> void:
 	# we never spawn an invisible rocket.
 	_apply_visual_rocket_mesh(rocket, aim_dir)
 
-	_world_root.add_child(rocket)
-	rocket.global_position = spawn_origin
-	var up_ref: Vector3 = Vector3.UP
-	if absf(aim_dir.dot(Vector3.UP)) > 0.95:
-		up_ref = Vector3.FORWARD
-	rocket.look_at(spawn_origin + aim_dir, up_ref)
+	if hub == null:
+		_world_root.add_child(rocket)
+		rocket.global_position = spawn_origin
+		var up_ref: Vector3 = Vector3.UP
+		if absf(aim_dir.dot(Vector3.UP)) > 0.95:
+			up_ref = Vector3.FORWARD
+		rocket.look_at(spawn_origin + aim_dir, up_ref)
 
 
 func _resolve_rpg_aim_dir(spawn_origin: Vector3) -> Vector3:
@@ -443,6 +482,8 @@ func _dominant_mesh_axis(mesh: Mesh) -> Vector3:
 ## parent — that lookup means the resolution still works if the user
 ## customises the muzzle path in the Inspector.
 func _resolve_visual_rocket_source() -> MeshInstance3D:
+	if _cached_visual_rocket_source != null and is_instance_valid(_cached_visual_rocket_source):
+		return _cached_visual_rocket_source
 	if _rpg_muzzle == null:
 		return null
 	var parent_skel: Node = _rpg_muzzle.get_parent()
@@ -451,9 +492,11 @@ func _resolve_visual_rocket_source() -> MeshInstance3D:
 		if low != null:
 			var low_mi: MeshInstance3D = _resolve_first_mesh_instance(low)
 			if low_mi != null and low_mi.mesh != null:
+				_cached_visual_rocket_source = low_mi
 				return low_mi
 	# Fall back to the muzzle node itself (rocketbullet by default).
-	return _resolve_first_mesh_instance(_rpg_muzzle)
+	_cached_visual_rocket_source = _resolve_first_mesh_instance(_rpg_muzzle)
+	return _cached_visual_rocket_source
 
 
 ## Walk [param root] depth-first for the first MeshInstance3D descendant.

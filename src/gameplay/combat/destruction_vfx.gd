@@ -41,6 +41,15 @@ static var _shared_circle_mask: Texture2D = null
 static var _shared_fire_teardrop: Texture2D = null
 static var _shared_web_fire_mask: Texture2D = null
 static var _shared_web_spark_mask: Texture2D = null
+static var _shared_charred_shader: Shader = null
+static var _shared_charred_material: ShaderMaterial = null
+static var _shared_soot_noise: Texture2D = null
+static var _shared_smoke_shader: Shader = null
+static var _shared_fire_shader: Shader = null
+static var _shared_smoke_web_shader: Shader = null
+static var _shared_fire_web_shader: Shader = null
+static var _shared_flicker_script: Script = null
+static var _texture_alpha_cache: Dictionary = {}
 static var _logged_smoke_shader_path: bool = false
 static var _logged_fire_shader_path: bool = false
 static var _logged_spark_shader_path: bool = false
@@ -69,6 +78,78 @@ static func _should_use_authored_shaders() -> bool:
 	return true
 
 
+## Load every shader/texture used by the combat destruction path before the
+## first real vehicle kill. This mirrors Clash's "resource cache at boot"
+## approach: I/O and shader resource creation happen during warmup, not in the
+## destruction frame.
+static func preload_resources() -> void:
+	_get_charred_material()
+	_get_shared_smoke_texture()
+	_get_shared_smoke_noise()
+	_get_shared_circle_mask()
+	_get_shared_fire_teardrop()
+	_get_web_fire_mask()
+	_get_web_spark_mask()
+	_get_smoke_shader()
+	_get_fire_shader()
+	_get_smoke_web_shader()
+	_get_fire_web_shader()
+	_get_flicker_script()
+
+
+## Tiny visible representatives for the exact destruction material variants.
+## The caller should keep the returned node in the camera frustum for several
+## frames; WebGL2 only compiles a pipeline after a material is actually drawn.
+static func spawn_warmup_material_probes(world_root: Node) -> Node3D:
+	if world_root == null:
+		return null
+	preload_resources()
+	var root: Node3D = Node3D.new()
+	root.name = "DestructionVFXMaterialWarmup"
+	world_root.add_child(root)
+
+	var base_mat: StandardMaterial3D = StandardMaterial3D.new()
+	base_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	base_mat.albedo_color = Color(0.48, 0.48, 0.48, 1.0)
+	var charred: MeshInstance3D = _make_warmup_mesh("CharredOverlayProbe", Vector3(-0.36, 0.02, 0.0), base_mat)
+	charred.material_overlay = _get_charred_material()
+	root.add_child(charred)
+
+	var fire_tex: Texture2D = _get_shared_fire_teardrop()
+	if fire_tex == null:
+		fire_tex = _get_web_fire_mask()
+	var spark_tex: Texture2D = _get_shared_circle_mask()
+	if spark_tex == null:
+		spark_tex = _get_web_spark_mask()
+	var variants: Array[Material] = [
+		_make_web_smoke_material(Color(0.22, 0.23, 0.25, 0.92), 0.25, 0.45),
+		_make_web_fire_material(fire_tex, Color(3.5, 1.15, 0.18, 0.78), true, 0.5, 0.32, 0.82, 0.11, 0.18, 28, 1.18),
+		_make_web_fire_material(fire_tex, Color(2.0, 0.72, 0.10, 0.38), true, 0.75, 0.30, 0.85, 0.12, 0.02, 22),
+		_make_spark_material(Color(8.0, 3.0, 0.5, 1.0)),
+		_make_billboard_material(spark_tex, Color(4.5, 1.2, 0.28, 0.72), 30, true),
+	]
+	for i: int in range(variants.size()):
+		var mat: Material = variants[i]
+		if mat == null:
+			continue
+		var x: float = -0.18 + float(i) * 0.14
+		root.add_child(_make_warmup_mesh("DestructionMaterialProbe%02d" % i, Vector3(x, 0.02, 0.0), mat))
+	return root
+
+
+static func _make_warmup_mesh(name: String, pos: Vector3, mat: Material) -> MeshInstance3D:
+	var quad: QuadMesh = QuadMesh.new()
+	quad.size = Vector2(0.12, 0.12)
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	mi.name = name
+	mi.mesh = quad
+	mi.material_override = mat
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.position = pos
+	mi.visible = true
+	return mi
+
+
 static func _queue_free_instance(instance_id: int) -> void:
 	var obj: Object = instance_from_id(instance_id)
 	if obj is Node:
@@ -84,15 +165,10 @@ static func _set_instance_property(instance_id: int, property_name: StringName, 
 ## Apply the charred overlay to every MeshInstance3D under [param vehicle].
 ## Idempotent — re-applying replaces the previous overlay with a fresh instance.
 static func apply_charred(vehicle: Node, skip_alpha_cutouts: bool = true) -> void:
-	var shader: Shader = load(_CHARRED_SHADER_PATH) as Shader
-	if shader == null:
+	var mat: ShaderMaterial = _get_charred_material()
+	if mat == null:
 		push_warning("DestructionVFX: charred shader missing at %s" % _CHARRED_SHADER_PATH)
 		return
-	var mat: ShaderMaterial = ShaderMaterial.new()
-	mat.shader = shader
-	var noise: Texture2D = load(_SOOT_NOISE_PATH) as Texture2D
-	if noise != null:
-		mat.set_shader_parameter("soot_noise", noise)
 	_walk_meshes(vehicle, func(m: MeshInstance3D) -> void:
 		if skip_alpha_cutouts and _mesh_uses_alpha_cutout(m):
 			return
@@ -1039,7 +1115,7 @@ static func _make_ember_lifetime_gradient() -> Gradient:
 
 static func _make_web_smoke_material(tint: Color, time_offset: float, particle_life_override: float = -1.0) -> Material:
 	var smoke_tex: Texture2D = _get_shared_smoke_texture()
-	var shader: Shader = load(_SMOKE_WEB_SHADER_PATH) as Shader
+	var shader: Shader = _get_smoke_web_shader()
 	if smoke_tex == null or shader == null:
 		return _make_billboard_material(smoke_tex, tint, 10, false)
 	var mat: ShaderMaterial = ShaderMaterial.new()
@@ -1071,7 +1147,7 @@ static func _make_web_fire_material(
 	priority: int,
 	flame_width_scale: float = 1.0
 ) -> Material:
-	var shader: Shader = load(_FIRE_WEB_SHADER_PATH) as Shader
+	var shader: Shader = _get_fire_web_shader()
 	if fire_texture == null or shader == null:
 		return _make_billboard_material(fire_texture, fire_color, priority, true)
 	var mat: ShaderMaterial = ShaderMaterial.new()
@@ -1089,6 +1165,70 @@ static func _make_web_fire_material(
 	mat.set_shader_parameter("procedural_flame", 1.0 if procedural_flame else 0.0)
 	mat.set_shader_parameter("time_offset", time_offset)
 	return mat
+
+
+static func _get_charred_shader() -> Shader:
+	if _shared_charred_shader != null:
+		return _shared_charred_shader
+	_shared_charred_shader = load(_CHARRED_SHADER_PATH) as Shader
+	return _shared_charred_shader
+
+
+static func _get_soot_noise_texture() -> Texture2D:
+	if _shared_soot_noise != null:
+		return _shared_soot_noise
+	_shared_soot_noise = load(_SOOT_NOISE_PATH) as Texture2D
+	return _shared_soot_noise
+
+
+static func _get_charred_material() -> ShaderMaterial:
+	if _shared_charred_material != null:
+		return _shared_charred_material
+	var shader: Shader = _get_charred_shader()
+	if shader == null:
+		return null
+	var mat: ShaderMaterial = ShaderMaterial.new()
+	mat.shader = shader
+	var noise: Texture2D = _get_soot_noise_texture()
+	if noise != null:
+		mat.set_shader_parameter("soot_noise", noise)
+	_shared_charred_material = mat
+	return _shared_charred_material
+
+
+static func _get_smoke_shader() -> Shader:
+	if _shared_smoke_shader != null:
+		return _shared_smoke_shader
+	_shared_smoke_shader = load(_SMOKE_SHADER_PATH) as Shader
+	return _shared_smoke_shader
+
+
+static func _get_fire_shader() -> Shader:
+	if _shared_fire_shader != null:
+		return _shared_fire_shader
+	_shared_fire_shader = load(_FIRE_SHADER_PATH) as Shader
+	return _shared_fire_shader
+
+
+static func _get_smoke_web_shader() -> Shader:
+	if _shared_smoke_web_shader != null:
+		return _shared_smoke_web_shader
+	_shared_smoke_web_shader = load(_SMOKE_WEB_SHADER_PATH) as Shader
+	return _shared_smoke_web_shader
+
+
+static func _get_fire_web_shader() -> Shader:
+	if _shared_fire_web_shader != null:
+		return _shared_fire_web_shader
+	_shared_fire_web_shader = load(_FIRE_WEB_SHADER_PATH) as Shader
+	return _shared_fire_web_shader
+
+
+static func _get_flicker_script() -> Script:
+	if _shared_flicker_script != null:
+		return _shared_flicker_script
+	_shared_flicker_script = load(_FLICKER_SCRIPT_PATH) as Script
+	return _shared_flicker_script
 
 
 ## Lazily load the authored smoke sprite used by the wreck plume. This texture
@@ -1145,7 +1285,7 @@ static func _make_smoke_material(tint: Color = Color(0.55, 0.53, 0.50, 1.0), max
 	if smoke_tex == null:
 		print("[VFX/smoke] smoke_texture failed to load — material is null")
 		return null
-	var shader: Shader = load(_SMOKE_SHADER_PATH) as Shader
+	var shader: Shader = _get_smoke_shader()
 	if shader == null:
 		print("[VFX/smoke] BILLBOARD path (shader load failed: %s)" % _SMOKE_SHADER_PATH)
 		push_warning("DestructionVFX: smoke shader missing at %s — using billboard fallback" % _SMOKE_SHADER_PATH)
@@ -1271,7 +1411,7 @@ static func _make_fire_material(
 	var fire_tex: Texture2D = _get_shared_fire_teardrop()
 	var noise_tex: Texture2D = _get_shared_smoke_noise()
 	var shader_path: String = _FIRE_SHADER_PATH if _should_use_gpu_particle_emitters() else _FIRE_WEB_SHADER_PATH
-	var shader: Shader = load(shader_path) as Shader
+	var shader: Shader = _get_fire_shader() if _should_use_gpu_particle_emitters() else _get_fire_web_shader()
 	if fire_tex == null or shader == null:
 		print("[VFX/fire] BILLBOARD path (fire_tex=%s shader=%s)" % [fire_tex, shader])
 		push_warning("DestructionVFX: fire shader/teardrop unavailable — using procedural billboard fallback")
@@ -1305,7 +1445,7 @@ static func _make_spark_material(
 ) -> Material:
 	var circle_tex: Texture2D = _get_shared_circle_mask()
 	var shader_path: String = _FIRE_SHADER_PATH if _should_use_gpu_particle_emitters() else _FIRE_WEB_SHADER_PATH
-	var shader: Shader = load(shader_path) as Shader
+	var shader: Shader = _get_fire_shader() if _should_use_gpu_particle_emitters() else _get_fire_web_shader()
 	if circle_tex == null or shader == null:
 		print("[VFX/spark] BILLBOARD path (circle_tex=%s shader=%s path=%s)" % [circle_tex, shader, shader_path])
 		push_warning("DestructionVFX: fire shader/circle mask unavailable — using procedural billboard fallback")
@@ -1338,7 +1478,7 @@ static func _build_light() -> OmniLight3D:
 	light.omni_range = 3.2
 	light.shadow_enabled = false
 	# fire_flicker.gd oscillates light_energy each _process frame.
-	var flicker: Script = load(_FLICKER_SCRIPT_PATH) as Script
+	var flicker: Script = _get_flicker_script()
 	if flicker != null:
 		light.set_script(flicker)
 		light.set("min_energy", 0.45)
@@ -1657,10 +1797,25 @@ static func _material_uses_alpha_cutout(material: Material) -> bool:
 static func _texture_has_alpha(texture: Texture2D) -> bool:
 	if texture == null:
 		return false
+	var key: String = texture.resource_path
+	if key.is_empty():
+		key = str(texture.get_instance_id())
+	if _texture_alpha_cache.has(key):
+		return bool(_texture_alpha_cache[key])
+	if _is_web_build():
+		# Texture.get_image().detect_alpha() can force a CPU-side decode/readback
+		# of large imported textures. On web, rely on material transparency flags;
+		# if a texture's alpha is actually rendered, the material should already
+		# have transparency enabled and be caught before this point.
+		_texture_alpha_cache[key] = false
+		return false
 	var image: Image = texture.get_image()
 	if image == null:
+		_texture_alpha_cache[key] = false
 		return false
-	return image.detect_alpha() != Image.ALPHA_NONE
+	var has_alpha: bool = image.detect_alpha() != Image.ALPHA_NONE
+	_texture_alpha_cache[key] = has_alpha
+	return has_alpha
 
 
 # ---------------------------------------------------------------------------

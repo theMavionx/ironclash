@@ -22,6 +22,25 @@ func stop_looping() -> void:
 		entry["looping"] = false
 
 
+func restart(looping: bool = true) -> void:
+	_update_accumulator = 0.0
+	for entry: Dictionary in _cards:
+		entry["looping"] = looping
+		var card: MeshInstance3D = entry["node"] as MeshInstance3D
+		if card != null and is_instance_valid(card):
+			card.visible = true
+		_respawn(entry, randf() * float(entry["lifetime"]))
+	set_process(true)
+
+
+func hide_all() -> void:
+	for entry: Dictionary in _cards:
+		var card: MeshInstance3D = entry["node"] as MeshInstance3D
+		if card != null and is_instance_valid(card):
+			card.visible = false
+	set_process(false)
+
+
 func add_card(
 	name: String,
 	material: Material,

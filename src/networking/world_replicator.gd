@@ -9,6 +9,7 @@ extends Node3D
 ## Implements: docs/architecture/adr-0005-node-authoritative-server.md
 
 const REMOTE_PLAYER_SCENE: PackedScene = preload("res://scenes/player/remote_player.tscn")
+const TANK_SHELL_SCENE: PackedScene = preload("res://scenes/projectile/tank_shell.tscn")
 const RPG_ROCKET_SCENE: PackedScene = preload("res://scenes/projectile/rpg_rocket.tscn")
 
 # Bone paths inside the remote player's skeleton — match the local player.
@@ -226,24 +227,27 @@ func _handle_vehicle_fire(payload: Dictionary) -> void:
 	var projectile: String = String(payload.get("projectile", "tank_shell"))
 	# Both tank and heli currently reuse the tank_shell scene as the visual
 	# missile (per existing code) — same scene path is fine for both.
-	var scene_path: String = "res://scenes/projectile/tank_shell.tscn"
-	if not ResourceLoader.exists(scene_path):
-		return
-	var scene: PackedScene = load(scene_path)
-	var shell: Node3D = scene.instantiate() as Node3D
-	if shell == null:
-		return
 	# Visual-only: damage 0; source picks the right screen-shake amplitude
 	# (TANK_SHELL = strongest, HELI_MISSILE = milder).
 	var src: int = DamageTypes.Source.TANK_SHELL if projectile == "tank_shell" else DamageTypes.Source.HELI_MISSILE
-	if shell.has_method("setup"):
-		shell.call("setup", src, 0, null)
-	get_tree().current_scene.add_child(shell)
-	shell.global_position = origin
+	var normalized_dir: Vector3 = dir.normalized()
+	var hub: CombatPoolHub = CombatPoolHub.find_for(self)
+	var shell: Node3D = null
+	if hub != null:
+		shell = hub.spawn_projectile(&"tank_shell", origin, normalized_dir, src, 0, null, "", false)
+	else:
+		shell = TANK_SHELL_SCENE.instantiate() as Node3D
+		if shell == null:
+			return
+		if shell.has_method("setup"):
+			shell.call("setup", src, 0, null)
+		get_tree().current_scene.add_child(shell)
+		shell.global_position = origin
 	var up_ref: Vector3 = Vector3.UP
-	if absf(dir.normalized().dot(Vector3.UP)) > 0.95:
+	if absf(normalized_dir.dot(Vector3.UP)) > 0.95:
 		up_ref = Vector3.FORWARD
-	shell.look_at(origin + dir.normalized(), up_ref)
+	if hub == null:
+		shell.look_at(origin + normalized_dir, up_ref)
 
 
 func _handle_muzzle_flash(payload: Dictionary) -> void:
@@ -395,19 +399,34 @@ func _spawn_remote_rpg_rocket(rp: Node3D, dir: Vector3) -> void:
 		return
 	var muzzle: Node3D = rp.get_node_or_null(_RPG_MUZZLE_PATH) as Node3D
 	var spawn_origin: Vector3 = muzzle.global_transform.origin if muzzle != null else rp.global_transform.origin + Vector3.UP
-	var rocket: Node3D = RPG_ROCKET_SCENE.instantiate()
-	if rocket == null:
-		return
 	# Visual-only: 0 damage so collisions don't apply HP changes (server is
 	# authoritative). Pass the remote player's Body as `shooter` so the rocket
 	# doesn't immediately blow up on the shooter's own collider. Source is
 	# PLAYER_RPG so impact still triggers screen shake on nearby cameras.
-	if rocket.has_method("setup"):
-		var body: Node = rp.get_node_or_null("Body")
-		rocket.call("setup", DamageTypes.Source.PLAYER_RPG, 0, body)
-	get_tree().current_scene.add_child(rocket)
-	rocket.global_position = spawn_origin
-	rocket.look_at(spawn_origin + dir.normalized(), Vector3.UP)
+	var body: CollisionObject3D = rp.get_node_or_null("Body") as CollisionObject3D
+	var normalized_dir: Vector3 = dir.normalized()
+	var hub: CombatPoolHub = CombatPoolHub.find_for(self)
+	var rocket: Node3D = null
+	if hub != null:
+		rocket = hub.spawn_projectile(
+			&"rpg",
+			spawn_origin,
+			normalized_dir,
+			DamageTypes.Source.PLAYER_RPG,
+			0,
+			body,
+			"",
+			false
+		)
+	else:
+		rocket = RPG_ROCKET_SCENE.instantiate()
+		if rocket == null:
+			return
+		if rocket.has_method("setup"):
+			rocket.call("setup", DamageTypes.Source.PLAYER_RPG, 0, body)
+		get_tree().current_scene.add_child(rocket)
+		rocket.global_position = spawn_origin
+		rocket.look_at(spawn_origin + normalized_dir, Vector3.UP)
 
 
 func _sync_vehicle_vfx(vehicles: Array) -> void:

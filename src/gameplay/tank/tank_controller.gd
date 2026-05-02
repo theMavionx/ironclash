@@ -14,6 +14,10 @@ const _VEHICLE_DUST_VFX := preload("res://src/gameplay/vfx/vehicle_dust_vfx.gd")
 # ---------------------------------------------------------------------------
 
 const WHEEL_COUNT: int = 7
+const _DEFAULT_TREAD_GAUGE: float = 1.55
+const _WEB_TREAD_WIDTH_SCALE: float = 0.68
+const _WEB_TREAD_LENGTH_SCALE: float = 0.58
+const _WEB_TREAD_ALPHA_SCALE: float = 0.55
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -250,7 +254,7 @@ static var _tread_quad_mesh: PlaneMesh = null
 ## from wheel positions one frame after _ready. Decals are spawned at ±half this
 ## value laterally. Default 1.0 m matches the current StylizedTank model; used
 ## as fallback when auto-derive fails (e.g. bone-driven wheels at Node3D origin).
-var _resolved_tread_gauge: float = 1.0
+var _resolved_tread_gauge: float = _DEFAULT_TREAD_GAUGE
 ## Tiny white texture used by all decals; tinted to black via modulate.
 ## Static so all tanks share one texture (decal projects nothing without a texture).
 static var _tread_decal_texture: Texture2D = null
@@ -674,7 +678,7 @@ func _update_tread_dust() -> void:
 	_last_dust_pos = global_position
 	var horizontal_speed: float = Vector2(velocity.x, velocity.z).length()
 	var moving: bool = moved.length() >= tread_dust_min_step or horizontal_speed > 0.08
-	if not tread_dust_enabled or _is_destroyed or not is_on_floor() or not moving:
+	if not tread_dust_enabled or _is_destroyed or not _has_tread_ground_contact() or not moving:
 		_set_tread_dust_emitting(false)
 		return
 
@@ -712,6 +716,16 @@ func _dust_ground_position(world_pos: Vector3) -> Vector3:
 	var hit_pos: Vector3 = hit.get("position", world_pos)
 	var hit_normal: Vector3 = hit.get("normal", Vector3.UP)
 	return hit_pos + hit_normal.normalized() * tread_dust_ground_offset
+
+
+func _has_tread_ground_contact() -> bool:
+	if is_on_floor():
+		return true
+	var ground_y: float = _tank_ground_height()
+	if is_nan(ground_y):
+		return false
+	var clearance: float = global_position.y - ground_y
+	return clearance >= -0.15 and clearance <= maxf(tank_ground_clearance + 0.55, 0.65)
 
 
 func _prevent_terrain_sink(min_clearance: float) -> bool:
@@ -789,7 +803,11 @@ func _terrain_height_at(pos: Vector3) -> float:
 		_terrain_node = _resolve_terrain_node()
 	if _terrain_node == null:
 		return NAN
-	var terrain_data: Object = _terrain_node.get("data") as Object
+	var terrain_data: Object = null
+	if _terrain_node.has_method("get_data"):
+		terrain_data = _terrain_node.call("get_data")
+	else:
+		terrain_data = _terrain_node.get("data") as Object
 	if terrain_data == null or not terrain_data.has_method("get_height"):
 		return NAN
 	var height_value: Variant = terrain_data.call("get_height", pos)
@@ -869,21 +887,28 @@ func _try_fire() -> void:
 	if camera == null:
 		return
 	_fire_timer = fire_cooldown
-	var shell: TankShell = shell_scene.instantiate() as TankShell
+	var hub: CombatPoolHub = CombatPoolHub.find_for(self)
+	var shell: Node3D = null
+	if hub == null:
+		shell = shell_scene.instantiate() as Node3D
 	var parent: Node = get_tree().current_scene
 	if parent == null:
 		parent = get_parent()
 	# setup() MUST run before add_child so _ready wires the self-hit exception.
-	shell.setup(DamageTypes.Source.TANK_SHELL, 100, self)
+	if shell != null:
+		if shell.has_method("setup"):
+			shell.call("setup", DamageTypes.Source.TANK_SHELL, 100, self)
 	# Server is authoritative for this shot — local impact sends a hit-claim
 	# packet instead of mutating HP. Solo play (no NetworkManager autoload)
 	# falls back to local damage automatically inside the shell.
-	if shell.has_method("setup_network"):
-		shell.call("setup_network", "tank_shell", false)
-	parent.add_child(shell)
+		if shell.has_method("setup_network"):
+			shell.call("setup_network", "tank_shell", false)
+		parent.add_child(shell)
 	# Spawn ALWAYS at the barrel's muzzle tip (barrel-local offset).
 	var barrel_world: Transform3D = _skeleton.global_transform * _skeleton.get_bone_global_pose(_barrel_bone)
-	shell.global_position = barrel_world * muzzle_local_offset
+	var spawn_origin: Vector3 = barrel_world * muzzle_local_offset
+	if shell != null:
+		shell.global_position = spawn_origin
 	# CROSSHAIR CONVERGENCE: trace a ray from the camera through screen centre
 	# to find what the crosshair is pointing at, then aim the shell FROM the
 	# muzzle TO that point. Otherwise the muzzle (below/behind camera) fires
@@ -898,25 +923,51 @@ func _try_fire() -> void:
 	var hit: Dictionary = space.intersect_ray(query)
 	if not hit.is_empty():
 		target_point = hit.get("position", target_point)
-	var aim_dir: Vector3 = (target_point - shell.global_position).normalized()
+	var aim_dir: Vector3 = (target_point - spawn_origin).normalized()
 	# Avoid look_at() failing when aim is near-parallel to world up.
 	var up_ref: Vector3 = Vector3.UP
 	if absf(aim_dir.dot(Vector3.UP)) > 0.95:
 		up_ref = Vector3.FORWARD
-	shell.look_at(shell.global_position + aim_dir, up_ref)
+	if hub != null:
+		shell = hub.spawn_projectile(
+			&"tank_shell",
+			spawn_origin,
+			aim_dir,
+			DamageTypes.Source.TANK_SHELL,
+			100,
+			self,
+			"tank_shell",
+			false
+		)
+		if shell == null:
+			shell = shell_scene.instantiate() as Node3D
+			if shell != null:
+				if shell.has_method("setup"):
+					shell.call("setup", DamageTypes.Source.TANK_SHELL, 100, self)
+				if shell.has_method("setup_network"):
+					shell.call("setup_network", "tank_shell", false)
+				parent.add_child(shell)
+				shell.global_position = spawn_origin
+				shell.look_at(spawn_origin + aim_dir, up_ref)
+	elif shell != null:
+		shell.look_at(spawn_origin + aim_dir, up_ref)
+	if shell == null:
+		return
 	# Spawn muzzle flash. Orient so its local -Z = aim direction (sparks emit
 	# along -Z, so they burst in the firing direction). Transform set BEFORE
 	# add_child so _ready sees correct pose and particle direction is correct.
 	if muzzle_flash_scene:
-		var flash: Node3D = muzzle_flash_scene.instantiate() as Node3D
 		# Flash position = closer to barrel than shell spawn.
 		var flash_pos: Vector3 = barrel_world * muzzle_flash_local_offset + muzzle_flash_extra_offset
 		var flash_xform: Transform3D = Transform3D(Basis.IDENTITY, flash_pos)
 		flash_xform = flash_xform.looking_at(flash_pos + aim_dir, up_ref)
-		flash.transform = flash_xform
-		parent.add_child(flash)
+		if hub == null or hub.spawn_world_muzzle_flash(flash_xform, muzzle_flash_scene) == null:
+			var flash: Node3D = muzzle_flash_scene.instantiate() as Node3D
+			if flash != null:
+				flash.transform = flash_xform
+				parent.add_child(flash)
 	fired.emit()
-	fired_with_aim.emit(shell.global_position, aim_dir)
+	fired_with_aim.emit(spawn_origin, aim_dir)
 
 
 ## Tank's local forward vector in hull-local space (before world yaw).
@@ -1130,7 +1181,7 @@ func _animate_treads(linear_speed: float, delta: float) -> void:
 func _update_tread_marks() -> void:
 	if not tread_marks_enabled or _is_destroyed:
 		return
-	if not is_on_floor():
+	if not _has_tread_ground_contact():
 		_last_tread_pos = global_position
 		return
 	var moved: Vector3 = global_position - _last_tread_pos
@@ -1195,12 +1246,15 @@ func _resolve_tread_gauge() -> void:
 	# transform we can't see. Keep the safe default in that case.
 	if derived >= 0.3:
 		_resolved_tread_gauge = derived
+	else:
+		_resolved_tread_gauge = _DEFAULT_TREAD_GAUGE
 
 
 func _create_tread_decal(world_pos: Vector3, yaw_basis: Basis) -> void:
 	var parent: Node = get_tree().current_scene
 	if parent == null:
 		return
+	var ground_pos: Vector3 = _tread_mark_ground_position(world_pos)
 	var node: Node3D
 	if _USE_DECALS:
 		var decal: Decal = Decal.new()
@@ -1217,7 +1271,7 @@ func _create_tread_decal(world_pos: Vector3, yaw_basis: Basis) -> void:
 		# independently of its neighbours.
 		node = _build_tread_quad()
 	parent.add_child(node)
-	node.global_position = world_pos + Vector3(0.0, 0.02, 0.0)
+	node.global_position = ground_pos
 	node.global_basis = yaw_basis
 	_tread_decals.push_back(node)
 	# Enforce FIFO cap — kill oldest immediately when over the limit.
@@ -1240,6 +1294,18 @@ func _create_tread_decal(world_pos: Vector3, yaw_basis: Basis) -> void:
 	tween.tween_callback(_finish_tread_decal.bind(node.get_instance_id()))
 
 
+func _tread_mark_ground_position(world_pos: Vector3) -> Vector3:
+	var hit: Dictionary = _ground_probe_hit(world_pos)
+	if not hit.is_empty():
+		var hit_pos: Vector3 = hit.get("position", world_pos)
+		var hit_normal: Vector3 = hit.get("normal", Vector3.UP)
+		return hit_pos + hit_normal.normalized() * 0.035
+	var terrain_y: float = _terrain_height_at(world_pos)
+	if not is_nan(terrain_y):
+		return Vector3(world_pos.x, terrain_y + 0.035, world_pos.z)
+	return world_pos + Vector3(0.0, 0.035, 0.0)
+
+
 func _finish_tread_decal(node_id: int) -> void:
 	var obj: Object = instance_from_id(node_id)
 	if obj is Node3D:
@@ -1256,7 +1322,10 @@ func _build_tread_quad() -> MeshInstance3D:
 		# PlaneMesh sits flat on XZ when orientation = FACE_Y, with normal +Y.
 		# That's exactly what we want for ground decals.
 		var plane: PlaneMesh = PlaneMesh.new()
-		plane.size = Vector2(tread_mark_width, tread_mark_length)
+		plane.size = Vector2(
+			tread_mark_width * _WEB_TREAD_WIDTH_SCALE,
+			tread_mark_length * _WEB_TREAD_LENGTH_SCALE
+		)
 		plane.orientation = PlaneMesh.FACE_Y
 		_tread_quad_mesh = plane
 	var mi: MeshInstance3D = MeshInstance3D.new()
@@ -1264,7 +1333,7 @@ func _build_tread_quad() -> MeshInstance3D:
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	# Per-mark material so each can fade independently.
 	var mat: StandardMaterial3D = StandardMaterial3D.new()
-	mat.albedo_color = Color(0.0, 0.0, 0.0, tread_mark_initial_alpha)
+	mat.albedo_color = Color(0.0, 0.0, 0.0, tread_mark_initial_alpha * _WEB_TREAD_ALPHA_SCALE)
 	mat.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
