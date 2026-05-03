@@ -252,9 +252,14 @@ func _on_respawn_received(payload: Dictionary) -> void:
 	var pid: int = int(payload.get("peer_id", -1))
 	if pid != NetworkManager.local_peer_id:
 		return
-	var pos_arr: Array = payload.get("pos", [0, 0, 0])
-	if pos_arr.size() < 3:
+	# Ignore the server's pos field — server currently broadcasts the death
+	# position, not a freshly chosen team spawn. Always teleport the local
+	# player to their own team base via the controller's resolver so red
+	# always lands at the red spawn and blue at the blue spawn, never on
+	# the spot where they got fragged.
+	if _player == null:
 		return
-	var pos: Vector3 = Vector3(float(pos_arr[0]), float(pos_arr[1]), float(pos_arr[2]))
-	if _player != null and _player.has_method("respawn_at"):
-		_player.call("respawn_at", pos, 0.0)
+	var spawn_v: Variant = _player.call("_resolve_team_spawn") if _player.has_method("_resolve_team_spawn") else null
+	var spawn: Vector3 = spawn_v if spawn_v is Vector3 else Vector3.ZERO
+	if _player.has_method("respawn_at"):
+		_player.call("respawn_at", spawn, 0.0)

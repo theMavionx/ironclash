@@ -637,6 +637,12 @@ func _get_move_input() -> Vector2:
 
 func _on_self_destroyed(_by_source: int) -> void:
 	set_active(false)
+	# Hide the corpse immediately so the killer doesn't see a static body
+	# lying around and the local player isn't staring at their own deactivated
+	# soldier in third-person. set_embarked(true) is reused here because it
+	# already does exactly what we need: visible=false + collision off.
+	# respawn_at() / exit_spectator() restores visibility on respawn.
+	set_embarked(true)
 	# Arm the local fallback respawn. The server-authoritative path
 	# (network_player_sync._on_respawn_received -> respawn_at) cancels this
 	# timer if it lands first; otherwise we teleport to the team base after

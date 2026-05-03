@@ -119,8 +119,18 @@ func _sync_remote_avatar_visibility(vehicles: Array) -> void:
 		var rp: Node = _remote_players[pid]
 		if rp == null or not is_instance_valid(rp):
 			continue
-		if rp is Node3D:
-			(rp as Node3D).visible = not driving_peers.has(pid)
+		if not (rp is Node3D):
+			continue
+		# Hide if either:
+		#   a) The peer is driving a vehicle (their soldier sits inside it).
+		#   b) The peer is dead (RemotePlayerAvatar.update_from_snapshot
+		#      already toggles its own visibility on alive transitions, but
+		#      we'd otherwise force visible=true here and undo that).
+		var is_driving: bool = driving_peers.has(pid)
+		var is_alive: bool = true
+		if "_alive" in rp:
+			is_alive = bool(rp.get("_alive"))
+		(rp as Node3D).visible = is_alive and not is_driving
 
 
 ## Tell the React HUD whether the local peer is driving a vehicle, and push
