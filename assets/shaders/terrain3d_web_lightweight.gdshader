@@ -24,15 +24,13 @@ uniform float _vertex_density = 1.0; // = 1/_vertex_spacing
 uniform float _region_size = 1024.0;
 uniform float _region_texel_size = 0.0009765625; // = 1/1024
 // Why: std140 packs each scalar/vec2 array element into 16 bytes, so
-// _region_map[1024] alone weighs 16 KB and _region_locations[1024] adds
-// another 16 KB — over double the WebGL2 minimum GL_MAX_UNIFORM_BLOCK_SIZE
-// (16384 bytes) that Safari on Apple Silicon enforces, which made the
-// vertex shader fail to link on macOS. Shrink to 8x8 (64 entries) so the
-// uniform block fits. terrain3d_web_override.gd repacks the plugin's
-// 32x32 region map into this compact layout centered at world origin.
-uniform int _region_map_size = 8;
-uniform int _region_map[64];
-uniform vec2 _region_locations[64];
+// _region_map[1024] + _region_locations[1024] would weigh 32 KB — way over
+// the WebGL2 minimum GL_MAX_UNIFORM_BLOCK_SIZE (16384) Safari on Apple
+// Silicon enforces. Our Ironclash map only ever uses ONE Terrain3D region
+// at world origin, so we drop the per-cell indirection entirely: every
+// world XZ maps to layer 0 with origin (0,0). _region_map_size stays as
+// a no-op uniform in case the plugin still pushes it.
+uniform int _region_map_size = 32;
 uniform float _texture_normal_depth_array[32];
 uniform float _texture_ao_strength_array[32];
 uniform float _texture_roughness_mod_array[32];
@@ -82,30 +80,17 @@ varying mat3 v_tbn;
 // Returns ivec3 with:
 // XY: (0 to _region_size - 1) coordinates within a region
 // Z: layer index used for texturearrays, -1 if not in a region
+// Single-region simplification: assume all world XZ maps to layer 0.
+// Compatible with Ironclash's map (1 Terrain3D region at world origin) and
+// avoids the _region_map[1024] uniform array that breaks Safari's UBO size
+// limit. If we ever add more regions, restore the addon's original lookup.
 ivec3 get_index_coord(const vec2 uv, const int search) {
 	vec2 r_uv = round(uv);
-	vec2 o_uv = mod(r_uv,_region_size);
-	ivec2 pos;
-	int bounds, layer_index = -1;
-	for (int i = -1; i < clamp(search, SKIP_PASS, FRAGMENT_PASS); i++) {
-		if ((layer_index == -1 && _background_mode == 0u ) || i < 0) {
-			r_uv -= i == -1 ? vec2(0.0) : vec2(float(o_uv.x <= o_uv.y), float(o_uv.y <= o_uv.x));
-			pos = ivec2(floor((r_uv) * _region_texel_size)) + (_region_map_size / 2);
-			bounds = int(uint(pos.x | pos.y) < uint(_region_map_size));
-			layer_index = (_region_map[ pos.y * _region_map_size + pos.x ] * bounds - 1);
-		}
-	}
-	return ivec3(ivec2(mod(r_uv,_region_size)), layer_index);
+	return ivec3(ivec2(mod(r_uv, _region_size)), 0);
 }
 
-// Takes in descaled (world_space / region_size) world to region space XZ (UV2) coordinates, returns vec3 with:
-// XY: (0. to 1.) coordinates within a region
-// Z: layer index used for texturearrays, -1 if not in a region
 vec3 get_index_uv(const vec2 uv2) {
-	ivec2 pos = ivec2(floor(uv2)) + (_region_map_size / 2);
-	int bounds = int(uint(pos.x | pos.y) < uint(_region_map_size));
-	int layer_index = _region_map[ pos.y * _region_map_size + pos.x ] * bounds - 1;
-	return vec3(uv2 - _region_locations[layer_index], float(layer_index));
+	return vec3(uv2, 0.0);
 }
 
 void vertex() {

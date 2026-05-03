@@ -336,12 +336,28 @@ function logBrowserRenderDiagnostics(): void {
 	if (gl2 !== null) {
 		caps.maxArrayTextureLayers = gl2.getParameter(gl2.MAX_ARRAY_TEXTURE_LAYERS) as number;
 		caps.max3DTextureSize = gl2.getParameter(gl2.MAX_3D_TEXTURE_SIZE) as number;
+		// Why: Safari on Apple Silicon caps MAX_UNIFORM_BLOCK_SIZE at the
+		// WebGL2 spec minimum (16384 bytes) regardless of actual GPU capability,
+		// while Chrome/Edge typically expose 65536+. Logging this lets us
+		// confirm whether the user is hitting the conservative Safari limit
+		// when "Size of uniform block ... exceeds GL_MAX_UNIFORM_BLOCK_SIZE"
+		// errors fire from Godot.
+		caps.maxUniformBlockSize = gl2.getParameter(gl2.MAX_UNIFORM_BLOCK_SIZE) as number;
+		caps.maxUniformBufferBindings = gl2.getParameter(gl2.MAX_UNIFORM_BUFFER_BINDINGS) as number;
+		caps.maxVertexUniformBlocks = gl2.getParameter(gl2.MAX_VERTEX_UNIFORM_BLOCKS) as number;
+		caps.maxFragmentUniformBlocks = gl2.getParameter(gl2.MAX_FRAGMENT_UNIFORM_BLOCKS) as number;
 	}
 	console.info("[webgl-diagnostics] caps", caps);
 
 	const terrainRisk = gl2 === null || Number(caps.maxVaryingVectors ?? 0) < 16;
 	if (terrainRisk) {
 		console.warn("[webgl-diagnostics] terrain risk: WebGL2 missing or low varying-vector budget");
+	}
+	const uboLimit = Number(caps.maxUniformBlockSize ?? 0);
+	if (uboLimit > 0 && uboLimit <= 16384) {
+		console.warn(
+			`[webgl-diagnostics] tight UBO budget: MAX_UNIFORM_BLOCK_SIZE=${uboLimit} (Safari/Apple-Silicon minimum). Custom shaders must keep MaterialUniforms <= ${uboLimit} bytes.`,
+		);
 	}
 }
 
