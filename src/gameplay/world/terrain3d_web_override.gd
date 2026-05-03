@@ -32,8 +32,52 @@ func _ready() -> void:
 	material.enable_shader_override(true)
 	material.update()
 	call_deferred("_push_packed_region_arrays")
+	call_deferred("_log_terrain_budget")
 	_start_packed_repush_timer()
 	print("[terrain-web] override enabled")
+
+
+## Print the terrain UBO + heightmap budget so we can see at a glance whether
+## the map fits the WebGL2 limits a given browser exposes (Safari = 16 KB,
+## Chrome = 64 KB+). Also logs region count and heightmap dimensions.
+func _log_terrain_budget() -> void:
+	# Static UBO size estimate from the web shader uniform declarations.
+	# ivec4[256] = 4 KB, vec4[512] = 8 KB, plus ~256 B of scalar/vec uniforms.
+	const PACKED_REGION_MAP_BYTES: int = 256 * 16          # 4096
+	const PACKED_REGION_LOCS_BYTES: int = 512 * 16         # 8192
+	const APPROX_OTHER_UNIFORMS_BYTES: int = 256
+	const UBO_TOTAL_BYTES: int = PACKED_REGION_MAP_BYTES + PACKED_REGION_LOCS_BYTES + APPROX_OTHER_UNIFORMS_BYTES
+	const UBO_ORIGINAL_BYTES: int = 1024 * 16 * 2 + APPROX_OTHER_UNIFORMS_BYTES  # before packing
+
+	var region_count: int = 0
+	var loc_count: int = 0
+	if data != null:
+		if data.has_method("get_region_count"):
+			region_count = int(data.call("get_region_count"))
+		var locs: PackedVector2Array = data.get_region_locations()
+		loc_count = locs.size()
+
+	# Region size = horizontal world units per region (default 1024). Height
+	# stored as one heightmap layer per region.
+	var region_size_units: float = 1024.0
+	if data != null and "region_size" in data:
+		region_size_units = float(data.get("region_size"))
+	var world_extent_units: float = float(region_count) * region_size_units
+
+	print("[terrain-web] map budget: ubo=%d B (%.1f KB) packed | original would be %d B (%.1f KB) | regions=%d (locs=%d) | world ~%.0f units (%.0f m if 1u=1m)" % [
+		UBO_TOTAL_BYTES, UBO_TOTAL_BYTES / 1024.0,
+		UBO_ORIGINAL_BYTES, UBO_ORIGINAL_BYTES / 1024.0,
+		region_count, loc_count,
+		world_extent_units, world_extent_units,
+	])
+
+	# Heightmap memory rough estimate (each region = region_size² R32F texels).
+	var heightmap_bytes: int = region_count * int(region_size_units) * int(region_size_units) * 4
+	if heightmap_bytes > 0:
+		print("[terrain-web] heightmap RAM: ~%d MB (%d region(s) × %dx%d × 4 B = R32F)" % [
+			heightmap_bytes / (1024 * 1024),
+			region_count, int(region_size_units), int(region_size_units),
+		])
 
 
 ## Re-push the packed region arrays at 1 Hz so they survive the plugin's own
