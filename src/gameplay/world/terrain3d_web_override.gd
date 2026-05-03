@@ -70,7 +70,12 @@ func _push_packed_region_arrays() -> void:
 		var a: Vector2 = src_locs[i * 2] if i * 2 < loc_count else Vector2.ZERO
 		var b: Vector2 = src_locs[i * 2 + 1] if (i * 2 + 1) < loc_count else Vector2.ZERO
 		packed_locs[i] = Vector4(a.x, a.y, b.x, b.y)
-	var mat_rid: RID = material.get_rid()
+	# Terrain3DMaterial isn't a plain Material — material.get_rid() returns
+	# null. The addon exposes get_material_rid() to get the actual GPU RID
+	# (see addons/terrain_3d/src/ui.gd:322 for the same pattern).
+	var mat_rid: RID = material.get_material_rid() if material.has_method("get_material_rid") else material.get_rid()
+	if not mat_rid.is_valid():
+		return
 	# RenderingServer.material_set_param accepts the int array as-is for the
 	# packed ivec4 uniform — Godot reinterprets every 4 ints as one ivec4.
 	RenderingServer.material_set_param(mat_rid, "_region_map_packed", packed_map)
