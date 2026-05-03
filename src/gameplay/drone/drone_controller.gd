@@ -124,9 +124,14 @@ signal self_destructed(at_position: Vector3)
 @export var max_altitude: float = 50.0
 
 @export_group("Combat")
-## Minimum impact speed (m/s) for a body collision to count as kamikaze.
-## Below this, the drone bounces / slides without dealing damage.
-@export var kamikaze_speed_threshold: float = 6.0
+## Minimum impact speed (m/s) for a TERRAIN crash to count as kamikaze.
+## Free-fall from spawn altitude tops out around ~5 m/s and cruise descent
+## sits ~7 m/s, so 10 m/s leaves a comfortable gap — drones gently landing
+## near the ground simply bounce, while a deliberate dive that tops out at
+## the terminal fall speed (12 m/s) cleanly detonates on impact.
+## Contact with a player / vehicle health target detonates regardless of
+## speed (an enemy drone hovering down onto you should still kill you).
+@export var kamikaze_speed_threshold: float = 10.0
 ## Damage dealt to a HealthComponent on kamikaze impact (high to one-shot anything).
 @export var kamikaze_damage: int = 999
 ## Seconds the drone wreck burns after a kamikaze detonation before respawning.
@@ -442,6 +447,11 @@ func _physics_process(delta: float) -> void:
 	# Snapshot impact velocity BEFORE move_and_slide — collisions may zero it.
 	_pre_slide_velocity = velocity
 	move_and_slide()
+	# Anti-tunnel: web's CharacterBody3D occasionally lets the small drone
+	# sweep through thin terrain colliders mid-frame. After the slide,
+	# raycast straight down — if ground sits ABOVE the drone's bottom, we've
+	# clipped through. Snap up so we're sitting on the surface again.
+	_anti_tunnel_ground_snap()
 	_check_kamikaze_collisions()
 
 	var is_armed: bool = Input.is_key_pressed(KEY_SPACE) or velocity.length_squared() > 1.0
@@ -454,6 +464,8 @@ func _check_kamikaze_collisions() -> void:
 	# Don't detonate during the activation grace window — see set_active().
 	if _activation_grace_remaining > 0.0:
 		return
+	var threshold_sq: float = kamikaze_speed_threshold * kamikaze_speed_threshold
+	var fast_enough: bool = _pre_slide_velocity.length_squared() >= threshold_sq
 	for i: int in range(get_slide_collision_count()):
 		var col: KinematicCollision3D = get_slide_collision(i)
 		var collider: Node = col.get_collider() as Node
@@ -463,30 +475,25 @@ func _check_kamikaze_collisions() -> void:
 		# expires, the pilot is still standing right next to the drone they
 		# just took control of (player keeps gravity-collision while drone-
 		# piloting unlike tank/heli where set_embarked hides the body).
-		# Without this exclusion the drone self-destructs the moment the
-		# grace ends if the pilot hasn't run out of the drone's box.
 		if _is_local_pilot_body(collider):
 			continue
 		var target_health: HealthComponent = _find_health_component(collider)
-		# Only damageable targets trigger kamikaze. Terrain hits used to
-		# detonate the drone above a velocity threshold, but a drone falling
-		# from its spawn altitude reaches terminal fall speed (12 m/s)
-		# before it lands — past kamikaze threshold — so the drone self-
-		# destructed on every entry. Removing terrain kamikaze keeps the
-		# pilot-vs-target use case (an enemy drone touching you = death)
-		# while letting the drone bounce safely on the ground.
-		if target_health == null:
-			continue
-		# Networked: damage to the target goes through the server via a
-		# vehicle_hit_claim. Locally we only blow up the drone itself
-		# (vehicle_self_destruct fires from the destroyed signal handler).
-		if _is_networked():
-			_send_kamikaze_claim(collider)
-		else:
-			target_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
-		if _health != null:
+		if target_health != null:
+			# Damageable target (player / vehicle) — detonate on ANY contact
+			# regardless of speed. Activation grace already covers the only
+			# "false positive" case (own pilot at spawn).
+			if _is_networked():
+				_send_kamikaze_claim(collider)
+			else:
+				target_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
+			if _health != null:
+				_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
+			return
+		# Terrain / wall / static prop — only detonate if the drone hit fast
+		# enough to count as a deliberate dive. Slow landings just bounce.
+		if fast_enough and _health != null:
 			_health.take_damage(kamikaze_damage, DamageTypes.Source.DRONE_KAMIKAZE)
-		return
+			return
 
 
 func _is_networked() -> bool:
@@ -529,6 +536,47 @@ func _send_kamikaze_claim(collider: Node) -> void:
 		node = node.get_parent()
 	if msg.has("target_peer_id") or msg.has("target_vehicle_id"):
 		nm.call("send_message", msg)
+
+
+## Drone half-height matches the BoxShape3D y-extent in scenes/drone/drone.tscn.
+const _DRONE_HALF_HEIGHT: float = 0.3
+## How far below the drone we'll cast the recovery ray. If terrain is found
+## within this distance below origin, we assume tunneling and snap up.
+const _ANTI_TUNNEL_PROBE: float = 3.0
+
+
+## Cast a ray from drone origin straight down. If terrain is found ABOVE
+## (drone.y - half_height), our box has clipped through the ground — snap
+## the drone up to (terrain_y + half_height + small_epsilon).
+func _anti_tunnel_ground_snap() -> void:
+	if _is_destroyed:
+		return
+	var world: World3D = get_world_3d()
+	if world == null:
+		return
+	var space: PhysicsDirectSpaceState3D = world.direct_space_state
+	if space == null:
+		return
+	var from_pos: Vector3 = global_position + Vector3.UP * _ANTI_TUNNEL_PROBE
+	var to_pos: Vector3 = global_position - Vector3.UP * _ANTI_TUNNEL_PROBE
+	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(from_pos, to_pos)
+	query.collide_with_areas = false
+	query.exclude = [get_rid()]
+	# Only static terrain / world geometry, not vehicles or players (those
+	# trigger kamikaze, not snap).
+	query.collision_mask = 1
+	var hit: Dictionary = space.intersect_ray(query)
+	if hit.is_empty():
+		return
+	var ground_y: float = float((hit["position"] as Vector3).y)
+	var min_drone_y: float = ground_y + _DRONE_HALF_HEIGHT + 0.05
+	if global_position.y < min_drone_y:
+		var pos: Vector3 = global_position
+		pos.y = min_drone_y
+		global_position = pos
+		# Cancel downward velocity so we don't immediately re-tunnel next frame.
+		if velocity.y < 0.0:
+			velocity.y = 0.0
 
 
 ## Returns true if [param collider] is the local PlayerController's Body —
