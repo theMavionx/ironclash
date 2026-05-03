@@ -98,3 +98,13 @@ renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 textures/vram_compression/import_s3tc_bptc=true
 textures/vram_compression/import_etc2_astc=true
+; Why: GLES3 packs per-object light data into the MaterialUniforms UBO. The
+; default cap of 8 lights × full light struct overflows the WebGL2 minimum
+; of 16 KB on weak GPUs (older Intel iGPU, some ChromeOS devices), causing
+; "Size of uniform block MaterialUniforms in VERTEX shader exceeds
+; GL_MAX_UNIFORM_BLOCK_SIZE (16384)" → the scene shader fails to link and
+; the game renders nothing. Cutting to 2 lights/object brings the block
+; well under 16 KB. Visual cost: at most 2 dynamic lights touch any single
+; mesh at a time (we mostly use a single directional sun, so this is fine).
+limits/opengl/max_lights_per_object=2
+limits/opengl/max_renderable_lights=16

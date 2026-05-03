@@ -44,7 +44,8 @@ export const VEHICLE_REGISTRY: VehicleSpec[] = [
 	{ id: "tank4",       max_hp: 600, hit_radius_m: 2.52, spawn_pos: [-16.7427, 10, -86.2658],      spawn_rot: [0, 0.399662, 0], respawn_delay_seconds: 20 },
 	{ id: "helicopter",  max_hp: 400, hit_radius_m: 2.56, spawn_pos: [26.5641, 13.7194, 45.9781],  spawn_rot: [0, -2.760955, 0], respawn_delay_seconds: 45 },
 	{ id: "helicopter2", max_hp: 400, hit_radius_m: 2.56, spawn_pos: [-33.2199, 13.642, -100.473], spawn_rot: [0, 0.317371, 0], respawn_delay_seconds: 45 },
-	{ id: "drone",       max_hp: 50,  hit_radius_m: 1.2, spawn_pos: [-15.1088, 23.3642, 0.392877], spawn_rot: [0, 0, 0], respawn_delay_seconds: 10 },
+	{ id: "drone",       max_hp: 50,  hit_radius_m: 1.2, spawn_pos: [17.0, 11.0, 19.0],            spawn_rot: [0, 0, 0], respawn_delay_seconds: 10 },
+	{ id: "drone2",      max_hp: 50,  hit_radius_m: 1.2, spawn_pos: [-24.0, 11.0, -75.0],          spawn_rot: [0, 0, 0], respawn_delay_seconds: 10 },
 ];
 
 export const vehicles: Map<string, Vehicle> = new Map();
