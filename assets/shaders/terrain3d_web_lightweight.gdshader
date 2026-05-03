@@ -23,9 +23,16 @@ uniform float _vertex_spacing = 1.0;
 uniform float _vertex_density = 1.0; // = 1/_vertex_spacing
 uniform float _region_size = 1024.0;
 uniform float _region_texel_size = 0.0009765625; // = 1/1024
-uniform int _region_map_size = 32;
-uniform int _region_map[1024];
-uniform vec2 _region_locations[1024];
+// Why: std140 packs each scalar/vec2 array element into 16 bytes, so
+// _region_map[1024] alone weighs 16 KB and _region_locations[1024] adds
+// another 16 KB — over double the WebGL2 minimum GL_MAX_UNIFORM_BLOCK_SIZE
+// (16384 bytes) that Safari on Apple Silicon enforces, which made the
+// vertex shader fail to link on macOS. Shrink to 8x8 (64 entries) so the
+// uniform block fits. terrain3d_web_override.gd repacks the plugin's
+// 32x32 region map into this compact layout centered at world origin.
+uniform int _region_map_size = 8;
+uniform int _region_map[64];
+uniform vec2 _region_locations[64];
 uniform float _texture_normal_depth_array[32];
 uniform float _texture_ao_strength_array[32];
 uniform float _texture_roughness_mod_array[32];
